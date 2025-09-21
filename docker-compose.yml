@@ -1,0 +1,12 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: yiffy_corner_bot
+    restart: always
+    volumes:
+      - ..:/yc-data:cached
+
+volumes:
+  yc-data:
