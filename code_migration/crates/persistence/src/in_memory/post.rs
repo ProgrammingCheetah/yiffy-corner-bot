@@ -6,11 +6,8 @@ use std::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use domain::elements::{
-    post::{
-        MimeType, PerceptualHash, Post, PostId, PostRepository, PostRepositoryError, PostStatus,
-        Source,
-    },
-    tag::Tag,
+    post::{Post, PostId, PostRepository, PostRepositoryError, PostStatus, Source},
+    user::UserId,
 };
 use tokio::sync::RwLock;
 
@@ -32,21 +29,20 @@ impl PostRepository for InMemoryPostRepository {
 
     async fn create(
         &self,
-        media_type: MimeType,
-        sources: Vec<Source>,
-        tags: Vec<Tag>,
-        p_hash: PerceptualHash,
+        source: Source,
+        submitted_by: Option<UserId>,
+        submitted_at: DateTime<Utc>,
+        status: PostStatus,
     ) -> Result<Post, Self::Err> {
         let mut posts = self.posts.write().await;
         let raw_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let post = Post {
             id: PostId::from(raw_id),
-            media_type,
-            sources,
-            tags,
-            status: PostStatus::AwaitingModeration,
+            source,
+            status,
             last_posted: None,
-            p_hash,
+            submitted_by,
+            submitted_at,
         };
         posts.insert(raw_id, post.clone());
         Ok(post)
@@ -86,31 +82,27 @@ impl PostRepository for InMemoryPostRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::elements::post::ImgMimeSubtype;
     use url::Url;
-
-    fn fixture_hash() -> PerceptualHash {
-        PerceptualHash::from(0xdeadbeef)
-    }
 
     fn fixture_source() -> Source {
         Source::from(Url::parse("https://e621.net/posts/1").unwrap())
     }
 
-    fn fixture_create_args() -> (MimeType, Vec<Source>, Vec<Tag>, PerceptualHash) {
-        (
-            MimeType::Image(ImgMimeSubtype::Png),
-            vec![fixture_source()],
-            vec![],
-            fixture_hash(),
+    async fn create_default(repo: &InMemoryPostRepository) -> Post {
+        repo.create(
+            fixture_source(),
+            None,
+            Utc::now(),
+            PostStatus::AwaitingModeration,
         )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn create_then_find_by_id_roundtrip() {
         let repo = InMemoryPostRepository::new();
-        let (mt, s, t, h) = fixture_create_args();
-        let post = repo.create(mt, s, t, h).await.unwrap();
+        let post = create_default(&repo).await;
         let found = repo.find_by_id(post.id).await.unwrap();
         assert_eq!(found.map(|p| p.id), Some(post.id));
     }
@@ -118,26 +110,34 @@ mod tests {
     #[tokio::test]
     async fn create_assigns_unique_ids() {
         let repo = InMemoryPostRepository::new();
-        let (mt, s, t, h) = fixture_create_args();
-        let a = repo.create(mt, s.clone(), t.clone(), h).await.unwrap();
-        let b = repo.create(mt, s, t, h).await.unwrap();
+        let a = create_default(&repo).await;
+        let b = create_default(&repo).await;
         assert_ne!(a.id, b.id);
     }
 
     #[tokio::test]
-    async fn newly_created_post_is_awaiting_moderation_with_no_last_posted() {
+    async fn create_persists_submitter_and_status() {
         let repo = InMemoryPostRepository::new();
-        let (mt, s, t, h) = fixture_create_args();
-        let post = repo.create(mt, s, t, h).await.unwrap();
-        assert_eq!(post.status, PostStatus::AwaitingModeration);
+        let when = Utc::now();
+        let post = repo
+            .create(
+                fixture_source(),
+                Some(UserId::from(42)),
+                when,
+                PostStatus::Banned,
+            )
+            .await
+            .unwrap();
+        assert_eq!(post.submitted_by, Some(UserId::from(42)));
+        assert_eq!(post.submitted_at, when);
+        assert_eq!(post.status, PostStatus::Banned);
         assert!(post.last_posted.is_none());
     }
 
     #[tokio::test]
     async fn remove_sets_status_to_deleted() {
         let repo = InMemoryPostRepository::new();
-        let (mt, s, t, h) = fixture_create_args();
-        let post = repo.create(mt, s, t, h).await.unwrap();
+        let post = create_default(&repo).await;
         repo.remove(post.id).await.unwrap();
         let found = repo.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(found.status, PostStatus::Deleted);
@@ -146,8 +146,7 @@ mod tests {
     #[tokio::test]
     async fn set_status_to_changes_status() {
         let repo = InMemoryPostRepository::new();
-        let (mt, s, t, h) = fixture_create_args();
-        let post = repo.create(mt, s, t, h).await.unwrap();
+        let post = create_default(&repo).await;
         repo.set_status_to(post.id, PostStatus::Accepted)
             .await
             .unwrap();
@@ -158,8 +157,7 @@ mod tests {
     #[tokio::test]
     async fn mark_posted_updates_timestamp() {
         let repo = InMemoryPostRepository::new();
-        let (mt, s, t, h) = fixture_create_args();
-        let post = repo.create(mt, s, t, h).await.unwrap();
+        let post = create_default(&repo).await;
         let when = Utc::now();
         repo.mark_posted(post.id, when).await.unwrap();
         let found = repo.find_by_id(post.id).await.unwrap().unwrap();

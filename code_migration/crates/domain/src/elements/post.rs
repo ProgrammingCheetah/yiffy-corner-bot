@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use url::Url;
 
-use crate::elements::tag::Tag;
+use crate::elements::user::UserId;
 
 /// The internal ID for a Post. Program-managed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,36 +25,13 @@ impl std::fmt::Display for PostId {
     }
 }
 
-/// Image media subtypes the bot accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImgMimeSubtype {
-    Jpeg,
-    Png,
-    Gif,
-    Webp,
-}
-
-/// Video media subtypes the bot accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VideoMimeSubtype {
-    Mp4,
-    Webm,
-}
-
-/// The kind of media a [`Post`] carries.
-///
-/// Coarse split (`Image` vs `Video`) drives any branching where the two behave differently
-/// (e.g. Telegram `send_photo` vs `send_video`); subtypes carry the precise format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MimeType {
-    Image(ImgMimeSubtype),
-    Video(VideoMimeSubtype),
-}
-
 /// A URL pointing to externally-hosted media.
 ///
 /// Sources are value objects: two `Source`s with the same URL compare equal.
 /// The bot never re-hosts media; sources always reference the original platform.
+///
+/// The closed-enum form keyed by URL kind is tracked in
+/// [[project-rust-architecture]] and will replace this newtype in a follow-up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source(Url);
 
@@ -70,76 +47,77 @@ impl From<Url> for Source {
     }
 }
 
-/// The status of the Post
-/// Why not queued? Infrastructure problem
+/// The status of a [`Post`] in the local workflow.
+///
+/// **Important**: this is a cached prior verdict for `Banned`, not a permanent
+/// decision. The Selector re-validates against fresh e621 data on each
+/// selection — a `Banned` post can flip back to `Accepted` if its tags no
+/// longer contain anything in the global forbidden list. `Rejected` and
+/// `Deleted` are explicit human decisions and never re-evaluated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostStatus {
-    /// When a post has been submitted but not moderated
+    /// Submitted but not yet moderated.
     AwaitingModeration,
-    /// When a post has been accepted and can be selected
+    /// Approved by a moderator (or auto-Accepted via `/browse`).
     Accepted,
-    /// When a post has been rejected for any reason of quality or purpose
+    /// A moderator explicitly rejected this post.
     Rejected,
-    /// When a post has been soft-deleted (removed from selection but retained for audit)
+    /// External takedown (DMCA etc.). Soft-delete; row retained for audit.
     Deleted,
-    /// When a post has been banned outright, out of content
+    /// Owns at least one globally forbidden tag. May flip back to `Accepted`
+    /// on re-validation if the offending tag is removed from the forbidden
+    /// list or from the post on e621.
     Banned,
-}
-
-/// A perceptual hash of a Post's media.
-///
-/// Used for near-duplicate detection across submissions: visually similar images
-/// produce numerically close hashes, even if their bytes differ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PerceptualHash(u64);
-
-impl AsRef<u64> for PerceptualHash {
-    fn as_ref(&self) -> &u64 {
-        &self.0
-    }
-}
-
-impl From<u64> for PerceptualHash {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
 }
 
 /// A piece of media curated by the bot.
 ///
-/// - Has one or more sources.
-/// - Is MEDIA: has a type such as png, mp4, or otherwise.
-/// - Only Posts with an e621 source can be re-posted.
-/// - Is described by zero or more tags. Non-e621 posts have zero tags.
-/// - Has a last-posted date.
-/// - Has a pHash.
+/// **Lean by design**: the bot is an indexer over e621, not a content store.
+/// Tags, mime type, and other content metadata are always fetched fresh from
+/// e621 — they're never persisted locally. This struct carries only the
+/// identity (`source`) and the local workflow state (`status`, `last_posted`,
+/// `submitted_by`, `submitted_at`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Post {
     pub id: PostId,
-    pub media_type: MimeType,
-    pub sources: Vec<Source>,
-    pub tags: Vec<Tag>,
+    /// The canonical reference URL (e621 post URL for re-postable Posts).
+    pub source: Source,
     pub status: PostStatus,
+    /// When this Post was most recently published by a Poster. `None` if never.
     pub last_posted: Option<DateTime<Utc>>,
-    pub p_hash: PerceptualHash,
+    /// The User who submitted it via `/suggest`. `None` for admin-added posts
+    /// from `/browse` (which auto-Accept, bypassing submission).
+    pub submitted_by: Option<UserId>,
+    pub submitted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PostRepositoryError {
+    #[error("Post could not be created: {0}")]
+    NotCreated(String),
+    #[error("Post not found: {0}")]
+    NotFound(PostId),
 }
 
 /// Persistence port for [`Post`]s.
 #[async_trait::async_trait]
 pub trait PostRepository: Send + Sync {
     type Err;
+    /// Create a Post with the given source, submitter (if any), submission
+    /// time, and initial status. Caller decides the status: `AwaitingModeration`
+    /// for `/suggest`, `Banned` if the post owns a forbidden tag at submission,
+    /// `Accepted` for admin-added Posts via `/browse`.
     async fn create(
         &self,
-        media_type: MimeType,
-        sources: Vec<Source>,
-        tags: Vec<Tag>,
-        p_hash: PerceptualHash,
+        source: Source,
+        submitted_by: Option<UserId>,
+        submitted_at: DateTime<Utc>,
+        status: PostStatus,
     ) -> Result<Post, Self::Err>;
 
     async fn find_by_id(&self, id: PostId) -> Result<Option<Post>, Self::Err>;
     /// Soft-delete: sets status to [`PostStatus::Deleted`]. The row is retained
-    /// for audit; selection skips Deleted posts. For content bans, use
-    /// [`set_status_to`](Self::set_status_to) with [`PostStatus::Banned`].
+    /// for audit; selection skips Deleted posts.
     async fn remove(&self, id: PostId) -> Result<(), Self::Err>;
     async fn set_status_to(
         &self,
@@ -151,33 +129,30 @@ pub trait PostRepository: Send + Sync {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PostRepositoryError {
-    #[error("Post could not be created: {0}")]
-    NotCreated(String),
-    #[error("Post not found: {0}")]
-    NotFound(PostId),
-}
-
-#[derive(Debug, thiserror::Error)]
 pub enum SelectorError {
     #[error("no post matched the Poster's tag criteria")]
     NoMatch,
     #[error("repository error during selection: {0}")]
     Repository(String),
+    #[error("upstream fetch error during selection: {0}")]
+    Fetch(String),
 }
 
 /// Strategy for selecting which [`Post`] a Poster fires next.
 ///
-/// Different implementations (random, FIFO, weighted by tag-match, etc.) live behind
-/// this trait so the selection policy can evolve without changing the use case.
+/// Different implementations (uniform, weighted, etc.) live behind this trait
+/// so the selection policy can evolve without changing the use case.
 ///
 /// `+ Send + Sync` so the scheduler can hold one instance per Poster across an
 /// async task boundary.
 pub trait PostSelectorStrategy: Send + Sync {
-    /// Try the queue first: if its head matches this Poster's tag criteria,
-    /// return it; otherwise `Ok(None)` so the caller can fall back to [`Self::find_post`].
+    /// Try the moderation queue first: if its head matches this Poster's tag
+    /// criteria, return it; otherwise `Ok(None)` so the caller can fall back
+    /// to [`Self::find_post`].
     fn find_due_post(&self) -> Result<Option<Post>, SelectorError>;
-    /// Pick a Post from the saved pool. Implementations decide the policy
-    /// (random, FIFO, weighted, etc.).
+    /// Pick a Post from the saved pool (Accepted ∪ Banned). The strategy
+    /// validates tags against fresh e621 data and may mutate Post.status as a
+    /// side effect (Banned → Accepted on un-ban, Accepted → Banned on policy
+    /// hit).
     fn find_post(&self) -> Result<Post, SelectorError>;
 }

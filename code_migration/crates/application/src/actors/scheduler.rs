@@ -110,8 +110,7 @@ mod tests {
     use domain::elements::{
         cadence::PostInterval,
         post::{
-            ImgMimeSubtype, MimeType, PerceptualHash, Post, PostId, PostRepositoryError,
-            PostStatus, SelectorError, Source,
+            Post, PostId, PostRepositoryError, PostStatus, SelectorError, Source,
         },
         poster::PosterId,
         publisher::PublisherError,
@@ -121,12 +120,11 @@ mod tests {
     fn make_post(id: u64) -> Post {
         Post {
             id: PostId::from(id),
-            media_type: MimeType::Image(ImgMimeSubtype::Png),
-            sources: vec![Source::from(Url::parse("https://e621.net/p/1").unwrap())],
-            tags: vec![],
+            source: Source::from(Url::parse("https://e621.net/p/1").unwrap()),
             status: PostStatus::Accepted,
             last_posted: None,
-            p_hash: PerceptualHash::from(0),
+            submitted_by: None,
+            submitted_at: Utc::now(),
         }
     }
 
@@ -182,10 +180,10 @@ mod tests {
         type Err = PostRepositoryError;
         async fn create(
             &self,
-            _media_type: MimeType,
-            _sources: Vec<Source>,
-            _tags: Vec<domain::elements::tag::Tag>,
-            _p_hash: PerceptualHash,
+            _source: Source,
+            _submitted_by: Option<domain::elements::user::UserId>,
+            _submitted_at: DateTime<Utc>,
+            _status: PostStatus,
         ) -> Result<Post, Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
