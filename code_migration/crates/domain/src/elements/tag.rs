@@ -6,7 +6,7 @@
 /// - Tags describe e621-sourced posts; non-e621 posts have zero tags.
 /// - A Poster's `subscribed_tags` apply as required filters when querying e621.
 /// - A Poster's `forbidden_tags` exclude any matching post (one is enough to disqualify).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag(String);
 
 impl AsRef<str> for Tag {
