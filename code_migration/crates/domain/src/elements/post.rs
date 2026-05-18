@@ -25,25 +25,63 @@ impl std::fmt::Display for PostId {
     }
 }
 
-/// A URL pointing to externally-hosted media.
+/// A URL pointing to externally-hosted media, typed by platform.
 ///
 /// Sources are value objects: two `Source`s with the same URL compare equal.
-/// The bot never re-hosts media; sources always reference the original platform.
+/// The bot never re-hosts media; sources always reference the original
+/// platform. The variant is derived from the URL's host at construction time
+/// via [`TryFrom<Url>`]; URLs that don't match a known host are rejected with
+/// [`SourceError::UnknownHost`].
 ///
-/// The closed-enum form keyed by URL kind is tracked in
-/// [[project-rust-architecture]] and will replace this newtype in a follow-up.
+/// Per `design/domain.md`, **only `E621` sources can be re-posted**. The other
+/// variants exist so the system can record and reason about cross-platform
+/// references without re-posting from them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Source(Url);
+pub enum Source {
+    E621(Url),
+    Twitter(Url),
+    BlueSky(Url),
+    Telegram(Url),
+    FurAffinity(Url),
+    DeviantArt(Url),
+}
 
-impl AsRef<Url> for Source {
-    fn as_ref(&self) -> &Url {
-        &self.0
+#[derive(Debug, thiserror::Error)]
+pub enum SourceError {
+    #[error("URL host not recognized as a known source: {0}")]
+    UnknownHost(Url),
+    #[error("URL has no host: {0}")]
+    NoHost(Url),
+}
+
+impl TryFrom<Url> for Source {
+    type Error = SourceError;
+    fn try_from(url: Url) -> Result<Self, Self::Error> {
+        let host = url
+            .host_str()
+            .ok_or_else(|| SourceError::NoHost(url.clone()))?;
+        Ok(match host {
+            "e621.net" | "e926.net" => Source::E621(url),
+            "twitter.com" | "x.com" => Source::Twitter(url),
+            "bsky.app" => Source::BlueSky(url),
+            "t.me" => Source::Telegram(url),
+            "furaffinity.net" | "www.furaffinity.net" => Source::FurAffinity(url),
+            "deviantart.com" | "www.deviantart.com" => Source::DeviantArt(url),
+            _ => return Err(SourceError::UnknownHost(url)),
+        })
     }
 }
 
-impl From<Url> for Source {
-    fn from(value: Url) -> Self {
-        Self(value)
+impl AsRef<Url> for Source {
+    fn as_ref(&self) -> &Url {
+        match self {
+            Source::E621(u)
+            | Source::Twitter(u)
+            | Source::BlueSky(u)
+            | Source::Telegram(u)
+            | Source::FurAffinity(u)
+            | Source::DeviantArt(u) => u,
+        }
     }
 }
 
@@ -136,6 +174,86 @@ pub enum SelectorError {
     Repository(String),
     #[error("upstream fetch error during selection: {0}")]
     Fetch(String),
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    fn parse(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn e621_hosts() {
+        assert!(matches!(
+            Source::try_from(parse("https://e621.net/posts/1")).unwrap(),
+            Source::E621(_)
+        ));
+        assert!(matches!(
+            Source::try_from(parse("https://e926.net/posts/1")).unwrap(),
+            Source::E621(_)
+        ));
+    }
+
+    #[test]
+    fn twitter_hosts() {
+        for host in ["twitter.com", "x.com"] {
+            let url = parse(&format!("https://{host}/user/status/1"));
+            assert!(matches!(Source::try_from(url).unwrap(), Source::Twitter(_)));
+        }
+    }
+
+    #[test]
+    fn bsky_host() {
+        assert!(matches!(
+            Source::try_from(parse("https://bsky.app/profile/x/post/1")).unwrap(),
+            Source::BlueSky(_)
+        ));
+    }
+
+    #[test]
+    fn telegram_host() {
+        assert!(matches!(
+            Source::try_from(parse("https://t.me/channel/1")).unwrap(),
+            Source::Telegram(_)
+        ));
+    }
+
+    #[test]
+    fn furaffinity_hosts() {
+        for host in ["furaffinity.net", "www.furaffinity.net"] {
+            let url = parse(&format!("https://{host}/view/1"));
+            assert!(matches!(
+                Source::try_from(url).unwrap(),
+                Source::FurAffinity(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deviantart_hosts() {
+        for host in ["deviantart.com", "www.deviantart.com"] {
+            let url = parse(&format!("https://{host}/x/art/y"));
+            assert!(matches!(
+                Source::try_from(url).unwrap(),
+                Source::DeviantArt(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn unknown_host_rejected() {
+        let err = Source::try_from(parse("https://example.com/p/1")).unwrap_err();
+        assert!(matches!(err, SourceError::UnknownHost(_)));
+    }
+
+    #[test]
+    fn as_ref_returns_inner_url() {
+        let url = parse("https://e621.net/posts/1");
+        let source = Source::try_from(url.clone()).unwrap();
+        assert_eq!(source.as_ref(), &url);
+    }
 }
 
 /// Strategy for selecting which [`Post`] a Poster fires next.

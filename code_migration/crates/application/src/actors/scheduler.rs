@@ -120,7 +120,7 @@ mod tests {
     fn make_post(id: u64) -> Post {
         Post {
             id: PostId::from(id),
-            source: Source::from(Url::parse("https://e621.net/p/1").unwrap()),
+            source: Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
             status: PostStatus::Accepted,
             last_posted: None,
             submitted_by: None,

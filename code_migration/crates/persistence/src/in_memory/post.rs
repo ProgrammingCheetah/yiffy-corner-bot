@@ -85,7 +85,7 @@ mod tests {
     use url::Url;
 
     fn fixture_source() -> Source {
-        Source::from(Url::parse("https://e621.net/posts/1").unwrap())
+        Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap()
     }
 
     async fn create_default(repo: &InMemoryPostRepository) -> Post {
