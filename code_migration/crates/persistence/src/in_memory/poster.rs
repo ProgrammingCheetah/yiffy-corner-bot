@@ -1,16 +1,15 @@
 use std::{
     collections::HashMap,
-    sync::{
-        RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
+use async_trait::async_trait;
 use domain::elements::{
     cadence::PostInterval,
     poster::{Poster, PosterId, PosterRepository, PosterRepositoryError},
     tag::Tag,
 };
+use tokio::sync::RwLock;
 
 #[derive(Debug, Default)]
 pub struct InMemoryPosterRepository {
@@ -24,16 +23,17 @@ impl InMemoryPosterRepository {
     }
 }
 
+#[async_trait]
 impl PosterRepository for InMemoryPosterRepository {
     type Err = PosterRepositoryError;
 
-    fn create(
+    async fn create(
         &self,
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err> {
-        let mut posters = self.posters.write().expect("posters RwLock poisoned");
+        let mut posters = self.posters.write().await;
         let raw_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let poster = Poster {
             id: PosterId::from(raw_id),
@@ -45,23 +45,12 @@ impl PosterRepository for InMemoryPosterRepository {
         Ok(poster)
     }
 
-    fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err> {
-        Ok(self
-            .posters
-            .read()
-            .expect("posters RwLock poisoned")
-            .get(id.as_ref())
-            .cloned())
+    async fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err> {
+        Ok(self.posters.read().await.get(id.as_ref()).cloned())
     }
 
-    fn list_all(&self) -> Result<Vec<Poster>, Self::Err> {
-        Ok(self
-            .posters
-            .read()
-            .expect("posters RwLock poisoned")
-            .values()
-            .cloned()
-            .collect())
+    async fn list_all(&self) -> Result<Vec<Poster>, Self::Err> {
+        Ok(self.posters.read().await.values().cloned().collect())
     }
 }
 
@@ -73,47 +62,48 @@ mod tests {
         PostInterval::new(5).unwrap()
     }
 
-    #[test]
-    fn create_then_find_by_id_roundtrip() {
+    #[tokio::test]
+    async fn create_then_find_by_id_roundtrip() {
         let repo = InMemoryPosterRepository::new();
-        let poster = repo.create(vec![], vec![], fixture_interval()).unwrap();
-        let found = repo.find_by_id(poster.id).unwrap();
+        let poster = repo.create(vec![], vec![], fixture_interval()).await.unwrap();
+        let found = repo.find_by_id(poster.id).await.unwrap();
         assert_eq!(found.map(|p| p.id), Some(poster.id));
     }
 
-    #[test]
-    fn create_assigns_unique_ids() {
+    #[tokio::test]
+    async fn create_assigns_unique_ids() {
         let repo = InMemoryPosterRepository::new();
-        let a = repo.create(vec![], vec![], fixture_interval()).unwrap();
-        let b = repo.create(vec![], vec![], fixture_interval()).unwrap();
+        let a = repo.create(vec![], vec![], fixture_interval()).await.unwrap();
+        let b = repo.create(vec![], vec![], fixture_interval()).await.unwrap();
         assert_ne!(a.id, b.id);
     }
 
-    #[test]
-    fn find_by_id_unknown_returns_none() {
+    #[tokio::test]
+    async fn find_by_id_unknown_returns_none() {
         let repo = InMemoryPosterRepository::new();
-        assert!(repo.find_by_id(PosterId::from(42)).unwrap().is_none());
+        assert!(repo.find_by_id(PosterId::from(42)).await.unwrap().is_none());
     }
 
-    #[test]
-    fn list_all_returns_every_created_poster() {
+    #[tokio::test]
+    async fn list_all_returns_every_created_poster() {
         let repo = InMemoryPosterRepository::new();
         for _ in 0..3 {
-            repo.create(vec![], vec![], fixture_interval()).unwrap();
+            repo.create(vec![], vec![], fixture_interval()).await.unwrap();
         }
-        assert_eq!(repo.list_all().unwrap().len(), 3);
+        assert_eq!(repo.list_all().await.unwrap().len(), 3);
     }
 
-    #[test]
-    fn create_persists_tag_subscription_and_interval() {
+    #[tokio::test]
+    async fn create_persists_tag_subscription_and_interval() {
         let repo = InMemoryPosterRepository::new();
         let subscribed = vec![Tag::from("fox")];
         let forbidden = vec![Tag::from("snake")];
         let interval = PostInterval::new(15).unwrap();
         let poster = repo
             .create(subscribed.clone(), forbidden.clone(), interval)
+            .await
             .unwrap();
-        let found = repo.find_by_id(poster.id).unwrap().unwrap();
+        let found = repo.find_by_id(poster.id).await.unwrap().unwrap();
         assert_eq!(found.subscribed_tags, subscribed);
         assert_eq!(found.forbidden_tags, forbidden);
         assert_eq!(found.time_interval, interval);

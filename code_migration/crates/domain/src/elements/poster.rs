@@ -51,14 +51,15 @@ pub enum PosterRepositoryError {
 }
 
 /// Persistence port for [`Poster`]s.
+#[async_trait::async_trait]
 pub trait PosterRepository: Send + Sync {
     type Err;
-    fn create(
+    async fn create(
         &self,
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err>;
-    fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err>;
-    fn list_all(&self) -> Result<Vec<Poster>, Self::Err>;
+    async fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err>;
+    async fn list_all(&self) -> Result<Vec<Poster>, Self::Err>;
 }

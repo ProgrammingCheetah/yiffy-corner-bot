@@ -125,9 +125,10 @@ pub struct Post {
 }
 
 /// Persistence port for [`Post`]s.
+#[async_trait::async_trait]
 pub trait PostRepository: Send + Sync {
     type Err;
-    fn create(
+    async fn create(
         &self,
         media_type: MimeType,
         sources: Vec<Source>,
@@ -135,14 +136,18 @@ pub trait PostRepository: Send + Sync {
         p_hash: PerceptualHash,
     ) -> Result<Post, Self::Err>;
 
-    fn find_by_id(&self, id: PostId) -> Result<Option<Post>, Self::Err>;
+    async fn find_by_id(&self, id: PostId) -> Result<Option<Post>, Self::Err>;
     /// Soft-delete: sets status to [`PostStatus::Deleted`]. The row is retained
     /// for audit; selection skips Deleted posts. For content bans, use
     /// [`set_status_to`](Self::set_status_to) with [`PostStatus::Banned`].
-    fn remove(&self, id: PostId) -> Result<(), Self::Err>;
-    fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err>;
+    async fn remove(&self, id: PostId) -> Result<(), Self::Err>;
+    async fn set_status_to(
+        &self,
+        post_id: PostId,
+        status: PostStatus,
+    ) -> Result<(), Self::Err>;
     /// Record that `id` was just published at `at`. Updates `last_posted`.
-    fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
+    async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
 }
 
 #[derive(Debug, thiserror::Error)]

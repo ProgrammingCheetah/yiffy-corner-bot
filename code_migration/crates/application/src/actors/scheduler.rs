@@ -59,7 +59,7 @@ where
             tracing::error!(poster_id = %rt.poster.id, error = %e, "publish failed");
             continue;
         }
-        if let Err(e) = posts.mark_posted(post.id, now) {
+        if let Err(e) = posts.mark_posted(post.id, now).await {
             tracing::error!(poster_id = %rt.poster.id, error = %e, "mark_posted failed");
             continue;
         }
@@ -177,9 +177,10 @@ mod tests {
     struct RecordingPostRepository {
         marked: Mutex<Vec<(PostId, DateTime<Utc>)>>,
     }
+    #[async_trait]
     impl PostRepository for RecordingPostRepository {
         type Err = PostRepositoryError;
-        fn create(
+        async fn create(
             &self,
             _media_type: MimeType,
             _sources: Vec<Source>,
@@ -188,16 +189,20 @@ mod tests {
         ) -> Result<Post, Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
-        fn find_by_id(&self, _id: PostId) -> Result<Option<Post>, Self::Err> {
+        async fn find_by_id(&self, _id: PostId) -> Result<Option<Post>, Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
-        fn remove(&self, _id: PostId) -> Result<(), Self::Err> {
+        async fn remove(&self, _id: PostId) -> Result<(), Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
-        fn set_status_to(&self, _id: PostId, _status: PostStatus) -> Result<(), Self::Err> {
+        async fn set_status_to(
+            &self,
+            _id: PostId,
+            _status: PostStatus,
+        ) -> Result<(), Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
-        fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
+        async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
             self.marked.lock().unwrap().push((id, at));
             Ok(())
         }

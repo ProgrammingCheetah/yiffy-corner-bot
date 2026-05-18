@@ -1,11 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{
-        RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use domain::elements::{
     post::{
@@ -14,6 +12,7 @@ use domain::elements::{
     },
     tag::Tag,
 };
+use tokio::sync::RwLock;
 
 #[derive(Debug, Default)]
 pub struct InMemoryPostRepository {
@@ -27,17 +26,18 @@ impl InMemoryPostRepository {
     }
 }
 
+#[async_trait]
 impl PostRepository for InMemoryPostRepository {
     type Err = PostRepositoryError;
 
-    fn create(
+    async fn create(
         &self,
         media_type: MimeType,
         sources: Vec<Source>,
         tags: Vec<Tag>,
         p_hash: PerceptualHash,
     ) -> Result<Post, Self::Err> {
-        let mut posts = self.posts.write().expect("posts RwLock poisoned");
+        let mut posts = self.posts.write().await;
         let raw_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let post = Post {
             id: PostId::from(raw_id),
@@ -52,21 +52,20 @@ impl PostRepository for InMemoryPostRepository {
         Ok(post)
     }
 
-    fn find_by_id(&self, id: PostId) -> Result<Option<Post>, Self::Err> {
-        Ok(self
-            .posts
-            .read()
-            .expect("posts RwLock poisoned")
-            .get(id.as_ref())
-            .cloned())
+    async fn find_by_id(&self, id: PostId) -> Result<Option<Post>, Self::Err> {
+        Ok(self.posts.read().await.get(id.as_ref()).cloned())
     }
 
-    fn remove(&self, id: PostId) -> Result<(), Self::Err> {
-        self.set_status_to(id, PostStatus::Deleted)
+    async fn remove(&self, id: PostId) -> Result<(), Self::Err> {
+        self.set_status_to(id, PostStatus::Deleted).await
     }
 
-    fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err> {
-        let mut posts = self.posts.write().expect("posts RwLock poisoned");
+    async fn set_status_to(
+        &self,
+        post_id: PostId,
+        status: PostStatus,
+    ) -> Result<(), Self::Err> {
+        let mut posts = self.posts.write().await;
         let post = posts
             .get_mut(post_id.as_ref())
             .ok_or(PostRepositoryError::NotFound(post_id))?;
@@ -74,8 +73,8 @@ impl PostRepository for InMemoryPostRepository {
         Ok(())
     }
 
-    fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
-        let mut posts = self.posts.write().expect("posts RwLock poisoned");
+    async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
+        let mut posts = self.posts.write().await;
         let post = posts
             .get_mut(id.as_ref())
             .ok_or(PostRepositoryError::NotFound(id))?;
@@ -87,6 +86,7 @@ impl PostRepository for InMemoryPostRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::elements::post::ImgMimeSubtype;
     use url::Url;
 
     fn fixture_hash() -> PerceptualHash {
@@ -97,119 +97,91 @@ mod tests {
         Source::from(Url::parse("https://e621.net/posts/1").unwrap())
     }
 
-    #[test]
-    fn create_then_find_by_id_roundtrip() {
+    fn fixture_create_args() -> (MimeType, Vec<Source>, Vec<Tag>, PerceptualHash) {
+        (
+            MimeType::Image(ImgMimeSubtype::Png),
+            vec![fixture_source()],
+            vec![],
+            fixture_hash(),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_then_find_by_id_roundtrip() {
         let repo = InMemoryPostRepository::new();
-        let post = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
-            .unwrap();
-        let found = repo.find_by_id(post.id).unwrap();
+        let (mt, s, t, h) = fixture_create_args();
+        let post = repo.create(mt, s, t, h).await.unwrap();
+        let found = repo.find_by_id(post.id).await.unwrap();
         assert_eq!(found.map(|p| p.id), Some(post.id));
     }
 
-    #[test]
-    fn create_assigns_unique_ids() {
+    #[tokio::test]
+    async fn create_assigns_unique_ids() {
         let repo = InMemoryPostRepository::new();
-        let a = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
-            .unwrap();
-        let b = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
-            .unwrap();
+        let (mt, s, t, h) = fixture_create_args();
+        let a = repo.create(mt, s.clone(), t.clone(), h).await.unwrap();
+        let b = repo.create(mt, s, t, h).await.unwrap();
         assert_ne!(a.id, b.id);
     }
 
-    #[test]
-    fn newly_created_post_is_awaiting_moderation_with_no_last_posted() {
+    #[tokio::test]
+    async fn newly_created_post_is_awaiting_moderation_with_no_last_posted() {
         let repo = InMemoryPostRepository::new();
-        let post = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
-            .unwrap();
+        let (mt, s, t, h) = fixture_create_args();
+        let post = repo.create(mt, s, t, h).await.unwrap();
         assert_eq!(post.status, PostStatus::AwaitingModeration);
         assert!(post.last_posted.is_none());
     }
 
-    #[test]
-    fn remove_sets_status_to_deleted() {
+    #[tokio::test]
+    async fn remove_sets_status_to_deleted() {
         let repo = InMemoryPostRepository::new();
-        let post = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
-            .unwrap();
-        repo.remove(post.id).unwrap();
-        let found = repo.find_by_id(post.id).unwrap().unwrap();
+        let (mt, s, t, h) = fixture_create_args();
+        let post = repo.create(mt, s, t, h).await.unwrap();
+        repo.remove(post.id).await.unwrap();
+        let found = repo.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(found.status, PostStatus::Deleted);
     }
 
-    #[test]
-    fn set_status_to_changes_status() {
+    #[tokio::test]
+    async fn set_status_to_changes_status() {
         let repo = InMemoryPostRepository::new();
-        let post = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
+        let (mt, s, t, h) = fixture_create_args();
+        let post = repo.create(mt, s, t, h).await.unwrap();
+        repo.set_status_to(post.id, PostStatus::Accepted)
+            .await
             .unwrap();
-        repo.set_status_to(post.id, PostStatus::Accepted).unwrap();
-        let found = repo.find_by_id(post.id).unwrap().unwrap();
+        let found = repo.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(found.status, PostStatus::Accepted);
     }
 
-    #[test]
-    fn mark_posted_updates_timestamp() {
+    #[tokio::test]
+    async fn mark_posted_updates_timestamp() {
         let repo = InMemoryPostRepository::new();
-        let post = repo
-            .create(
-                MimeType::Image(domain::elements::post::ImgMimeSubtype::Png),
-                vec![fixture_source()],
-                vec![],
-                fixture_hash(),
-            )
-            .unwrap();
+        let (mt, s, t, h) = fixture_create_args();
+        let post = repo.create(mt, s, t, h).await.unwrap();
         let when = Utc::now();
-        repo.mark_posted(post.id, when).unwrap();
-        let found = repo.find_by_id(post.id).unwrap().unwrap();
+        repo.mark_posted(post.id, when).await.unwrap();
+        let found = repo.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(found.last_posted, Some(when));
     }
 
-    #[test]
-    fn mark_posted_unknown_id_returns_not_found() {
+    #[tokio::test]
+    async fn mark_posted_unknown_id_returns_not_found() {
         let repo = InMemoryPostRepository::new();
-        let err = repo.mark_posted(PostId::from(42), Utc::now()).unwrap_err();
+        let err = repo
+            .mark_posted(PostId::from(42), Utc::now())
+            .await
+            .unwrap_err();
         assert!(matches!(err, PostRepositoryError::NotFound(_)));
     }
 
-    #[test]
-    fn set_status_to_unknown_id_returns_not_found() {
+    #[tokio::test]
+    async fn set_status_to_unknown_id_returns_not_found() {
         let repo = InMemoryPostRepository::new();
         let err = repo
             .set_status_to(PostId::from(42), PostStatus::Accepted)
+            .await
             .unwrap_err();
         assert!(matches!(err, PostRepositoryError::NotFound(_)));
     }
