@@ -3,10 +3,7 @@ use std::{
     sync::{RwLock, atomic::AtomicU64},
 };
 
-use domain::elements::{
-    post::PostSelectorStrategy,
-    poster::{Poster, PosterRepository},
-};
+use domain::elements::poster::Poster;
 
 #[derive(Debug, Default)]
 pub struct InMemoryPosterRepository {
@@ -14,12 +11,8 @@ pub struct InMemoryPosterRepository {
     next_id: AtomicU64,
 }
 
-impl PostSelectorStrategy for InMemoryPosterRepository {
-    fn find_due_post(&self) -> Result<Option<domain::elements::post::Post>, Self::Err> {
-        todo!()
-    }
-
-    fn find_post(&self) -> Result<domain::elements::post::Post, Self::Err> {
-        todo!()
+impl InMemoryPosterRepository {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
