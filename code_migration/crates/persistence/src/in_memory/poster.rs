@@ -8,7 +8,6 @@ use std::{
 
 use domain::elements::{
     cadence::PostInterval,
-    channel::ChannelId,
     poster::{Poster, PosterId, PosterRepository, PosterRepositoryError},
     tag::Tag,
 };
@@ -30,13 +29,10 @@ impl PosterRepository for InMemoryPosterRepository {
 
     fn create(
         &self,
-        _for_channel: ChannelId,
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err> {
-        // TODO: link via ChannelRepository once the Channel/Poster persistence
-        // shape is decided. The arg is currently accepted but not stored.
         let mut posters = self.posters.write().expect("posters RwLock poisoned");
         let raw_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let poster = Poster {
@@ -77,16 +73,10 @@ mod tests {
         PostInterval::new(5).unwrap()
     }
 
-    fn fixture_channel() -> ChannelId {
-        ChannelId::from(1)
-    }
-
     #[test]
     fn create_then_find_by_id_roundtrip() {
         let repo = InMemoryPosterRepository::new();
-        let poster = repo
-            .create(fixture_channel(), vec![], vec![], fixture_interval())
-            .unwrap();
+        let poster = repo.create(vec![], vec![], fixture_interval()).unwrap();
         let found = repo.find_by_id(poster.id).unwrap();
         assert_eq!(found.map(|p| p.id), Some(poster.id));
     }
@@ -94,12 +84,8 @@ mod tests {
     #[test]
     fn create_assigns_unique_ids() {
         let repo = InMemoryPosterRepository::new();
-        let a = repo
-            .create(fixture_channel(), vec![], vec![], fixture_interval())
-            .unwrap();
-        let b = repo
-            .create(fixture_channel(), vec![], vec![], fixture_interval())
-            .unwrap();
+        let a = repo.create(vec![], vec![], fixture_interval()).unwrap();
+        let b = repo.create(vec![], vec![], fixture_interval()).unwrap();
         assert_ne!(a.id, b.id);
     }
 
@@ -113,8 +99,7 @@ mod tests {
     fn list_all_returns_every_created_poster() {
         let repo = InMemoryPosterRepository::new();
         for _ in 0..3 {
-            repo.create(fixture_channel(), vec![], vec![], fixture_interval())
-                .unwrap();
+            repo.create(vec![], vec![], fixture_interval()).unwrap();
         }
         assert_eq!(repo.list_all().unwrap().len(), 3);
     }
@@ -126,12 +111,7 @@ mod tests {
         let forbidden = vec![Tag::from("snake")];
         let interval = PostInterval::new(15).unwrap();
         let poster = repo
-            .create(
-                fixture_channel(),
-                subscribed.clone(),
-                forbidden.clone(),
-                interval,
-            )
+            .create(subscribed.clone(), forbidden.clone(), interval)
             .unwrap();
         let found = repo.find_by_id(poster.id).unwrap().unwrap();
         assert_eq!(found.subscribed_tags, subscribed);

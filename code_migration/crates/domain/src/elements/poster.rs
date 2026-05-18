@@ -1,4 +1,4 @@
-use crate::elements::{cadence::PostInterval, channel::ChannelId, tag::Tag};
+use crate::elements::{cadence::PostInterval, tag::Tag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosterId(u64);
@@ -21,15 +21,15 @@ impl std::fmt::Display for PosterId {
     }
 }
 
-/// A configured posting agent attached to a Channel.
+/// A configured posting agent.
 ///
-/// A Poster is pure configuration — *what* to post, *to where*, and *how often*.
-/// The act of actually firing the post on the cadence belongs to a Scheduler
-/// (application/infra), not to the Poster itself.
+/// A Poster is pure configuration — *what* to post and *how often*. Where it
+/// posts is resolved at boot by looking up its [`PublisherConfig`] (see the
+/// `publisher_config` module) and constructing a Publisher from it.
 ///
 /// Per `design/domain.md`:
 /// - Owned by Zuri (only Zuri creates Posters for the MVP).
-/// - Has exactly one Channel.
+/// - Bound to one delivery destination via PublisherConfig (1:1).
 /// - Tag subscription is configured by Zuri at creation time.
 #[derive(Debug, Clone)]
 pub struct Poster {
@@ -55,7 +55,6 @@ pub trait PosterRepository: Send + Sync {
     type Err;
     fn create(
         &self,
-        for_channel: ChannelId,
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
