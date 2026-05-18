@@ -19,6 +19,12 @@ impl AsRef<u64> for PostId {
     }
 }
 
+impl std::fmt::Display for PostId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Image media subtypes the bot accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImgMimeSubtype {
@@ -135,16 +141,38 @@ pub trait PostRepository: Send + Sync {
     /// [`set_status_to`](Self::set_status_to) with [`PostStatus::Banned`].
     fn remove(&self, id: PostId) -> Result<(), Self::Err>;
     fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err>;
+    /// Record that `id` was just published at `at`. Updates `last_posted`.
+    fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PostRepositoryError {}
+pub enum PostRepositoryError {
+    #[error("Post could not be created: {0}")]
+    NotCreated(String),
+    #[error("Post not found: {0}")]
+    NotFound(PostId),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SelectorError {
+    #[error("no post matched the Poster's tag criteria")]
+    NoMatch,
+    #[error("repository error during selection: {0}")]
+    Repository(String),
+}
 
 /// Strategy for selecting which [`Post`] a Poster fires next.
 ///
 /// Different implementations (random, FIFO, weighted by tag-match, etc.) live behind
 /// this trait so the selection policy can evolve without changing the use case.
-pub trait PostSelectorStrategy {
-    fn find_due_post(&self) -> Result<Option<Post>, PostRepositoryError>;
-    fn find_post(&self) -> Result<Post, PostRepositoryError>;
+///
+/// `+ Send + Sync` so the scheduler can hold one instance per Poster across an
+/// async task boundary.
+pub trait PostSelectorStrategy: Send + Sync {
+    /// Try the queue first: if its head matches this Poster's tag criteria,
+    /// return it; otherwise `Ok(None)` so the caller can fall back to [`Self::find_post`].
+    fn find_due_post(&self) -> Result<Option<Post>, SelectorError>;
+    /// Pick a Post from the saved pool. Implementations decide the policy
+    /// (random, FIFO, weighted, etc.).
+    fn find_post(&self) -> Result<Post, SelectorError>;
 }
