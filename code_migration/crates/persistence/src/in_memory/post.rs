@@ -52,6 +52,16 @@ impl PostRepository for InMemoryPostRepository {
         Ok(self.posts.read().await.get(id.as_ref()).cloned())
     }
 
+    async fn find_by_source(&self, source: &Source) -> Result<Option<Post>, Self::Err> {
+        Ok(self
+            .posts
+            .read()
+            .await
+            .values()
+            .find(|p| &p.source == source)
+            .cloned())
+    }
+
     async fn remove(&self, id: PostId) -> Result<(), Self::Err> {
         self.set_status_to(id, PostStatus::Deleted).await
     }
@@ -162,6 +172,21 @@ mod tests {
         repo.mark_posted(post.id, when).await.unwrap();
         let found = repo.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(found.last_posted, Some(when));
+    }
+
+    #[tokio::test]
+    async fn find_by_source_locates_existing_post() {
+        let repo = InMemoryPostRepository::new();
+        let post = create_default(&repo).await;
+        let found = repo.find_by_source(&post.source).await.unwrap();
+        assert_eq!(found.map(|p| p.id), Some(post.id));
+    }
+
+    #[tokio::test]
+    async fn find_by_source_unknown_returns_none() {
+        let repo = InMemoryPostRepository::new();
+        let other = Source::try_from(Url::parse("https://e621.net/posts/999").unwrap()).unwrap();
+        assert!(repo.find_by_source(&other).await.unwrap().is_none());
     }
 
     #[tokio::test]

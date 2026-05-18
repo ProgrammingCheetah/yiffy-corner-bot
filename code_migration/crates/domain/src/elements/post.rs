@@ -154,6 +154,10 @@ pub trait PostRepository: Send + Sync {
     ) -> Result<Post, Self::Err>;
 
     async fn find_by_id(&self, id: PostId) -> Result<Option<Post>, Self::Err>;
+    /// Lookup by source URL. Used by `/suggest` to detect a duplicate
+    /// submission and by `/getpostinfo` to show local workflow status
+    /// alongside the e621 fetch.
+    async fn find_by_source(&self, source: &Source) -> Result<Option<Post>, Self::Err>;
     /// Soft-delete: sets status to [`PostStatus::Deleted`]. The row is retained
     /// for audit; selection skips Deleted posts.
     async fn remove(&self, id: PostId) -> Result<(), Self::Err>;

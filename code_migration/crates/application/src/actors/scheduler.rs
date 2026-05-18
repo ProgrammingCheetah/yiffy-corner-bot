@@ -190,6 +190,9 @@ mod tests {
         async fn find_by_id(&self, _id: PostId) -> Result<Option<Post>, Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
+        async fn find_by_source(&self, _source: &Source) -> Result<Option<Post>, Self::Err> {
+            unimplemented!("not needed by scheduler tests")
+        }
         async fn remove(&self, _id: PostId) -> Result<(), Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }

@@ -70,6 +70,17 @@ impl UserRepository for InMemoryUserRepository {
         user.role = new_role;
         Ok(user.clone())
     }
+
+    async fn list_by_role(&self, role: Role) -> Result<Vec<User>, UserRepositoryError> {
+        Ok(self
+            .users
+            .read()
+            .await
+            .values()
+            .filter(|u| u.role == role)
+            .cloned()
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +136,18 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(a.id, b.id);
+    }
+
+    #[tokio::test]
+    async fn list_by_role_filters_correctly() {
+        let repo = InMemoryUserRepository::new();
+        repo.create(TelegramId::from(1), Role::Owner, None).await.unwrap();
+        repo.create(TelegramId::from(2), Role::Moderator, None).await.unwrap();
+        repo.create(TelegramId::from(3), Role::Moderator, None).await.unwrap();
+        repo.create(TelegramId::from(4), Role::User, None).await.unwrap();
+        assert_eq!(repo.list_by_role(Role::Owner).await.unwrap().len(), 1);
+        assert_eq!(repo.list_by_role(Role::Moderator).await.unwrap().len(), 2);
+        assert_eq!(repo.list_by_role(Role::User).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

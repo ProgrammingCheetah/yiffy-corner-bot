@@ -85,4 +85,7 @@ pub trait UserRepository: Send + Sync {
         telegram_id: TelegramId,
     ) -> Result<Option<User>, UserRepositoryError>;
     async fn change_role(&self, id: UserId, new_role: Role) -> Result<User, UserRepositoryError>;
+    /// All users with the given role. Used by `/suggest` to fan out the
+    /// moderation DM to every Moderator + Owner.
+    async fn list_by_role(&self, role: Role) -> Result<Vec<User>, UserRepositoryError>;
 }
