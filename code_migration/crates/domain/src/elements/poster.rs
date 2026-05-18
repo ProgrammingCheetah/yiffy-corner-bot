@@ -1,4 +1,4 @@
-use crate::elements::{channel::ChannelId, tag::Tag};
+use crate::elements::{cadence::PostInterval, channel::ChannelId, tag::Tag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosterId(u64);
@@ -15,7 +15,11 @@ impl From<u64> for PosterId {
     }
 }
 
-pub trait Credential: Send + Sync {}
+impl std::fmt::Display for PosterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// A configured posting agent attached to a Channel.
 ///
@@ -27,7 +31,7 @@ pub trait Credential: Send + Sync {}
 /// - Owned by Zuri (only Zuri creates Posters for the MVP).
 /// - Has exactly one Channel.
 /// - Tag subscription is configured by Zuri at creation time.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Poster {
     pub id: PosterId,
     /// A Poster's post always has to have these tags
@@ -35,7 +39,15 @@ pub struct Poster {
     /// A Poster's post can't have any of these tags
     pub forbidden_tags: Vec<Tag>,
     /// At what interval to post
-    pub time_interval: chrono::Duration,
+    pub time_interval: PostInterval,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PosterRepositoryError {
+    #[error("Poster could not be created: {0}")]
+    NotCreated(String),
+    #[error("Poster not found: {0}")]
+    NotFound(PosterId),
 }
 
 /// Persistence port for [`Poster`]s.
@@ -46,9 +58,8 @@ pub trait PosterRepository: Send + Sync {
         for_channel: ChannelId,
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
-        time_interval: chrono::Duration,
+        time_interval: PostInterval,
     ) -> Result<Poster, Self::Err>;
     fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err>;
     fn list_all(&self) -> Result<Vec<Poster>, Self::Err>;
-    fn find_ready_to_post(&self) -> Result<Vec<Poster>, Self::Err>;
 }
