@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 async-trait.workspace = true
+chrono.workspace = true
 domain.workspace = true
-tokio = { version = "1.52.2", features = ["sync", "macros"] }
+tokio = { version = "1.52.2", features = ["sync", "macros", "rt"] }
 uuid.workspace = true
+
+[dev-dependencies]
+url.workspace = true
