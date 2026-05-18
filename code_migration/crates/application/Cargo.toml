@@ -1,0 +1,16 @@
+[package]
+name = "application"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+domain.workspace = true
+teloxide = "0.17.0"
+thiserror.workspace = true
+tokio = { version = "1.52.2", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+async-trait.workspace = true
+persistence = { path = "../persistence" }
+tokio = { version = "1.52.2", features = ["macros", "rt"] }

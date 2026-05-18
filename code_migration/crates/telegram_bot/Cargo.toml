@@ -1,0 +1,11 @@
+[package]
+name = "telegram_bot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+application = { version = "0.1.0", path = "../application" }
+axum = "0.8.9"
+domain.workspace = true
+persistence = { version = "0.1.0", path = "../persistence" }
+tokio = { version = "1.52.2", features = ["macros", "rt-multi-thread", "net"] }
