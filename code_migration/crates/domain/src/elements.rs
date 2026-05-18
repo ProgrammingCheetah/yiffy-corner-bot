@@ -1,8 +1,10 @@
 pub mod cadence;
+pub mod e621;
 pub mod post;
 pub mod poster;
 pub mod publisher;
 pub mod publisher_config;
 pub mod tag;
 pub mod tag_policy;
+pub mod telegram;
 pub mod user;
