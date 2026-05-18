@@ -1,3 +1,5 @@
+mod publishers;
+
 use axum::Router;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;

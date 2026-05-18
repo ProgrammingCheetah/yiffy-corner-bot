@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 application = { version = "0.1.0", path = "../application" }
+async-trait.workspace = true
 axum = "0.8.9"
 domain.workspace = true
 persistence = { version = "0.1.0", path = "../persistence" }
+teloxide = "0.17.0"
 tokio = { version = "1.52.2", features = ["macros", "rt-multi-thread", "net"] }
+tracing = "0.1.44"
