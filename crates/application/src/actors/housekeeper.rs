@@ -41,11 +41,16 @@ pub struct SweepOutcome {
     pub hashes_backfilled: usize,
 }
 
+/// `pace` is slept between entries. The e621 and FA clients pace themselves,
+/// but the FixUp resolver and the backfill's raw image downloads don't —
+/// per-entry pacing keeps the whole sweep polite to every backend at once.
+/// Background job: a slow sweep costs nothing on a 6-hour cadence.
 pub async fn run_sweep<R, PR, H>(
     posts: &R,
     posters: &PR,
     resolver: &dyn MediaResolver,
     hasher: &H,
+    pace: std::time::Duration,
 ) -> Result<SweepOutcome, String>
 where
     R: PostRepository,
@@ -78,7 +83,11 @@ where
         scanned: entries.len(),
         ..Default::default()
     };
+    let mut first = true;
     for entry in entries {
+        if !std::mem::take(&mut first) {
+            tokio::time::sleep(pace).await;
+        }
         let media = match resolver.resolve(&entry.source).await {
             Ok(media) => media,
             Err(MediaResolveError::NotFound(_)) => {
@@ -206,9 +215,15 @@ mod tests {
             gone: [gone.source.as_ref().to_string()].into(),
             flaky: [flaky.source.as_ref().to_string()].into(),
         };
-        let outcome = run_sweep(&posts, &posters, &resolver, &StubHasher(HashMap::new()))
-            .await
-            .unwrap();
+        let outcome = run_sweep(
+            &posts,
+            &posters,
+            &resolver,
+            &StubHasher(HashMap::new()),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.scanned, 3);
         assert_eq!(
             outcome.dead,
@@ -234,9 +249,15 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        let outcome = run_sweep(&posts, &posters, &StubResolver::default(), &hasher)
-            .await
-            .unwrap();
+        let outcome = run_sweep(
+            &posts,
+            &posters,
+            &StubResolver::default(),
+            &hasher,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.hashes_backfilled, 1);
         let stored = posts.find_by_id(entry.id).await.unwrap().unwrap();
         assert_eq!(stored.phash, Some(0xABCD));
@@ -263,9 +284,15 @@ mod tests {
             gone: [consumed.source.as_ref().to_string()].into(),
             flaky: HashSet::new(),
         };
-        let outcome = run_sweep(&posts, &posters, &resolver, &StubHasher(HashMap::new()))
-            .await
-            .unwrap();
+        let outcome = run_sweep(
+            &posts,
+            &posters,
+            &resolver,
+            &StubHasher(HashMap::new()),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
         // The consumed (and now dead) entry is history — not reported.
         assert_eq!(outcome.scanned, 1);
         assert!(outcome.dead.is_empty());

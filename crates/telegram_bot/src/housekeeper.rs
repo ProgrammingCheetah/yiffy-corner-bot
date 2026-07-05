@@ -11,6 +11,9 @@ use crate::state::SharedState;
 /// First sweep shortly after boot (let the stack settle), then every 6 h.
 const FIRST_SWEEP_AFTER: Duration = Duration::from_secs(15 * 60);
 const SWEEP_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// Between entries: throttles the unpaced backends (FixUp, raw image
+/// downloads) and keeps the sweep from monopolizing the shared e621 pacer.
+const SWEEP_PACE: Duration = Duration::from_secs(2);
 
 pub async fn run(state: SharedState, bot: Bot) {
     tokio::time::sleep(FIRST_SWEEP_AFTER).await;
@@ -23,6 +26,7 @@ pub async fn run(state: SharedState, bot: Bot) {
             &state.posters,
             &*state.resolver,
             &*state.hasher,
+            SWEEP_PACE,
         )
         .await
         {
