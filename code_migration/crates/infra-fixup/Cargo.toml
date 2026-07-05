@@ -1,0 +1,17 @@
+[package]
+name = "infra-fixup"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait.workspace = true
+domain.workspace = true
+regex = "1.12.4"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["macros", "rt"] }
