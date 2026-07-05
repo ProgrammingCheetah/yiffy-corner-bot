@@ -34,6 +34,7 @@ impl PosterRepository for InMemoryPosterRepository {
         subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
+        cursor: u64,
     ) -> Result<Poster, Self::Err> {
         let mut posters = self.posters.write().await;
         let raw_id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -42,7 +43,7 @@ impl PosterRepository for InMemoryPosterRepository {
             subscribed_tags,
             forbidden_tags,
             time_interval,
-            cursor: 0,
+            cursor,
             rules: Vec::new(),
         };
         posters.insert(raw_id, poster.clone());
@@ -125,7 +126,7 @@ mod tests {
     async fn create_then_find_by_id_roundtrip() {
         let repo = InMemoryPosterRepository::new();
         let poster = repo
-            .create(vec![], vec![], fixture_interval())
+            .create(vec![], vec![], fixture_interval(), 0)
             .await
             .unwrap();
         let found = repo.find_by_id(poster.id).await.unwrap();
@@ -136,11 +137,11 @@ mod tests {
     async fn create_assigns_unique_ids() {
         let repo = InMemoryPosterRepository::new();
         let a = repo
-            .create(vec![], vec![], fixture_interval())
+            .create(vec![], vec![], fixture_interval(), 0)
             .await
             .unwrap();
         let b = repo
-            .create(vec![], vec![], fixture_interval())
+            .create(vec![], vec![], fixture_interval(), 0)
             .await
             .unwrap();
         assert_ne!(a.id, b.id);
@@ -156,7 +157,7 @@ mod tests {
     async fn list_all_returns_every_created_poster() {
         let repo = InMemoryPosterRepository::new();
         for _ in 0..3 {
-            repo.create(vec![], vec![], fixture_interval())
+            repo.create(vec![], vec![], fixture_interval(), 0)
                 .await
                 .unwrap();
         }
@@ -167,7 +168,7 @@ mod tests {
     async fn set_tags_replaces_subscription_only() {
         let repo = InMemoryPosterRepository::new();
         let poster = repo
-            .create(vec![Tag::from("fox").into()], vec![], fixture_interval())
+            .create(vec![Tag::from("fox").into()], vec![], fixture_interval(), 0)
             .await
             .unwrap();
         let updated = repo
@@ -193,7 +194,7 @@ mod tests {
     async fn set_cursor_persists() {
         let repo = InMemoryPosterRepository::new();
         let poster = repo
-            .create(vec![], vec![], fixture_interval())
+            .create(vec![], vec![], fixture_interval(), 0)
             .await
             .unwrap();
         assert_eq!(poster.cursor, 0);
@@ -215,7 +216,7 @@ mod tests {
         let forbidden = vec![Tag::from("snake")];
         let interval = PostInterval::new(15).unwrap();
         let poster = repo
-            .create(subscribed.clone(), forbidden.clone(), interval)
+            .create(subscribed.clone(), forbidden.clone(), interval, 0)
             .await
             .unwrap();
         let found = repo.find_by_id(poster.id).await.unwrap().unwrap();

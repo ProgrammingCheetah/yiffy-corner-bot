@@ -618,6 +618,7 @@ async fn create_poster(
         &state.app.users,
         &state.app.posters,
         &state.app.publisher_configs,
+        &state.app.posts,
     )
     .await
     .map_err(bad_request)?;

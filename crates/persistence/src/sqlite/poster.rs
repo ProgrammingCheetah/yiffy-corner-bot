@@ -64,14 +64,16 @@ impl PosterRepository for SqlitePosterRepository {
         subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
+        cursor: u64,
     ) -> Result<Poster, Self::Err> {
         let row = sqlx::query(
-            "INSERT INTO posters (subscribed_tags, forbidden_tags, time_interval)
-             VALUES (?, ?, ?) RETURNING *",
+            "INSERT INTO posters (subscribed_tags, forbidden_tags, time_interval, cursor)
+             VALUES (?, ?, ?, ?) RETURNING *",
         )
         .bind(join_terms(&subscribed_tags))
         .bind(join_tags(&forbidden_tags))
         .bind(*time_interval.as_ref() as i64)
+        .bind(cursor as i64)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?;

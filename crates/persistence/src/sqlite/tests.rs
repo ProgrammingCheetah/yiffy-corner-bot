@@ -333,7 +333,7 @@ mod posts {
     async fn poster_cursor_roundtrip() {
         let repo = SqlitePosterRepository::new(test_pool().await);
         let poster = repo
-            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .create(vec![], vec![], PostInterval::new(5).unwrap(), 0)
             .await
             .unwrap();
         assert_eq!(poster.cursor, 0);
@@ -404,6 +404,7 @@ mod posters {
                 vec![Tag::from("wolf").into(), Tag::from("male").into()],
                 vec![Tag::from("gore")],
                 PostInterval::new(15).unwrap(),
+                0,
             )
             .await
             .unwrap();
@@ -421,7 +422,7 @@ mod posters {
     async fn empty_tag_lists_roundtrip() {
         let repo = SqlitePosterRepository::new(test_pool().await);
         let poster = repo
-            .create(vec![], vec![], PostInterval::new(60).unwrap())
+            .create(vec![], vec![], PostInterval::new(60).unwrap(), 0)
             .await
             .unwrap();
         let stored = repo.find_by_id(poster.id).await.unwrap().unwrap();
@@ -437,6 +438,7 @@ mod posters {
                 vec![Tag::from("fox").into()],
                 vec![],
                 PostInterval::new(5).unwrap(),
+                0,
             )
             .await
             .unwrap();
@@ -459,7 +461,7 @@ mod posters {
         let repo = SqlitePosterRepository::new(test_pool().await);
         let terms = TagTerm::parse_list("male (gay bisexual)").unwrap();
         let poster = repo
-            .create(terms.clone(), vec![], PostInterval::new(5).unwrap())
+            .create(terms.clone(), vec![], PostInterval::new(5).unwrap(), 0)
             .await
             .unwrap();
         let stored = repo.find_by_id(poster.id).await.unwrap().unwrap();
@@ -472,7 +474,7 @@ mod posters {
 
         let repo = SqlitePosterRepository::new(test_pool().await);
         let poster = repo
-            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .create(vec![], vec![], PostInterval::new(5).unwrap(), 0)
             .await
             .unwrap();
         assert!(poster.rules.is_empty());
@@ -492,10 +494,10 @@ mod posters {
     #[tokio::test]
     async fn list_all_returns_every_poster() {
         let repo = SqlitePosterRepository::new(test_pool().await);
-        repo.create(vec![], vec![], PostInterval::new(5).unwrap())
+        repo.create(vec![], vec![], PostInterval::new(5).unwrap(), 0)
             .await
             .unwrap();
-        repo.create(vec![], vec![], PostInterval::new(10).unwrap())
+        repo.create(vec![], vec![], PostInterval::new(10).unwrap(), 0)
             .await
             .unwrap();
         assert_eq!(repo.list_all().await.unwrap().len(), 2);
@@ -510,7 +512,7 @@ mod publisher_configs {
         let pool = test_pool().await;
         let posters = SqlitePosterRepository::new(pool.clone());
         let poster = posters
-            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .create(vec![], vec![], PostInterval::new(5).unwrap(), 0)
             .await
             .unwrap();
 
@@ -544,7 +546,7 @@ mod publisher_configs {
         let pool = test_pool().await;
         let posters = SqlitePosterRepository::new(pool.clone());
         let poster = posters
-            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .create(vec![], vec![], PostInterval::new(5).unwrap(), 0)
             .await
             .unwrap();
         let repo = SqlitePublisherConfigRepository::new(pool);

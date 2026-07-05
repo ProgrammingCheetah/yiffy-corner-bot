@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use domain::elements::{
     cadence::PostInterval,
+    post::PostRepository,
     poster::{Poster, PosterId, PosterRepository},
     publisher_config::{PublisherConfig, PublisherConfigRepository},
     tag::Tag,
@@ -32,19 +33,32 @@ pub struct NewPoster {
     pub token_path: PathBuf,
 }
 
-pub async fn new_poster<P, C>(
+pub async fn new_poster<P, C, R>(
     cmd: NewPoster,
     users: &impl UserRepository,
     posters: &P,
     configs: &C,
+    posts: &R,
 ) -> HandlerResult<Poster>
 where
     P: PosterRepository,
     C: PublisherConfigRepository,
+    R: PostRepository,
 {
     require_role(users, cmd.actor, Role::Owner).await?;
+    // Born at the feed end: a fresh consumer only picks up entries accepted
+    // after its creation instead of replaying the whole backlog.
+    let feed_end = posts
+        .feed_end()
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
     let poster = posters
-        .create(cmd.subscribed_tags, cmd.forbidden_tags, cmd.interval)
+        .create(
+            cmd.subscribed_tags,
+            cmd.forbidden_tags,
+            cmd.interval,
+            feed_end,
+        )
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     configs
@@ -63,7 +77,8 @@ where
         subscribed = ?poster.subscribed_tags,
         forbidden = ?poster.forbidden_tags,
         chat_id = cmd.chat_id,
-        "poster created and bound"
+        cursor = poster.cursor,
+        "poster created and bound at the feed end"
     );
     Ok(poster)
 }
@@ -262,14 +277,15 @@ mod tests {
     use super::*;
 
     use persistence::in_memory::{
-        poster::InMemoryPosterRepository, publisher_config::InMemoryPublisherConfigRepository,
-        user::InMemoryUserRepository,
+        post::InMemoryPostRepository, poster::InMemoryPosterRepository,
+        publisher_config::InMemoryPublisherConfigRepository, user::InMemoryUserRepository,
     };
 
     struct Fixture {
         users: InMemoryUserRepository,
         posters: InMemoryPosterRepository,
         configs: InMemoryPublisherConfigRepository,
+        posts: InMemoryPostRepository,
     }
 
     async fn fixture() -> Fixture {
@@ -286,6 +302,7 @@ mod tests {
             users,
             posters: InMemoryPosterRepository::new(),
             configs: InMemoryPublisherConfigRepository::new(),
+            posts: InMemoryPostRepository::new(),
         }
     }
 
@@ -303,9 +320,15 @@ mod tests {
     #[tokio::test]
     async fn owner_creates_poster() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap();
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
         assert_eq!(poster.subscribed_tags, vec![Tag::from("wolf").into()]);
         let stored = fx.posters.find_by_id(poster.id).await.unwrap();
         assert!(stored.is_some());
@@ -315,20 +338,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_poster_starts_at_the_feed_end() {
+        use domain::elements::post::{PostStatus, Source};
+
+        let fx = fixture().await;
+        // Two accepted posts already in the feed → end = 2.
+        for i in 1..=2u64 {
+            let post = fx
+                .posts
+                .create(
+                    Source::try_from(
+                        url::Url::parse(&format!("https://e621.net/posts/{i}")).unwrap(),
+                    )
+                    .unwrap(),
+                    vec![],
+                    vec![],
+                    None,
+                    chrono::Utc::now(),
+                    PostStatus::AwaitingModeration,
+                )
+                .await
+                .unwrap();
+            fx.posts.accept_into_feed(post.id).await.unwrap();
+        }
+
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
+        // Born at the end: the backlog is skipped, only future entries post.
+        assert_eq!(poster.cursor, 2);
+    }
+
+    #[tokio::test]
     async fn moderator_cannot_create_poster() {
         let fx = fixture().await;
-        let err = new_poster(new_poster_cmd(2), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap_err();
+        let err = new_poster(
+            new_poster_cmd(2),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, HandlerError::NotAuthorized(_)));
     }
 
     #[tokio::test]
     async fn owner_replaces_poster_tags() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap();
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
         let updated = set_tags(
             SetTags {
                 actor: TelegramId::from(1),
@@ -347,9 +420,15 @@ mod tests {
     #[tokio::test]
     async fn moderator_cannot_replace_poster_tags() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap();
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
         let err = set_tags(
             SetTags {
                 actor: TelegramId::from(2),
@@ -368,9 +447,15 @@ mod tests {
     #[tokio::test]
     async fn set_channel_binds_existing_poster() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap();
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
         set_channel(
             SetChannel {
                 actor: TelegramId::from(1),
@@ -392,9 +477,15 @@ mod tests {
     #[tokio::test]
     async fn owner_deletes_poster_and_binding() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap();
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
         set_channel(
             SetChannel {
                 actor: TelegramId::from(1),
@@ -431,9 +522,15 @@ mod tests {
     #[tokio::test]
     async fn moderator_cannot_delete_poster() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
-            .await
-            .unwrap();
+        let poster = new_poster(
+            new_poster_cmd(1),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
         let err = delete_poster(
             TelegramId::from(2),
             poster.id,

@@ -46,7 +46,8 @@ pub struct Poster {
     /// At what interval to post
     pub time_interval: PostInterval,
     /// The consumer's position in the feed: the highest `feed_position` this
-    /// Poster has already consumed or scanned past. Starts at 0 (feed start).
+    /// Poster has already consumed or scanned past. New Posters are born at
+    /// the feed end (creation snapshots it) so they never replay the backlog.
     pub cursor: u64,
     /// Conditional eligibility rules (see [`TagRule`]) — e.g. a straight
     /// channel's `[solo]->[-male]`. All rules must pass.
@@ -65,11 +66,15 @@ pub enum PosterRepositoryError {
 #[async_trait::async_trait]
 pub trait PosterRepository: Send + Sync {
     type Err;
+    /// Create a Poster. `cursor` is where this consumer starts in the feed —
+    /// callers pass the current feed end so a fresh Poster only picks up
+    /// entries accepted after its creation (0 replays the whole feed).
     async fn create(
         &self,
         subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
+        cursor: u64,
     ) -> Result<Poster, Self::Err>;
     async fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err>;
     /// Replace the tag subscription. Cadence and channel binding stay put.

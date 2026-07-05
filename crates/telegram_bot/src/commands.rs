@@ -2133,6 +2133,7 @@ async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg
         &state.users,
         &state.posters,
         &state.publisher_configs,
+        &state.posts,
     )
     .await
     {

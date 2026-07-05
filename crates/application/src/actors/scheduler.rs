@@ -572,7 +572,7 @@ mod tests {
 
         async fn poster(&self) -> domain::elements::poster::PosterId {
             self.posters
-                .create(vec![], vec![], PostInterval::new(5).unwrap())
+                .create(vec![], vec![], PostInterval::new(5).unwrap(), 0)
                 .await
                 .unwrap()
                 .id

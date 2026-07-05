@@ -96,7 +96,9 @@ feed, consumed BSky-style:
   `/browse` save) is assigned the next monotonic `feed_position`. One pool,
   all curated, all tagged.
 - **Consumers**: each Poster stores what it wants to see (tag subscription)
-  and its `cursor`. On each fire it snapshots the feed end, scans
+  and its `cursor`. New Posters are born with their cursor at the current
+  feed end — they only pick up entries curated after their creation, never
+  replaying the backlog. On each fire a Poster snapshots the feed end, scans
   `(cursor, end]` in order, posts the first tag-match, and sets its cursor to
   the match — or to the *pre-scan* snapshot end when nothing matched, so an
   entry appended mid-scan is never skipped. Cursor advances only after a
