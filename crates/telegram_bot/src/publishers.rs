@@ -30,11 +30,18 @@ use crate::state::read_secret;
 pub struct TelegramPublisher {
     bot: Bot,
     chat_id: ChatId,
+    /// The channel's public @handle (without `@`), appended as the caption's
+    /// last line on every publish — channel self-branding.
+    channel_handle: Option<String>,
 }
 
 impl TelegramPublisher {
-    pub fn new(bot: Bot, chat_id: ChatId) -> Self {
-        Self { bot, chat_id }
+    pub fn new(bot: Bot, chat_id: ChatId, channel_handle: Option<String>) -> Self {
+        Self {
+            bot,
+            chat_id,
+            channel_handle,
+        }
     }
 
     /// Link-embed send: HTML caption as the text, preview forced onto `url`.
@@ -71,6 +78,16 @@ impl Publisher for TelegramPublisher {
             chat = self.chat_id.0, media = ?item.media, "sending publish message"
         );
         let send = |e: teloxide::RequestError| PublisherError::Send(e.to_string());
+        // Channel self-branding: the @handle closes every caption.
+        let caption = match (&item.caption, &self.channel_handle) {
+            (Some(caption), Some(handle)) => Some(format!("{caption}\n\n@{handle}")),
+            (None, Some(handle)) => Some(format!("@{handle}")),
+            (caption, None) => caption.clone(),
+        };
+        let item = &PublishItem {
+            caption,
+            ..item.clone()
+        };
         let message_id = match &item.media {
             ResolvedMedia::Photo(url) => {
                 let mut request = self
@@ -184,6 +201,9 @@ pub struct DbPublisherFactory {
     main_bot: Bot,
     main_token: String,
     bots: tokio::sync::Mutex<HashMap<String, Bot>>,
+    /// chat id → resolved public @handle (None = private / no handle).
+    /// Resolved once per chat per process.
+    handles: tokio::sync::Mutex<HashMap<i64, Option<String>>>,
 }
 
 impl DbPublisherFactory {
@@ -197,7 +217,23 @@ impl DbPublisherFactory {
             main_bot,
             main_token,
             bots: tokio::sync::Mutex::new(HashMap::new()),
+            handles: tokio::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    async fn channel_handle(&self, bot: &Bot, chat_id: i64) -> Option<String> {
+        if let Some(cached) = self.handles.lock().await.get(&chat_id) {
+            return cached.clone();
+        }
+        let handle = match bot.get_chat(ChatId(chat_id)).await {
+            Ok(chat) => chat.username().map(ToString::to_string),
+            Err(e) => {
+                tracing::debug!(chat_id, error = %e, "channel handle resolution failed");
+                return None; // not cached: retry next fire
+            }
+        };
+        self.handles.lock().await.insert(chat_id, handle.clone());
+        handle
     }
 }
 
@@ -221,9 +257,11 @@ impl application::actors::scheduler::PublisherFactory for DbPublisherFactory {
                 .or_insert_with(|| Bot::new(token))
                 .clone()
         };
+        let handle = self.channel_handle(&bot, config.chat_id).await;
         Ok(Some(Box::new(TelegramPublisher::new(
             bot,
             ChatId(config.chat_id),
+            handle,
         ))))
     }
 }
