@@ -100,6 +100,14 @@ pub enum Command {
         description = "conditional tag rules: /setrules <poster|@channel|chat-id> [if…]->[then…] … (owner)"
     )]
     Setrules(String),
+    #[command(
+        description = "append rules without rewriting: /addrules <poster|@channel|chat-id> [if…]->[then…] … (owner)"
+    )]
+    Addrules(String),
+    #[command(
+        description = "delete rules by number from /posters: /delrules <poster|@channel|chat-id> <n…> (owner)"
+    )]
+    Delrules(String),
     #[command(description = "delete a poster: /delposter <poster-id> (owner)")]
     Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
@@ -148,6 +156,8 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Deltags(_) => "deltags",
         Command::Setinterval(_) => "setinterval",
         Command::Setrules(_) => "setrules",
+        Command::Addrules(_) => "addrules",
+        Command::Delrules(_) => "delrules",
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
         Command::Announcements(_) => "announcements",
@@ -464,6 +474,8 @@ pub async fn handle_command(
         Command::Deltags(arg) => handle_edit_tags(&bot, &state, actor, &arg, TagEdit::Remove).await,
         Command::Setinterval(arg) => handle_setinterval(&bot, &state, actor, &arg).await,
         Command::Setrules(arg) => handle_setrules(&bot, &state, actor, &arg).await,
+        Command::Addrules(arg) => handle_addrules(&bot, &state, actor, &arg).await,
+        Command::Delrules(arg) => handle_delrules(&bot, &state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
@@ -1458,7 +1470,7 @@ async fn poster_summary(
     }
     if !poster.rules.is_empty() {
         lines.push("📐 Rules:".to_string());
-        for rule in &poster.rules {
+        for (index, rule) in poster.rules.iter().enumerate() {
             let side = |terms: &[domain::elements::tag_rule::TagTerm]| {
                 terms
                     .iter()
@@ -1467,7 +1479,8 @@ async fn poster_summary(
                     .join(" ")
             };
             lines.push(format!(
-                "  • [{}] → [{}]",
+                "  {}. [{}] → [{}]",
+                index + 1,
                 side(&rule.if_all),
                 side(&rule.then_all)
             ));
@@ -1677,7 +1690,8 @@ async fn handle_setrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg:
     let Some(target) = arg.split_whitespace().next() else {
         return "Usage: /setrules <poster|@channel|chat-id> [if-tags…]->[then-tags…] …\n\
                 Example: /setrules @straightchannel [solo]->[-male]\n\
-                `-tag` means the tag must be absent. No rules = clear all rules."
+                `-tag` means the tag must be absent. No rules = clear all rules.\n\
+                To change a few without rewriting: /addrules and /delrules <n>."
             .to_string();
     };
     let poster_ids = match resolve_posters(bot, state, target).await {
@@ -1703,6 +1717,133 @@ async fn handle_setrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg:
                 .push(poster_summary(state, &poster, "rules cleared, live within a minute").await),
             Ok(poster) => lines
                 .push(poster_summary(state, &poster, "rules updated, live within a minute").await),
+            Err(e) => lines.push(describe(e)),
+        }
+    }
+    lines.join("\n\n")
+}
+
+async fn handle_addrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use domain::elements::poster::PosterRepository as _;
+    use domain::elements::tag_rule::TagRule;
+
+    let arg = arg.trim();
+    let Some(target) = arg.split_whitespace().next() else {
+        return "Usage: /addrules <poster|@channel|chat-id> [if-tags…]->[then-tags…] …\n\
+                Appends to the existing rules; /delrules removes by number."
+            .to_string();
+    };
+    let poster_ids = match resolve_posters(bot, state, target).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
+    let added = match TagRule::parse_all(&arg[target.len()..]) {
+        Ok(rules) if rules.is_empty() => return "List at least one [if]->[then] rule.".to_string(),
+        Ok(rules) => rules,
+        Err(e) => return format!("Bad rule syntax: {e}"),
+    };
+    let mut lines = Vec::new();
+    for poster_id in poster_ids {
+        let poster = match state.posters.find_by_id(poster_id).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                lines.push(format!("Poster #{poster_id} does not exist."));
+                continue;
+            }
+            Err(e) => {
+                lines.push(e.to_string());
+                continue;
+            }
+        };
+        let mut rules = poster.rules.clone();
+        let mut already = Vec::new();
+        for rule in &added {
+            if rules.contains(rule) {
+                already.push(rule.to_string());
+            } else {
+                rules.push(rule.clone());
+            }
+        }
+        match manage_poster::set_rules(actor, poster_id, rules, &state.users, &state.posters).await
+        {
+            Ok(poster) => {
+                let mut block =
+                    poster_summary(state, &poster, "rules updated, live within a minute").await;
+                if !already.is_empty() {
+                    block.push_str(&format!("\n⚠️ already there: {}", already.join(" ")));
+                }
+                lines.push(block);
+            }
+            Err(e) => lines.push(describe(e)),
+        }
+    }
+    lines.join("\n\n")
+}
+
+async fn handle_delrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use domain::elements::poster::PosterRepository as _;
+
+    let mut parts = arg.split_whitespace();
+    let Some(target) = parts.next() else {
+        return "Usage: /delrules <poster|@channel|chat-id> <n…>\n\
+                Numbers as shown by /posters (1 = first rule)."
+            .to_string();
+    };
+    let poster_ids = match resolve_posters(bot, state, target).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
+    let mut indices: Vec<usize> = Vec::new();
+    for raw in parts {
+        match raw.parse::<usize>() {
+            Ok(n) if n >= 1 => indices.push(n),
+            _ => return format!("'{raw}' is not a rule number (1 = first rule)."),
+        }
+    }
+    if indices.is_empty() {
+        return "Which rule? Give its number as shown by /posters (1 = first rule).".to_string();
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    let mut lines = Vec::new();
+    for poster_id in poster_ids {
+        let poster = match state.posters.find_by_id(poster_id).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                lines.push(format!("Poster #{poster_id} does not exist."));
+                continue;
+            }
+            Err(e) => {
+                lines.push(e.to_string());
+                continue;
+            }
+        };
+        let out_of_range: Vec<String> = indices
+            .iter()
+            .filter(|n| **n > poster.rules.len())
+            .map(ToString::to_string)
+            .collect();
+        let rules: Vec<_> = poster
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !indices.contains(&(i + 1)))
+            .map(|(_, rule)| rule.clone())
+            .collect();
+        match manage_poster::set_rules(actor, poster_id, rules, &state.users, &state.posters).await
+        {
+            Ok(poster) => {
+                let headline = if poster.rules.is_empty() {
+                    "rules cleared, live within a minute"
+                } else {
+                    "rules updated, live within a minute"
+                };
+                let mut block = poster_summary(state, &poster, headline).await;
+                if !out_of_range.is_empty() {
+                    block.push_str(&format!("\n⚠️ no rule number {}", out_of_range.join(", ")));
+                }
+                lines.push(block);
+            }
             Err(e) => lines.push(describe(e)),
         }
     }
