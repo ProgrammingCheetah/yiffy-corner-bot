@@ -82,6 +82,7 @@ vocabulary! {
         // Posters
         PosterCreated => "poster_created",
         PosterTagsChanged => "poster_tags_changed",
+        PosterIntervalChanged => "poster_interval_changed",
         PosterDeleted => "poster_deleted",
         ChannelBound => "channel_bound",
 

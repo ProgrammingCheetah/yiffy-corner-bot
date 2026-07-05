@@ -92,6 +92,21 @@ impl PosterRepository for SqlitePosterRepository {
         row_to_poster(&row)
     }
 
+    async fn set_interval(
+        &self,
+        id: PosterId,
+        interval: PostInterval,
+    ) -> Result<Poster, Self::Err> {
+        let row = sqlx::query("UPDATE posters SET time_interval = ? WHERE id = ? RETURNING *")
+            .bind(*interval.as_ref() as i64)
+            .bind(*id.as_ref() as i64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?
+            .ok_or(PosterRepositoryError::NotFound(id))?;
+        row_to_poster(&row)
+    }
+
     async fn delete(&self, id: PosterId) -> Result<(), Self::Err> {
         let result = sqlx::query("DELETE FROM posters WHERE id = ?")
             .bind(*id.as_ref() as i64)

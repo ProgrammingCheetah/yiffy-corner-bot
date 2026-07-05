@@ -71,6 +71,9 @@ pub trait PosterRepository: Send + Sync {
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
     ) -> Result<Poster, Self::Err>;
+    /// Change the posting cadence. Takes effect on the next tick (DB-first).
+    async fn set_interval(&self, id: PosterId, interval: PostInterval)
+    -> Result<Poster, Self::Err>;
     /// Persist the consumer's feed cursor. Written after every successful
     /// consume (or empty scan); read fresh at every fire.
     async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err>;

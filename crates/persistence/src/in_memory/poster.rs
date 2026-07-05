@@ -65,6 +65,19 @@ impl PosterRepository for InMemoryPosterRepository {
         Ok(poster.clone())
     }
 
+    async fn set_interval(
+        &self,
+        id: PosterId,
+        interval: PostInterval,
+    ) -> Result<Poster, Self::Err> {
+        let mut posters = self.posters.write().await;
+        let poster = posters
+            .get_mut(id.as_ref())
+            .ok_or(PosterRepositoryError::NotFound(id))?;
+        poster.time_interval = interval;
+        Ok(poster.clone())
+    }
+
     async fn delete(&self, id: PosterId) -> Result<(), Self::Err> {
         self.posters
             .write()

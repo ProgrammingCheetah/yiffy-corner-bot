@@ -81,9 +81,13 @@ pub enum Command {
     )]
     Setchannel(String),
     #[command(
-        description = "replace a poster's tags: /settags <poster-id> [tags… -forbidden…] (owner)"
+        description = "replace a poster's tags: /settags <poster|@channel|chat-id> [tags… -forbidden…] (owner)"
     )]
     Settags(String),
+    #[command(
+        description = "change a poster's cadence: /setinterval <poster|@channel|chat-id> <minutes> (owner)"
+    )]
+    Setinterval(String),
     #[command(description = "delete a poster: /delposter <poster-id> (owner)")]
     Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
@@ -128,6 +132,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Newposter(_) => "newposter",
         Command::Setchannel(_) => "setchannel",
         Command::Settags(_) => "settags",
+        Command::Setinterval(_) => "setinterval",
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
         Command::Announcements(_) => "announcements",
@@ -451,7 +456,8 @@ pub async fn handle_command(
         Command::Setrole(arg) => handle_setrole(&bot, &state, actor, &arg).await,
         Command::Newposter(arg) => handle_newposter(&bot, &state, actor, &arg).await,
         Command::Setchannel(arg) => handle_setchannel(&bot, &state, actor, &arg).await,
-        Command::Settags(arg) => handle_settags(&state, actor, &arg).await,
+        Command::Settags(arg) => handle_settags(&bot, &state, actor, &arg).await,
+        Command::Setinterval(arg) => handle_setinterval(&bot, &state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
@@ -1237,52 +1243,131 @@ fn parse_tag_lists<'a>(parts: impl Iterator<Item = &'a str>) -> (Vec<Tag>, Vec<T
     (subscribed, forbidden)
 }
 
-async fn handle_settags(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+/// Resolve a poster reference: `#7`/`7` = poster id; `@channel` or a
+/// (negative) chat id = every poster bound to that chat.
+async fn resolve_posters(
+    bot: &Bot,
+    state: &SharedState,
+    token: &str,
+) -> Result<Vec<domain::elements::poster::PosterId>, String> {
+    use domain::elements::poster::PosterId;
+    use domain::elements::publisher_config::PublisherConfigRepository as _;
+
+    if let Ok(id) = token.trim_start_matches('#').parse::<u64>() {
+        return Ok(vec![PosterId::from(id)]);
+    }
+    let chat_id = if let Ok(id) = token.parse::<i64>() {
+        id
+    } else {
+        let resolver = BotUserResolver { bot: bot.clone() };
+        match resolve_target(&resolver, token).await {
+            Ok(Some(id)) => *id.as_ref(),
+            Ok(None) => return Err(format!("Can't resolve {token}.")),
+            Err(e) => return Err(e),
+        }
+    };
+    let posters: Vec<PosterId> = state
+        .publisher_configs
+        .list_all()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|config| config.chat_id == chat_id)
+        .map(|config| config.poster_id)
+        .collect();
+    if posters.is_empty() {
+        return Err(format!("No poster is bound to {token} — see /posters."));
+    }
+    Ok(posters)
+}
+
+async fn handle_setinterval(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+) -> String {
     let mut parts = arg.split_whitespace();
-    let Some(poster_id) = parts
-        .next()
-        .and_then(|v| v.trim_start_matches('#').parse::<u64>().ok())
-        .map(domain::elements::poster::PosterId::from)
-    else {
-        return "Usage: /settags <poster-id> [tags… -forbidden…]\n\
+    let (Some(target), Some(raw_minutes), None) = (parts.next(), parts.next(), parts.next()) else {
+        return "Usage: /setinterval <poster|@channel|chat-id> <minutes>\n\
+                Minutes must divide 60 (1,2,3,4,5,6,10,12,15,20,30,60)."
+            .to_string();
+    };
+    let interval = match raw_minutes.parse::<u8>().map(PostInterval::new) {
+        Ok(Ok(interval)) => interval,
+        Ok(Err(e)) => return e.to_string(),
+        Err(_) => return "Minutes must be a number.".to_string(),
+    };
+    let poster_ids = match resolve_posters(bot, state, target).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
+    let mut lines = Vec::new();
+    for poster_id in poster_ids {
+        match manage_poster::set_interval(actor, poster_id, interval, &state.users, &state.posters)
+            .await
+        {
+            Ok(poster) => lines.push(format!(
+                "Poster #{} now fires every {}min — live within a minute.",
+                poster.id,
+                poster.time_interval.as_ref()
+            )),
+            Err(e) => lines.push(describe(e)),
+        }
+    }
+    lines.join("\n")
+}
+
+async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    let mut parts = arg.split_whitespace();
+    let Some(target) = parts.next() else {
+        return "Usage: /settags <poster|@channel|chat-id> [tags… -forbidden…]\n\
                 No tags = post anything (subscription filter removed)."
             .to_string();
     };
+    let poster_ids = match resolve_posters(bot, state, target).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
     let (subscribed, forbidden) = parse_tag_lists(parts);
-    match manage_poster::set_tags(
-        manage_poster::SetTags {
-            actor,
-            poster_id,
-            subscribed_tags: subscribed,
-            forbidden_tags: forbidden,
-        },
-        &state.users,
-        &state.posters,
-    )
-    .await
-    {
-        Ok(poster) if poster.subscribed_tags.is_empty() => format!(
-            "Poster #{} now posts ANYTHING (no subscription filter) — live within a minute.",
-            poster.id
-        ),
-        Ok(poster) => format!(
-            "Poster #{} now subscribes to [{}] minus [{}] — live within a minute.",
-            poster.id,
-            poster
-                .subscribed_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-            poster
-                .forbidden_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
-        Err(e) => describe(e),
+    let mut lines = Vec::new();
+    for poster_id in poster_ids {
+        match manage_poster::set_tags(
+            manage_poster::SetTags {
+                actor,
+                poster_id,
+                subscribed_tags: subscribed.clone(),
+                forbidden_tags: forbidden.clone(),
+            },
+            &state.users,
+            &state.posters,
+        )
+        .await
+        {
+            Ok(poster) if poster.subscribed_tags.is_empty() => lines.push(format!(
+                "Poster #{} now posts ANYTHING (no subscription filter) — live within a minute.",
+                poster.id
+            )),
+            Ok(poster) => lines.push(format!(
+                "Poster #{} now subscribes to [{}] minus [{}] — live within a minute.",
+                poster.id,
+                poster
+                    .subscribed_tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                poster
+                    .forbidden_tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )),
+            Err(e) => lines.push(describe(e)),
+        }
     }
+    lines.join("\n")
 }
 
 async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
