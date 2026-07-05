@@ -15,6 +15,7 @@ hmac = "0.13.0"
 infra-e621 = { version = "0.1.0", path = "../infra-e621" }
 infra-fixup = { version = "0.1.0", path = "../infra-fixup" }
 infra-furaffinity = { version = "0.1.0", path = "../infra-furaffinity" }
+infra-phash = { version = "0.1.0", path = "../infra-phash" }
 persistence = { version = "0.1.0", path = "../persistence" }
 serde = "1.0.228"
 serde_json = "1.0.150"

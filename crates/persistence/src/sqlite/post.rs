@@ -53,6 +53,7 @@ fn row_to_post(row: &sqlx::sqlite::SqliteRow) -> Result<Post, PostRepositoryErro
             .get::<Option<i64>, _>("moderated_by")
             .map(|id| UserId::from(id as u64)),
         moderated_at: row.get::<Option<DateTime<Utc>>, _>("moderated_at"),
+        phash: row.get::<Option<i64>, _>("phash").map(|h| h as u64),
     })
 }
 
@@ -140,8 +141,10 @@ impl PostRepository for SqlitePostRepository {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
+        // The media may have changed with the resubmission: the stale hash
+        // is cleared and recomputed by the submission pipeline.
         let row = sqlx::query(
-            "UPDATE posts SET tags = ?, artists = ?, submitted_at = ?, status = ?
+            "UPDATE posts SET tags = ?, artists = ?, submitted_at = ?, status = ?, phash = NULL
              WHERE id = ? RETURNING *",
         )
         .bind(join(&tags))
@@ -190,6 +193,35 @@ impl PostRepository for SqlitePostRepository {
             .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?
             .ok_or(PostRepositoryError::NotFound(id))?;
         row_to_post(&row)
+    }
+
+    async fn set_phash(&self, id: PostId, phash: Option<u64>) -> Result<(), Self::Err> {
+        let result = sqlx::query("UPDATE posts SET phash = ? WHERE id = ?")
+            .bind(phash.map(|h| h as i64))
+            .bind(*id.as_ref() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(PostRepositoryError::NotFound(id));
+        }
+        Ok(())
+    }
+
+    async fn list_phashes(&self) -> Result<Vec<(PostId, u64)>, Self::Err> {
+        let rows = sqlx::query("SELECT id, phash FROM posts WHERE phash IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    PostId::from(row.get::<i64, _>("id") as u64),
+                    row.get::<i64, _>("phash") as u64,
+                )
+            })
+            .collect())
     }
 
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {

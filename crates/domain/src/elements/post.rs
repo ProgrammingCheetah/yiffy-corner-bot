@@ -226,6 +226,9 @@ pub struct Post {
     /// takedown). Audit trail for `/postinfo`.
     pub moderated_by: Option<UserId>,
     pub moderated_at: Option<DateTime<Utc>>,
+    /// 64-bit dHash of the resolved media (see `elements::phash`). `None`
+    /// until computed, and stays `None` for non-image media.
+    pub phash: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -285,6 +288,12 @@ pub trait PostRepository: Send + Sync {
         by: UserId,
         at: DateTime<Utc>,
     ) -> Result<(), Self::Err>;
+    /// Store the perceptual hash of this Post's media (or clear it back to
+    /// unknown with `None` when the media changed).
+    async fn set_phash(&self, id: PostId, phash: Option<u64>) -> Result<(), Self::Err>;
+    /// Every stored `(post, phash)` pair — the duplicate-check corpus.
+    /// Curation scale (thousands), so a full scan per submission is fine.
+    async fn list_phashes(&self) -> Result<Vec<(PostId, u64)>, Self::Err>;
     /// Record that `id` was just published at `at`. Updates `last_posted`.
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
     /// All Posts currently in `status`, ordered oldest-submitted first.

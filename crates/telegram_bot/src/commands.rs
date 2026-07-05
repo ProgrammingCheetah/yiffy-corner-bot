@@ -701,7 +701,7 @@ pub(crate) async fn submit(
             } else {
                 "New submission"
             };
-            let text = format!(
+            let mut text = format!(
                 "{header} #{}\n{origin_line}\nTags: {tag_line}\nSubmitted by {submitter_contact}",
                 post.id
             );
@@ -723,6 +723,28 @@ pub(crate) async fn submit(
                     }
                 }
             };
+            // Duplicate resistance: hash the resolved image and warn the
+            // reviewers when it reads as something already curated.
+            if let Some(media) = &review_media {
+                if let Some(similar) = application::commands::phash_check::hash_and_check(
+                    post.id,
+                    media,
+                    &*state.hasher,
+                    &state.posts,
+                )
+                .await
+                {
+                    text.push_str(&format!(
+                        "\n⚠️ Looks like post #{} ({})",
+                        similar.post_id,
+                        if similar.distance == 0 {
+                            "identical image".to_string()
+                        } else {
+                            format!("distance {}", similar.distance)
+                        }
+                    ));
+                }
+            }
             for reviewer in &reviewers {
                 use domain::elements::media::ResolvedMedia;
                 use teloxide::types::InputFile;

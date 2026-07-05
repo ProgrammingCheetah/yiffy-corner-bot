@@ -51,6 +51,7 @@ impl PostRepository for InMemoryPostRepository {
             submitted_at,
             moderated_by: None,
             moderated_at: None,
+            phash: None,
         };
         posts.insert(raw_id, post.clone());
         Ok(post)
@@ -99,7 +100,28 @@ impl PostRepository for InMemoryPostRepository {
         post.artists = artists;
         post.submitted_at = submitted_at;
         post.status = status;
+        // Media may have changed: stale hash cleared, recomputed downstream.
+        post.phash = None;
         Ok(post.clone())
+    }
+
+    async fn set_phash(&self, id: PostId, phash: Option<u64>) -> Result<(), Self::Err> {
+        let mut posts = self.posts.write().await;
+        let post = posts
+            .get_mut(id.as_ref())
+            .ok_or(PostRepositoryError::NotFound(id))?;
+        post.phash = phash;
+        Ok(())
+    }
+
+    async fn list_phashes(&self) -> Result<Vec<(PostId, u64)>, Self::Err> {
+        Ok(self
+            .posts
+            .read()
+            .await
+            .values()
+            .filter_map(|p| p.phash.map(|h| (p.id, h)))
+            .collect())
     }
 
     async fn record_moderation(

@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         e621: e621.clone(),
         resolver: resolver.clone(),
+        hasher: Arc::new(infra_phash::HttpPerceptualHasher::new(USER_AGENT)),
         config: config.clone(),
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         pending_moderation: tokio::sync::Mutex::new(std::collections::HashMap::new()),

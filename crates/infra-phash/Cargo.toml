@@ -1,0 +1,14 @@
+[package]
+name = "infra-phash"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait.workspace = true
+domain = { version = "0.1.0", path = "../domain" }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+telemetry = { version = "0.1.0", path = "../telemetry" }
+thiserror.workspace = true
+tracing = "0.1.44"
+url.workspace = true

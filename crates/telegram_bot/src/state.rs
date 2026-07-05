@@ -124,6 +124,8 @@ pub struct AppState {
     /// The same composite media resolver the scheduler publishes with —
     /// review DMs resolve real media through it too.
     pub resolver: Arc<crate::resolvers::CompositeResolver>,
+    /// Perceptual hasher for the duplicate check on submissions.
+    pub hasher: Arc<dyn domain::elements::phash::PerceptualHasher>,
     /// Submissions awaiting tags, keyed by submitter Telegram id.
     pub pending: tokio::sync::Mutex<std::collections::HashMap<i64, PendingSubmission>>,
     /// In-flight moderation dialogues, keyed by moderator Telegram id:

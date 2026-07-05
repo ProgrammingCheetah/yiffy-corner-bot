@@ -413,6 +413,7 @@ mod tests {
             submitted_at: Utc::now(),
             moderated_by: None,
             moderated_at: None,
+            phash: None,
         }
     }
 
@@ -525,6 +526,12 @@ mod tests {
             _submitted_at: DateTime<Utc>,
             _status: PostStatus,
         ) -> Result<Post, Self::Err> {
+            unimplemented!()
+        }
+        async fn set_phash(&self, _id: PostId, _phash: Option<u64>) -> Result<(), Self::Err> {
+            unimplemented!()
+        }
+        async fn list_phashes(&self) -> Result<Vec<(PostId, u64)>, Self::Err> {
             unimplemented!()
         }
         async fn record_moderation(
