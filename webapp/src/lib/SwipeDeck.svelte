@@ -53,14 +53,17 @@
     <div class="empty"><slot name="empty">Nothing left to swipe 🎉</slot></div>
   {:else}
     {#if cards[1]}
-      <article class="card under"><Media media={cards[1].media} /></article>
+      {#key cards[1].key}
+        <article class="card under"><Media media={cards[1].media} /></article>
+      {/key}
     {/if}
-    <article
-      class="card"
-      class:animate={!dragging}
-      style="transform: translate({dx}px, {dy * 0.4}px) rotate({angle}deg)"
-      on:pointerdown={down}
-    >
+    {#key top.key}
+      <article
+        class="card"
+        class:animate={!dragging}
+        style="transform: translate({dx}px, {dy * 0.4}px) rotate({angle}deg)"
+        on:pointerdown={down}
+      >
       <div class="media"><Media media={top.media} /></div>
       <div class="stamp like" style="opacity: {dx > 0 ? verdictOpacity : 0}">{rightLabel}</div>
       <div class="stamp nope" style="opacity: {dx < 0 ? verdictOpacity : 0}">{leftLabel}</div>
@@ -84,8 +87,9 @@
           </div>
         {/if}
         {#if top.footer}<div class="muted">{top.footer}</div>{/if}
-      </div>
-    </article>
+        </div>
+      </article>
+    {/key}
   {/if}
 </div>
 
