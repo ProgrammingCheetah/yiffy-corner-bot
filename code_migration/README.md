@@ -55,11 +55,12 @@ Channel forwards always go through the tag dialogue.
 ## First-run flow
 
 1. `/start` the bot as the Owner.
-2. `/newposter 15 wolf -gore` → creates Poster #1 (fires every 15 min).
-3. `/setchannel 1 @yourchannel` (bot must be an admin of the channel).
-4. Restart the bot — Poster runtimes are loaded at boot.
-5. Fill the feed: `/browse wolf` + Send buttons, or `/suggest <url> [tags…]`
+2. `/newposter 15 @yourchannel wolf -gore` — creates Poster #1 bound to the
+   channel (bot must be a channel admin), live within a minute.
+3. Fill the feed: `/browse wolf` + Send buttons, or `/suggest <url> [tags…]`
    from anyone + Moderator approval via the DM buttons.
+4. Optional: `/announcements 24` for the recurring channel directory,
+   `/spoilertag`//`/listtags` for content policy, `/postinfo <id>` to audit.
 
 ## Production deployment
 
