@@ -62,7 +62,10 @@ impl TryFrom<Url> for Source {
             .host_str()
             .ok_or_else(|| SourceError::NoHost(url.clone()))?;
         Ok(match host {
-            "e621.net" | "e926.net" => Source::E621(url),
+            // e621 sources are canonicalized: query strings (search params)
+            // dropped and the e926 mirror collapsed onto e621, so the same
+            // post can never dodge duplicate detection.
+            "e621.net" | "e926.net" => Source::E621(canonical_e621(url)),
             "twitter.com" | "x.com" => Source::Twitter(url),
             "bsky.app" => Source::BlueSky(url),
             "t.me" => Source::Telegram(url),
@@ -70,6 +73,26 @@ impl TryFrom<Url> for Source {
             "deviantart.com" | "www.deviantart.com" => Source::DeviantArt(url),
             _ => return Err(SourceError::UnknownHost(url)),
         })
+    }
+}
+
+/// `https://e621.net/posts/<id>` when a post id is present; otherwise the
+/// original URL with query/fragment stripped.
+fn canonical_e621(url: Url) -> Url {
+    let post_id = url.path_segments().and_then(|segments| {
+        let parts: Vec<_> = segments.collect();
+        let idx = parts.iter().position(|s| *s == "posts")?;
+        parts.get(idx + 1)?.parse::<u64>().ok()
+    });
+    match post_id {
+        Some(id) => Url::parse(&format!("https://e621.net/posts/{id}"))
+            .expect("static e621 URL shape is valid"),
+        None => {
+            let mut stripped = url;
+            stripped.set_query(None);
+            stripped.set_fragment(None);
+            stripped
+        }
     }
 }
 
@@ -362,6 +385,19 @@ mod source_tests {
         let url = parse("https://e621.net/posts/1");
         let source = Source::try_from(url.clone()).unwrap();
         assert_eq!(source.as_ref(), &url);
+    }
+
+    #[test]
+    fn e621_sources_are_canonicalized() {
+        let with_query = Source::try_from(parse(
+            "https://e621.net/posts/6521201?q=rating%3Ae+score%3A%3E500+-f",
+        ))
+        .unwrap();
+        let plain = Source::try_from(parse("https://e621.net/posts/6521201")).unwrap();
+        let via_e926 = Source::try_from(parse("https://e926.net/posts/6521201#comments")).unwrap();
+        assert_eq!(with_query, plain);
+        assert_eq!(via_e926, plain);
+        assert_eq!(plain.as_ref().as_str(), "https://e621.net/posts/6521201");
     }
 
     #[test]
