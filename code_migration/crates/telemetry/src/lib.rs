@@ -118,6 +118,7 @@ vocabulary! {
         // Upstream plumbing
         UpstreamRequest => "upstream_request",
         UpstreamStatus => "upstream_status",
+        UpstreamAuthenticated => "upstream_authenticated",
         MediaLinkFallback => "media_link_fallback",
         FaLoginWall => "fa_login_wall",
     }

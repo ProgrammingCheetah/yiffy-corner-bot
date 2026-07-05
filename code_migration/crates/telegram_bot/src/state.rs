@@ -17,7 +17,7 @@ use persistence::sqlite::{
     user::SqliteUserRepository,
 };
 
-pub const USER_AGENT: &str = "yiffy-corner-bot/0.2 (by ZielAnima)";
+pub const USER_AGENT: &str = "yiffy-corner-bot/0.2 (by ZieloAnima on e621)";
 
 /// Environment-derived configuration.
 ///

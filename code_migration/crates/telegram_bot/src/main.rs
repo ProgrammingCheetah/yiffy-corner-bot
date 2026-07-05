@@ -96,9 +96,16 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(event = %Event::Booting, ?config, "booting");
 
     let pool = sqlite::connect_and_migrate(&config.database_url).await?;
-    let e621 = Arc::new(
-        RateLimitedE621Client::new(USER_AGENT).map_err(|e| anyhow::anyhow!(e.to_string()))?,
-    );
+    let mut e621_client =
+        RateLimitedE621Client::new(USER_AGENT).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    // Optional e621 API credentials (vault: e621_login.txt + e621_key.txt).
+    if let (Ok(login), Ok(api_key)) = (
+        read_secret(&config.vault_env_dir.join("e621_login.txt")),
+        read_secret(&config.vault_env_dir.join("e621_key.txt")),
+    ) {
+        e621_client = e621_client.with_credentials(infra_e621::E621Credentials { login, api_key });
+    }
+    let e621 = Arc::new(e621_client);
     let telegram_copies =
         persistence::sqlite::telegram_copy::SqliteTelegramCopyRepository::new(pool.clone());
     let state = Arc::new(AppState {

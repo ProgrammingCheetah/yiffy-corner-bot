@@ -49,10 +49,20 @@ impl Pacer {
     }
 }
 
+/// e621 API credentials (profile → API key). Sent as HTTP Basic auth;
+/// unlocks content hidden from anonymous users and applies the account's
+/// own blacklist instead of the anonymous defaults.
+#[derive(Debug, Clone)]
+pub struct E621Credentials {
+    pub login: String,
+    pub api_key: String,
+}
+
 pub struct RateLimitedE621Client {
     http: Client,
     limiter: Arc<Pacer>,
     user_agent: String,
+    credentials: Option<E621Credentials>,
 }
 
 impl RateLimitedE621Client {
@@ -66,22 +76,38 @@ impl RateLimitedE621Client {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| FetchError::Network(e.to_string()))?;
-        // e621's published cap: 2 req/s.
-        let limiter = Arc::new(Pacer::new(std::time::Duration::from_millis(500)));
+        // Hard cap is 2 req/s, but the API docs ask for a best effort of
+        // ≤1 req/s sustained — pace accordingly.
+        let limiter = Arc::new(Pacer::new(std::time::Duration::from_secs(1)));
         Ok(Self {
             http,
             limiter,
             user_agent: user_agent.into(),
+            credentials: None,
         })
+    }
+
+    /// Authenticate all requests (Basic auth, per the e621 API docs).
+    pub fn with_credentials(mut self, credentials: E621Credentials) -> Self {
+        tracing::info!(
+            event = %Event::UpstreamAuthenticated, upstream = %Upstream::E621,
+            login = %credentials.login, "e621 requests will be authenticated"
+        );
+        self.credentials = Some(credentials);
+        self
     }
 
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: Url) -> Result<T, FetchError> {
         self.limiter.until_ready().await;
         tracing::debug!(event = %Event::UpstreamRequest, upstream = %Upstream::E621, url = %url, "GET");
-        let resp = self
+        let mut request = self
             .http
             .get(url)
-            .header(reqwest::header::USER_AGENT, &self.user_agent)
+            .header(reqwest::header::USER_AGENT, &self.user_agent);
+        if let Some(credentials) = &self.credentials {
+            request = request.basic_auth(&credentials.login, Some(&credentials.api_key));
+        }
+        let resp = request
             .send()
             .await
             .map_err(|e| FetchError::Network(e.to_string()))?;
