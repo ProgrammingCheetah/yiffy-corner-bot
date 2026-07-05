@@ -64,6 +64,10 @@ pub enum Command {
     Requiretag(String),
     #[command(description = "remove a required tag (mods)")]
     Unrequiretag(String),
+    #[command(description = "spoiler media carrying a tag (mods)")]
+    Spoilertag(String),
+    #[command(description = "stop spoilering a tag (mods)")]
+    Unspoilertag(String),
     #[command(description = "list global tag policies (mods)")]
     Listtags,
     #[command(description = "set a user's role: /setrole <@user|id> <moderator|user> (owner)")]
@@ -111,6 +115,8 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Unforbidtag(_) => "unforbidtag",
         Command::Requiretag(_) => "requiretag",
         Command::Unrequiretag(_) => "unrequiretag",
+        Command::Spoilertag(_) => "spoilertag",
+        Command::Unspoilertag(_) => "unspoilertag",
         Command::Listtags => "listtags",
         Command::Setrole(_) => "setrole",
         Command::Newposter(_) => "newposter",
@@ -312,10 +318,16 @@ fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
             InlineKeyboardButton::callback("✅ Approve", format!("mod:approve:{post_id}")),
             InlineKeyboardButton::callback("❌ Reject", format!("mod:reject:{post_id}")),
         ],
-        vec![InlineKeyboardButton::callback(
-            "📝 Reject with reason",
-            format!("mod:reason:{post_id}"),
-        )],
+        vec![
+            InlineKeyboardButton::callback(
+                "🏷 Accept with more tags",
+                format!("mod:addtags:{post_id}"),
+            ),
+            InlineKeyboardButton::callback(
+                "📝 Reject with reason",
+                format!("mod:reason:{post_id}"),
+            ),
+        ],
     ])
 }
 
@@ -420,6 +432,12 @@ pub async fn handle_command(
         }
         Command::Unrequiretag(arg) => {
             tag_policy_reply(&state, actor, &arg, TagPolicyAction::Unrequire).await
+        }
+        Command::Spoilertag(arg) => {
+            tag_policy_reply(&state, actor, &arg, TagPolicyAction::Spoiler).await
+        }
+        Command::Unspoilertag(arg) => {
+            tag_policy_reply(&state, actor, &arg, TagPolicyAction::Unspoiler).await
         }
         Command::Listtags => list_tags(&state, actor).await,
         Command::Setrole(arg) => handle_setrole(&bot, &state, actor, &arg).await,
@@ -1023,6 +1041,8 @@ enum TagPolicyAction {
     Unforbid,
     Require,
     Unrequire,
+    Spoiler,
+    Unspoiler,
 }
 
 async fn tag_policy_reply(
@@ -1050,6 +1070,8 @@ async fn tag_policy_reply(
             TagPolicyAction::Unforbid => "unforbid",
             TagPolicyAction::Require => "require",
             TagPolicyAction::Unrequire => "unrequire",
+            TagPolicyAction::Spoiler => "spoiler",
+            TagPolicyAction::Unspoiler => "unspoiler",
         },
         tag = %tag,
         "tag policy changed"
@@ -1071,6 +1093,18 @@ async fn tag_policy_reply(
             .await
             .map_err(|e| e.to_string()),
         TagPolicyAction::Unrequire => state.required.remove(&tag).await.map_err(|e| e.to_string()),
+        TagPolicyAction::Spoiler => {
+            use domain::elements::tag_policy::SpoilerTagRepository as _;
+            state
+                .spoilers
+                .add(tag.clone())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        TagPolicyAction::Unspoiler => {
+            use domain::elements::tag_policy::SpoilerTagRepository as _;
+            state.spoilers.remove(&tag).await.map_err(|e| e.to_string())
+        }
     };
     match result {
         Ok(()) => format!("Tag policy updated: {tag}."),

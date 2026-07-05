@@ -13,7 +13,9 @@ use persistence::sqlite::{
     publication::SqlitePublicationRepository,
     publisher_config::SqlitePublisherConfigRepository,
     report::SqliteReportRepository,
-    tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
+    tag_policy::{
+        SqliteForbiddenTagRepository, SqliteRequiredTagRepository, SqliteSpoilerTagRepository,
+    },
     telegram_copy::SqliteTelegramCopyRepository,
     user::SqliteUserRepository,
 };
@@ -97,6 +99,7 @@ pub struct AppState {
     pub publisher_configs: SqlitePublisherConfigRepository,
     pub forbidden: SqliteForbiddenTagRepository,
     pub required: SqliteRequiredTagRepository,
+    pub spoilers: SqliteSpoilerTagRepository,
     pub telegram_copies: SqliteTelegramCopyRepository,
     pub reports: SqliteReportRepository,
     pub publications: SqlitePublicationRepository,

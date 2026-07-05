@@ -7,6 +7,8 @@ use domain::elements::{
     post::{Post, PostRepository, PostSelectorStrategy},
     poster::{Poster, PosterRepository},
     publisher::{Publication, PublicationRepository, PublishItem, Publisher},
+    tag::Tag,
+    tag_policy::SpoilerTagRepository,
     user::UserRepository,
 };
 use telemetry::Event;
@@ -28,17 +30,19 @@ pub trait PublisherFactory: Send + Sync {
     async fn publisher_for(&self, poster: &Poster) -> Result<Option<Box<dyn Publisher>>, String>;
 }
 
-pub struct SchedulerDeps<R, U, PR, PB>
+pub struct SchedulerDeps<R, U, PR, PB, ST>
 where
     R: PostRepository + Send + Sync,
     U: UserRepository,
     PR: PosterRepository,
     PB: PublicationRepository,
+    ST: SpoilerTagRepository,
 {
     pub posts: Arc<R>,
     pub users: Arc<U>,
     pub posters: Arc<PR>,
     pub publications: Arc<PB>,
+    pub spoilers: Arc<ST>,
     pub selectors: Arc<dyn SelectorFactory>,
     pub publishers: Arc<dyn PublisherFactory>,
     pub resolver: Arc<dyn MediaResolver>,
@@ -52,6 +56,18 @@ pub enum TickError {
     Block(#[from] PublishBlockError),
     #[error("poster listing failed: {0}")]
     Posters(String),
+}
+
+/// Whether these tags demand the spoiler blur: any listed content-warning
+/// tag, or the hardcoded `cw` convention (`cw`, `cw_*`, `cw:*`).
+pub fn needs_spoiler(tags: &[Tag], spoiler_tags: &[Tag]) -> bool {
+    tags.iter().any(|tag| {
+        let name = tag.as_ref().to_ascii_lowercase();
+        name == "cw"
+            || name.starts_with("cw_")
+            || name.starts_with("cw:")
+            || spoiler_tags.contains(tag)
+    })
 }
 
 /// Fixed-size publication code shown at the top of every published caption:
@@ -152,9 +168,9 @@ pub async fn build_caption<U: UserRepository>(
 ///
 /// Per-poster failures are logged and the tick continues with the next
 /// poster — one failing must not block the others.
-pub async fn run_tick<R, U, PR, PB>(
+pub async fn run_tick<R, U, PR, PB, ST>(
     now: DateTime<Utc>,
-    deps: &SchedulerDeps<R, U, PR, PB>,
+    deps: &SchedulerDeps<R, U, PR, PB, ST>,
 ) -> Result<(), TickError>
 where
     R: PostRepository + Send + Sync,
@@ -164,6 +180,8 @@ where
     PR::Err: std::fmt::Display,
     PB: PublicationRepository,
     PB::Err: std::fmt::Display,
+    ST: SpoilerTagRepository,
+    ST::Err: std::fmt::Display,
 {
     let block = PublishBlock::try_from(now.minute_of_hour())?;
     let posters = deps
@@ -189,9 +207,9 @@ where
 /// resolve media → caption → publish → record publication + advance cursor.
 /// The cursor only advances after a successful publish (or a clean empty
 /// scan), so failures retry the same entry next tick.
-async fn fire_one<R, U, PR, PB>(
+async fn fire_one<R, U, PR, PB, ST>(
     poster: Poster,
-    deps: &SchedulerDeps<R, U, PR, PB>,
+    deps: &SchedulerDeps<R, U, PR, PB, ST>,
     now: DateTime<Utc>,
 ) where
     R: PostRepository + Send + Sync,
@@ -201,6 +219,8 @@ async fn fire_one<R, U, PR, PB>(
     PR::Err: std::fmt::Display,
     PB: PublicationRepository,
     PB::Err: std::fmt::Display,
+    ST: SpoilerTagRepository,
+    ST::Err: std::fmt::Display,
 {
     let cursor = poster.cursor;
     tracing::debug!(
@@ -267,10 +287,18 @@ async fn fire_one<R, U, PR, PB>(
     };
     tracing::debug!(event = %Event::MediaResolved, post_id = %post.id, media = ?media, "media resolved");
     let caption = build_caption(&post, poster.id, &*deps.users, &deps.bot_username, &media).await;
+    let spoiler = match deps.spoilers.list_all().await {
+        Ok(spoiler_tags) => needs_spoiler(&post.tags, &spoiler_tags),
+        Err(e) => {
+            tracing::warn!(post_id = %post.id, error = %e, "spoiler list read failed; publishing unspoilered");
+            false
+        }
+    };
     let item = PublishItem {
         post_id: post.id,
         media,
         caption: Some(caption),
+        spoiler,
     };
     let receipt = match publisher.publish(&item).await {
         Ok(receipt) => receipt,
@@ -314,7 +342,7 @@ async fn fire_one<R, U, PR, PB>(
 }
 
 /// Loop forever, waking every minute to call [`run_tick`].
-pub async fn start_scheduler<R, U, PR, PB>(deps: SchedulerDeps<R, U, PR, PB>) -> !
+pub async fn start_scheduler<R, U, PR, PB, ST>(deps: SchedulerDeps<R, U, PR, PB, ST>) -> !
 where
     R: PostRepository + Send + Sync + 'static,
     R::Err: std::fmt::Display,
@@ -323,6 +351,8 @@ where
     PR::Err: std::fmt::Display,
     PB: PublicationRepository + 'static,
     PB::Err: std::fmt::Display,
+    ST: SpoilerTagRepository + 'static,
+    ST::Err: std::fmt::Display,
 {
     let mut ticker = interval(Duration::from_secs(60));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -547,12 +577,16 @@ mod tests {
             InMemoryUserRepository,
             InMemoryPosterRepository,
             InMemoryPublicationRepository,
+            persistence::in_memory::tag_policy::InMemorySpoilerTagRepository,
         > {
             SchedulerDeps {
                 posts: Arc::new(RecordingPostRepository::default()),
                 users: Arc::new(InMemoryUserRepository::new()),
                 posters: self.posters.clone(),
                 publications: Arc::new(InMemoryPublicationRepository::new()),
+                spoilers: Arc::new(
+                    persistence::in_memory::tag_policy::InMemorySpoilerTagRepository::new(),
+                ),
                 selectors: Arc::new(FixedSelectorFactory(pick)),
                 publishers: Arc::new(StubPublisherFactory {
                     publisher: self.publisher.clone(),
@@ -734,6 +768,24 @@ mod tests {
         // Source + Report links.
         assert!(lines[3].contains("<a href=\"https://t.me/somechannel/42\">Source</a>"));
         assert!(lines[3].contains("https://t.me/testbot?start=report_100\">Report</a>"));
+    }
+
+    #[test]
+    fn spoiler_rule_matches_listed_and_cw_tags() {
+        let listed = vec![Tag::from("watersports"), Tag::from("questionable_consent")];
+        assert!(needs_spoiler(
+            &[Tag::from("wolf"), Tag::from("watersports")],
+            &listed
+        ));
+        assert!(needs_spoiler(&[Tag::from("cw")], &[]));
+        assert!(needs_spoiler(&[Tag::from("cw_blood")], &[]));
+        assert!(needs_spoiler(&[Tag::from("CW:knife")], &[]));
+        assert!(!needs_spoiler(
+            &[Tag::from("wolf"), Tag::from("male")],
+            &listed
+        ));
+        // 'cwhatever' must not trip the prefix rule.
+        assert!(!needs_spoiler(&[Tag::from("cwhatever")], &[]));
     }
 
     #[tokio::test]

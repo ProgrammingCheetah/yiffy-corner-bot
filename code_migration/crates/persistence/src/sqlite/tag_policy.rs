@@ -3,7 +3,7 @@ use domain::elements::{
     tag::Tag,
     tag_policy::{
         ForbiddenTagRepository, ForbiddenTagRepositoryError, RequiredTagRepository,
-        RequiredTagRepositoryError,
+        RequiredTagRepositoryError, SpoilerTagRepository, SpoilerTagRepositoryError,
     },
 };
 use sqlx::{Row, sqlite::SqlitePool};
@@ -81,4 +81,10 @@ sqlite_tag_repository!(
     RequiredTagRepository,
     RequiredTagRepositoryError,
     "required_tags"
+);
+sqlite_tag_repository!(
+    SqliteSpoilerTagRepository,
+    SpoilerTagRepository,
+    SpoilerTagRepositoryError,
+    "spoiler_tags"
 );

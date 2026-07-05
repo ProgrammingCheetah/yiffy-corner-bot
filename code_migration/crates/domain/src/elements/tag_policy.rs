@@ -47,3 +47,22 @@ pub trait RequiredTagRepository: Send + Sync {
     async fn contains(&self, tag: &Tag) -> Result<bool, Self::Err>;
     async fn list_all(&self) -> Result<Vec<Tag>, Self::Err>;
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum SpoilerTagRepositoryError {
+    #[error("spoiler tag repository error: {0}")]
+    Storage(String),
+}
+
+/// Content-warning tags (hard kinks etc. — watersports,
+/// questionable_consent, …): a Post owning one still publishes, but its
+/// media goes out behind Telegram's spoiler blur. Tags named `cw` or
+/// prefixed `cw_`/`cw:` spoiler unconditionally, without being listed.
+#[async_trait::async_trait]
+pub trait SpoilerTagRepository: Send + Sync {
+    type Err;
+    async fn add(&self, tag: Tag) -> Result<(), Self::Err>;
+    async fn remove(&self, tag: &Tag) -> Result<(), Self::Err>;
+    async fn contains(&self, tag: &Tag) -> Result<bool, Self::Err>;
+    async fn list_all(&self) -> Result<Vec<Tag>, Self::Err>;
+}

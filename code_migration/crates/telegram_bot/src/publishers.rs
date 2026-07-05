@@ -75,7 +75,8 @@ impl Publisher for TelegramPublisher {
             ResolvedMedia::Photo(url) => {
                 let mut request = self
                     .bot
-                    .send_photo(self.chat_id, InputFile::url(url.clone()));
+                    .send_photo(self.chat_id, InputFile::url(url.clone()))
+                    .has_spoiler(item.spoiler);
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
@@ -98,7 +99,8 @@ impl Publisher for TelegramPublisher {
             ResolvedMedia::Video(url) => {
                 let mut request = self
                     .bot
-                    .send_video(self.chat_id, InputFile::url(url.clone()));
+                    .send_video(self.chat_id, InputFile::url(url.clone()))
+                    .has_spoiler(item.spoiler);
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
@@ -121,7 +123,8 @@ impl Publisher for TelegramPublisher {
             ResolvedMedia::Animation(url) => {
                 let mut request = self
                     .bot
-                    .send_animation(self.chat_id, InputFile::url(url.clone()));
+                    .send_animation(self.chat_id, InputFile::url(url.clone()))
+                    .has_spoiler(item.spoiler);
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }

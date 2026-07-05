@@ -23,7 +23,9 @@ use persistence::sqlite::{
     publication::SqlitePublicationRepository,
     publisher_config::SqlitePublisherConfigRepository,
     report::SqliteReportRepository,
-    tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
+    tag_policy::{
+        SqliteForbiddenTagRepository, SqliteRequiredTagRepository, SqliteSpoilerTagRepository,
+    },
     user::SqliteUserRepository,
 };
 use teloxide::{Bot, prelude::*, utils::command::BotCommands as _};
@@ -117,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         publisher_configs: SqlitePublisherConfigRepository::new(pool.clone()),
         forbidden: SqliteForbiddenTagRepository::new(pool.clone()),
         required: SqliteRequiredTagRepository::new(pool.clone()),
+        spoilers: SqliteSpoilerTagRepository::new(pool.clone()),
         telegram_copies: telegram_copies.clone(),
         reports: SqliteReportRepository::new(pool.clone()),
         publications: SqlitePublicationRepository::new(pool.clone()),
@@ -170,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(state.users.clone()),
         posters: Arc::new(state.posters.clone()),
         publications: Arc::new(state.publications.clone()),
+        spoilers: Arc::new(state.spoilers.clone()),
         selectors: Arc::new(FeedSelectorFactory {
             posts: Arc::new(state.posts.clone()),
             e621: e621.clone(),

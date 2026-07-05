@@ -21,6 +21,9 @@ pub struct PublishItem {
     pub post_id: PostId,
     pub media: ResolvedMedia,
     pub caption: Option<String>,
+    /// Send the media behind Telegram's spoiler blur (content-warning tags).
+    /// Best-effort: link embeds and message copies cannot be spoilered.
+    pub spoiler: bool,
 }
 
 /// Where a publish landed. Recorded per delivery so moderation can take a

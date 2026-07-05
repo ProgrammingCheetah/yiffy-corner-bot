@@ -5,7 +5,7 @@ use domain::elements::{
     tag::Tag,
     tag_policy::{
         ForbiddenTagRepository, ForbiddenTagRepositoryError, RequiredTagRepository,
-        RequiredTagRepositoryError,
+        RequiredTagRepositoryError, SpoilerTagRepository, SpoilerTagRepositoryError,
     },
 };
 use tokio::sync::RwLock;
@@ -130,5 +130,39 @@ mod tests {
         repo.add(Tag::from("furry")).await.unwrap();
         repo.remove(&Tag::from("furry")).await.unwrap();
         assert!(!repo.contains(&Tag::from("furry")).await.unwrap());
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemorySpoilerTagRepository {
+    tags: RwLock<HashSet<Tag>>,
+}
+
+impl InMemorySpoilerTagRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl SpoilerTagRepository for InMemorySpoilerTagRepository {
+    type Err = SpoilerTagRepositoryError;
+
+    async fn add(&self, tag: Tag) -> Result<(), Self::Err> {
+        self.tags.write().await.insert(tag);
+        Ok(())
+    }
+
+    async fn remove(&self, tag: &Tag) -> Result<(), Self::Err> {
+        self.tags.write().await.remove(tag);
+        Ok(())
+    }
+
+    async fn contains(&self, tag: &Tag) -> Result<bool, Self::Err> {
+        Ok(self.tags.read().await.contains(tag))
+    }
+
+    async fn list_all(&self) -> Result<Vec<Tag>, Self::Err> {
+        Ok(self.tags.read().await.iter().cloned().collect())
     }
 }
