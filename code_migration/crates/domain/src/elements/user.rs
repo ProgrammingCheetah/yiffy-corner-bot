@@ -14,6 +14,32 @@ pub enum Role {
     Owner,
 }
 
+impl Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Role::User => "user",
+            Role::Moderator => "moderator",
+            Role::Owner => "owner",
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown role: {0}")]
+pub struct RoleParseError(String);
+
+impl std::str::FromStr for Role {
+    type Err = RoleParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user" => Ok(Role::User),
+            "moderator" => Ok(Role::Moderator),
+            "owner" => Ok(Role::Owner),
+            other => Err(RoleParseError(other.to_string())),
+        }
+    }
+}
+
 /// The internal ID for the user. Program-managed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UserId(u64);

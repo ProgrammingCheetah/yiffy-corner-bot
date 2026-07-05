@@ -7,7 +7,9 @@ edition = "2024"
 async-trait.workspace = true
 chrono.workspace = true
 domain.workspace = true
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono", "migrate"] }
 tokio = { version = "1.52.2", features = ["sync", "macros", "rt"] }
+url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

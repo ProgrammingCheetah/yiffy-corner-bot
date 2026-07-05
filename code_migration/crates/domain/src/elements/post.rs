@@ -108,6 +108,36 @@ pub enum PostStatus {
     Banned,
 }
 
+impl std::fmt::Display for PostStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PostStatus::AwaitingModeration => "awaiting_moderation",
+            PostStatus::Accepted => "accepted",
+            PostStatus::Rejected => "rejected",
+            PostStatus::Deleted => "deleted",
+            PostStatus::Banned => "banned",
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown post status: {0}")]
+pub struct PostStatusParseError(String);
+
+impl std::str::FromStr for PostStatus {
+    type Err = PostStatusParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "awaiting_moderation" => Ok(PostStatus::AwaitingModeration),
+            "accepted" => Ok(PostStatus::Accepted),
+            "rejected" => Ok(PostStatus::Rejected),
+            "deleted" => Ok(PostStatus::Deleted),
+            "banned" => Ok(PostStatus::Banned),
+            other => Err(PostStatusParseError(other.to_string())),
+        }
+    }
+}
+
 /// A piece of media curated by the bot.
 ///
 /// **Lean by design**: the bot is an indexer over e621, not a content store.
