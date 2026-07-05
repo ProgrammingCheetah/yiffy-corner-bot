@@ -1,0 +1,6 @@
+# Keep the build context lean: only Cargo.toml/Cargo.lock/crates are COPYed.
+target/
+config/
+design/
+.git/
+*.md
