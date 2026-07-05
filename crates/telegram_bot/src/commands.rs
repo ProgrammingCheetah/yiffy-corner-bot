@@ -573,8 +573,8 @@ async fn submit(
                 },
             );
             "Almost there! Reply with the tags that describe this post, separated by \
-             spaces — species, character, artist, anything relevant.\n\
-             Example: `wolf male solo digital_art`"
+             spaces. Credit the artist with artist:<name>.\n\
+             Example: `wolf male solo digital_art artist:coolwolf`"
                 .to_string()
         }
         Ok(SuggestOutcome::Queued { post, reviewers }) => {
@@ -709,7 +709,7 @@ async fn handle_suggest(bot: &Bot, state: &SharedState, submitter: Submitter, ar
     let Some(url) = parts.next().and_then(|raw| Url::parse(raw).ok()) else {
         return "Usage: /suggest <source-url> [tags…] — e621, FurAffinity, Twitter/X, BlueSky, \
                 DeviantArt and t.me links are accepted. Non-e621 sources need tags \
-                (I'll ask if you leave them off)."
+                (I'll ask if you leave them off). Credit the artist with artist:<name>."
             .to_string();
     };
     let tags: Vec<Tag> = parts.map(Tag::from).collect();
@@ -1177,7 +1177,7 @@ async fn complete_direct_save(
                 },
             );
             "Reply with the tags for this post (space-separated) — it goes straight into \
-             the feed."
+             the feed. Add artist:<name> to credit the artist."
                 .to_string()
         }
         Err(e) => describe(e),

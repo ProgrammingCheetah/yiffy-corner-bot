@@ -104,6 +104,7 @@ where
 
     // Every feed entry is tagged: e621 tags come from the API (merged with
     // any extras the submitter supplied); other sources need submitter tags.
+    let (extra_tags, extra_artists) = domain::elements::tag::split_artist_tags(cmd.tags);
     let (tags, artists) = match &source {
         Source::E621(_) => {
             let metadata = e621
@@ -111,14 +112,22 @@ where
                 .await
                 .map_err(|e| HandlerError::Fetch(e.to_string()))?;
             let mut tags = metadata.tags;
-            for extra in cmd.tags {
+            for extra in extra_tags {
                 if !tags.contains(&extra) {
                     tags.push(extra);
                 }
             }
-            (tags, metadata.artists)
+            let mut artists = metadata.artists;
+            for artist in extra_artists {
+                if !artists.contains(&artist) {
+                    artists.push(artist);
+                }
+            }
+            (tags, artists)
         }
-        _ if cmd.tags.is_empty() => {
+        // Attribution alone doesn't tag an entry — content tags are still
+        // required for the feed.
+        _ if extra_tags.is_empty() => {
             tracing::info!(
                 event = %Event::SubmissionTagsRequested,
                 user_id = %submitter.id, source = %source.as_ref(),
@@ -126,7 +135,7 @@ where
             );
             return Ok(SuggestOutcome::TagsNeeded);
         }
-        _ => (cmd.tags, Vec::new()),
+        _ => (extra_tags, extra_artists),
     };
 
     // Tag-check at the door: a globally forbidden tag auto-Bans (cached

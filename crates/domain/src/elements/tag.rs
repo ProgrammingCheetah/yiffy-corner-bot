@@ -32,3 +32,35 @@ impl From<String> for Tag {
         Self(value)
     }
 }
+
+/// Submitted tag lists may carry `artist:<name>` attribution tokens.
+/// Splits them out: `(content tags, artists)`. A bare `artist:` is noise.
+pub fn split_artist_tags(all: Vec<Tag>) -> (Vec<Tag>, Vec<Tag>) {
+    let mut tags = Vec::new();
+    let mut artists = Vec::new();
+    for tag in all {
+        match tag.as_ref().strip_prefix("artist:") {
+            Some("") => {}
+            Some(name) => artists.push(Tag::from(name)),
+            None => tags.push(tag),
+        }
+    }
+    (tags, artists)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artist_tokens_split_out_of_submissions() {
+        let (tags, artists) = split_artist_tags(vec![
+            Tag::from("wolf"),
+            Tag::from("artist:coolwolf"),
+            Tag::from("male"),
+            Tag::from("artist:"),
+        ]);
+        assert_eq!(tags, vec![Tag::from("wolf"), Tag::from("male")]);
+        assert_eq!(artists, vec![Tag::from("coolwolf")]);
+    }
+}

@@ -127,6 +127,7 @@ where
     {
         return Err(HandlerError::DuplicateSubmission(existing.id));
     }
+    let (extra_tags, extra_artists) = domain::elements::tag::split_artist_tags(cmd.tags);
     let (tags, artists) = match &source {
         Source::E621(_) => {
             let metadata = e621
@@ -134,15 +135,23 @@ where
                 .await
                 .map_err(|e| HandlerError::Fetch(e.to_string()))?;
             let mut tags = metadata.tags;
-            for extra in cmd.tags {
+            for extra in extra_tags {
                 if !tags.contains(&extra) {
                     tags.push(extra);
                 }
             }
-            (tags, metadata.artists)
+            let mut artists = metadata.artists;
+            for artist in extra_artists {
+                if !artists.contains(&artist) {
+                    artists.push(artist);
+                }
+            }
+            (tags, artists)
         }
-        _ if cmd.tags.is_empty() => return Ok(SaveOutcome::TagsNeeded),
-        _ => (cmd.tags, Vec::new()),
+        // Attribution alone doesn't tag an entry — content tags are still
+        // required for the feed.
+        _ if extra_tags.is_empty() => return Ok(SaveOutcome::TagsNeeded),
+        _ => (extra_tags, extra_artists),
     };
     for tag in &tags {
         if forbidden
