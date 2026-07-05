@@ -641,6 +641,8 @@ async fn handle_browse(
             // Send / sources / Erase keyboard.
             let mut sent = 0usize;
             for metadata in results.iter().take(5) {
+                use domain::elements::media::ResolvedMedia;
+
                 let e621_url = metadata.source.as_ref();
                 let Some(e621_id) = e621_url
                     .path_segments()
@@ -649,12 +651,50 @@ async fn handle_browse(
                 else {
                     continue;
                 };
-                match bot
-                    .send_photo(chat, InputFile::url(metadata.preview_url.clone()))
-                    .reply_markup(browse_keyboard(e621_id, e621_url, &metadata.artist_sources))
-                    .await
-                {
-                    Ok(_) => sent += 1,
+                let keyboard = browse_keyboard(e621_id, e621_url, &metadata.artist_sources);
+
+                // Preview with the real media type: gifs animate, videos play
+                // (via e621's MP4 rendition — Telegram can't fetch webm).
+                let animated: Option<Result<(), teloxide::RequestError>> =
+                    match ResolvedMedia::classify(metadata.file_url.clone()) {
+                        ResolvedMedia::Animation(gif_url) => Some(
+                            bot.send_animation(chat, InputFile::url(gif_url))
+                                .reply_markup(keyboard.clone())
+                                .await
+                                .map(|_| ()),
+                        ),
+                        ResolvedMedia::Video(_) => match metadata.mp4_url.clone() {
+                            Some(mp4) => Some(
+                                bot.send_video(chat, InputFile::url(mp4))
+                                    .reply_markup(keyboard.clone())
+                                    .await
+                                    .map(|_| ()),
+                            ),
+                            None => None,
+                        },
+                        _ => None,
+                    };
+
+                let outcome = match animated {
+                    Some(Ok(())) => Ok(()),
+                    Some(Err(e)) => {
+                        tracing::debug!(
+                            event = %Event::MediaLinkFallback, source = %e621_url, error = %e,
+                            "animated preview refused; falling back to still"
+                        );
+                        bot.send_photo(chat, InputFile::url(metadata.preview_url.clone()))
+                            .reply_markup(keyboard)
+                            .await
+                            .map(|_| ())
+                    }
+                    None => bot
+                        .send_photo(chat, InputFile::url(metadata.preview_url.clone()))
+                        .reply_markup(keyboard)
+                        .await
+                        .map(|_| ()),
+                };
+                match outcome {
+                    Ok(()) => sent += 1,
                     Err(e) => tracing::warn!(
                         event = %Event::BrowseAlbumFailed, source = %e621_url, error = %e,
                         "browse preview send failed"
