@@ -39,6 +39,25 @@
   // Users
   let users = [];
   async function loadUsers() { users = (await get('/users')).users; }
+  async function confirmDialog(message) {
+    const wa = window.Telegram?.WebApp;
+    if (wa?.showConfirm && wa.isVersionAtLeast?.('6.2')) {
+      return new Promise((resolve) => wa.showConfirm(message, resolve));
+    }
+    return confirm(message);
+  }
+  async function changeRole(u, role, select) {
+    if (role === 'owner') {
+      const ok = await confirmDialog(
+        `Make ${u.name ?? u.telegram_id} an OWNER? Owners have full control — posters, roles, everything. This is not easily undone.`
+      );
+      if (!ok) {
+        select.value = u.role;
+        return;
+      }
+    }
+    run(patch(`/users/${u.id}`, { role }), loadUsers);
+  }
 
   // Post lookup
   let lookup = '';
@@ -116,7 +135,7 @@
         {#if u.banned}<span class="chip x">banned</span>{/if}
       </div>
       <div class="row-btns">
-        <select value={u.role} on:change={(e) => run(patch(`/users/${u.id}`, { role: e.target.value }), loadUsers)}>
+        <select value={u.role} on:change={(e) => changeRole(u, e.target.value, e.target)}>
           <option value="user">User</option>
           <option value="moderator">Moderator</option>
           <option value="owner">Owner</option>

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.5
+// @version      1.6
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -109,13 +109,17 @@
   // Media detection. Items WITHOUT media stay unmarked so a later rescan
   // catches images that mount after the first pass.
   const xHasMedia = (art) =>
-    !!art.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video');
+    [...art.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video')]
+      // Media inside link-cards or quoted posts isn't THIS post's media.
+      .some((el) => !el.closest('[data-testid="card.wrapper"]') && !el.closest('div[role="link"]'));
   const bskyHasMedia = (item) => {
-    if (item.querySelector('video')) return true;
+    if ([...item.querySelectorAll('video')].some((v) => !v.closest('div[role="link"]'))) {
+      return true;
+    }
     for (const img of item.querySelectorAll('img[src*="cdn.bsky.app/img/feed_"]')) {
-      // External link-cards use the same CDN but wrap the thumb in an
-      // http(s) anchor to the external site; real post media links
-      // internally (lightbox) or not at all.
+      if (img.closest('div[role="link"]')) continue; // quote embed / card
+      // External link-cards wrap the thumb in an http(s) anchor; real
+      // post media links internally (lightbox) or not at all.
       const href = img.closest('a')?.getAttribute('href') ?? '';
       if (!href.startsWith('http')) return true;
     }
@@ -135,27 +139,41 @@
     if (SITE === 'x') {
       // Every tweet card, timeline or detail: the action bar is the
       // [role=group] row; the permalink is the timestamp's link.
-      for (const art of document.querySelectorAll('article[data-testid="tweet"]:not([data-ycb])')) {
-        if (!xHasMedia(art)) continue; // unmarked: media may still be loading
-        const timeLink = art.querySelector('a[href*="/status/"] time')?.closest('a');
+      // Timelines RECYCLE nodes: a card that had media can be re-filled
+      // with a text post, keeping whatever we injected. So every scan
+      // re-verifies every card — inject where missing, REMOVE where the
+      // media went away — and the URL resolves at click time.
+      for (const art of document.querySelectorAll('article[data-testid="tweet"]')) {
+        const existing = art.querySelector('button[data-ycb-btn]');
+        if (!xHasMedia(art)) {
+          existing?.remove();
+          continue;
+        }
+        if (existing) continue;
         const group = art.querySelector('[role="group"]');
-        const href = timeLink?.getAttribute('href') ?? (art.closest('main') && /\/status\/\d+/.test(location.pathname) ? location.pathname : null);
-        if (!group || !href) continue;
-        art.dataset.ycb = '1';
-        group.appendChild(pawButton(() => clean(href), false, { marginLeft: '4px' }));
+        if (!group) continue;
+        const btn = pawButton(() => {
+          const here = btn.closest('article');
+          const a = here?.querySelector('a[href*="/status/"] time')?.closest('a');
+          const href =
+            a?.getAttribute('href') ??
+            (/\/status\/\d+/.test(location.pathname) ? location.pathname : null);
+          return href ? clean(href) : null;
+        }, false, { marginLeft: '4px' });
+        group.appendChild(btn);
       }
     } else if (SITE === 'bsky') {
       for (const item of document.querySelectorAll(
-        '[data-testid^="feedItem-by-"]:not([data-ycb]), [data-testid^="postThreadItem-by-"]:not([data-ycb])'
+        '[data-testid^="feedItem-by-"], [data-testid^="postThreadItem-by-"]'
       )) {
-        if (!bskyHasMedia(item)) continue; // unmarked: retried on rescans
+        const existing = item.querySelector('button[data-ycb-btn]');
+        if (!bskyHasMedia(item)) {
+          existing?.remove();
+          continue;
+        }
+        if (existing) continue;
         const like = item.querySelector('[data-testid="likeBtn"]');
         if (!like) continue;
-        item.dataset.ycb = '1';
-        const href =
-          item.querySelector('a[href*="/post/"]')?.getAttribute('href') ??
-          (/^\/profile\/[^/]+\/post\//.test(location.pathname) ? location.pathname : null);
-        if (!href) continue;
         // React Native Web stacks every container by default (column).
         // Force the like button's wrapper into a row and sit right of it.
         const wrap = like.parentElement;
@@ -164,7 +182,13 @@
           wrap.style.flexDirection = 'row';
           wrap.style.alignItems = 'center';
         }
-        const btn = pawButton(() => clean(href), false, {
+        const btn = pawButton(() => {
+          const here = btn.closest('[data-testid^="feedItem-by-"], [data-testid^="postThreadItem-by-"]');
+          const link =
+            here?.querySelector('a[href*="/post/"]')?.getAttribute('href') ??
+            (/^\/profile\/[^/]+\/post\//.test(location.pathname) ? location.pathname : null);
+          return link ? clean(link) : null;
+        }, false, {
           display: 'inline-flex',
           alignItems: 'center',
           marginLeft: '10px'
