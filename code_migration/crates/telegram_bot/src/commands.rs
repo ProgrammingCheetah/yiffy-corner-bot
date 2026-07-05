@@ -46,6 +46,8 @@ pub enum Command {
     Reject(String),
     #[command(description = "soft-delete a post (mods)")]
     Delete(String),
+    #[command(description = "full data for a post: /postinfo <post-id> (mods)")]
+    Postinfo(String),
     #[command(description = "ban a user from submitting (mods)")]
     Ban(String),
     #[command(description = "lift a submission ban (mods)")]
@@ -94,6 +96,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Approve(_) => "approve",
         Command::Reject(_) => "reject",
         Command::Delete(_) => "delete",
+        Command::Postinfo(_) => "postinfo",
         Command::Ban(_) => "ban",
         Command::Unban(_) => "unban",
         Command::Browse(_) => "browse",
@@ -378,6 +381,7 @@ pub async fn handle_command(
             },
             None => "Usage: /delete <post-id>".to_string(),
         },
+        Command::Postinfo(arg) => handle_postinfo(&state, actor, &arg).await,
         Command::Ban(arg) => ban_reply(&bot, &state, actor, &arg, true).await,
         Command::Unban(arg) => ban_reply(&bot, &state, actor, &arg, false).await,
         Command::Browse(arg) => handle_browse(&bot, msg.chat.id, &state, actor, &arg).await,
@@ -696,6 +700,108 @@ fn parse_post_id(arg: &str) -> Option<PostId> {
         .parse::<u64>()
         .ok()
         .map(PostId::from)
+}
+
+fn describe_user(user: &Option<domain::elements::user::User>) -> String {
+    match user {
+        None => "—".to_string(),
+        Some(user) => {
+            let name = user
+                .display_name
+                .clone()
+                .unwrap_or_else(|| "unnamed".into());
+            format!("{name} (id {}, {})", user.telegram_id.as_ref(), user.role)
+        }
+    }
+}
+
+async fn handle_postinfo(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use application::commands::post_info::post_info;
+
+    let Some(post_id) = parse_post_id(arg) else {
+        return "Usage: /postinfo <post-id>".to_string();
+    };
+    match post_info(
+        actor,
+        post_id,
+        &state.users,
+        &state.posts,
+        &state.publications,
+        &state.reports,
+    )
+    .await
+    {
+        Err(e) => describe(e),
+        Ok(info) => {
+            let post = &info.post;
+            let mut lines = vec![
+                format!(
+                    "Post #{} — {}{}",
+                    post.id,
+                    post.status,
+                    post.feed_position
+                        .map(|p| format!(" (feed position {p})"))
+                        .unwrap_or_default()
+                ),
+                format!("Source: {}", post.source.as_ref()),
+                format!(
+                    "Submitted: {} by {}",
+                    post.submitted_at.format("%Y-%m-%d %H:%M UTC"),
+                    describe_user(&info.submitter)
+                ),
+                match post.moderated_at {
+                    Some(at) => format!(
+                        "Moderated: {} by {}",
+                        at.format("%Y-%m-%d %H:%M UTC"),
+                        describe_user(&info.moderator)
+                    ),
+                    None => "Moderated: —".to_string(),
+                },
+                format!(
+                    "Tags ({}): {}",
+                    post.tags.len(),
+                    post.tags
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+                format!(
+                    "Artists: {}",
+                    if post.artists.is_empty() {
+                        "—".to_string()
+                    } else {
+                        post.artists
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                ),
+                format!(
+                    "Last posted: {}",
+                    post.last_posted
+                        .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
+                        .unwrap_or_else(|| "never".to_string())
+                ),
+                format!("Reports: {}", info.report_count),
+            ];
+            if info.publications.is_empty() {
+                lines.push("Published: never".to_string());
+            } else {
+                lines.push(format!("Published {} time(s):", info.publications.len()));
+                for publication in &info.publications {
+                    lines.push(format!(
+                        "  • chat {} msg {} at {}",
+                        publication.chat_id,
+                        publication.message_id,
+                        publication.published_at.format("%Y-%m-%d %H:%M UTC")
+                    ));
+                }
+            }
+            lines.join("\n")
+        }
+    }
 }
 
 async fn moderate_reply(

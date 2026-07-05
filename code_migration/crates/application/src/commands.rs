@@ -3,6 +3,7 @@ pub mod ban_user;
 pub mod browse;
 pub mod manage_poster;
 pub mod moderate;
+pub mod post_info;
 pub mod report;
 pub mod set_user_role;
 pub mod start;

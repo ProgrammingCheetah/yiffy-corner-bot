@@ -101,7 +101,7 @@ where
     P: PostRepository,
     PB: PublicationRepository,
 {
-    require_role(users, actor, Role::Moderator).await?;
+    let moderator = require_role(users, actor, Role::Moderator).await?;
     posts
         .find_by_id(post_id)
         .await
@@ -109,6 +109,10 @@ where
         .ok_or(HandlerError::PostNotFound(post_id))?;
     posts
         .remove(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    posts
+        .record_moderation(post_id, moderator.id, Utc::now())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     let deliveries = publications

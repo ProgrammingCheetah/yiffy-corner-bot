@@ -381,6 +381,8 @@ mod tests {
             last_posted: None,
             submitted_by: None,
             submitted_at: Utc::now(),
+            moderated_by: None,
+            moderated_at: None,
         }
     }
 
@@ -483,6 +485,14 @@ mod tests {
             _id: PostId,
             _tags: Vec<domain::elements::tag::Tag>,
         ) -> Result<Post, Self::Err> {
+            unimplemented!()
+        }
+        async fn record_moderation(
+            &self,
+            _id: PostId,
+            _by: domain::elements::user::UserId,
+            _at: DateTime<Utc>,
+        ) -> Result<(), Self::Err> {
             unimplemented!()
         }
         async fn mark_posted(&self, id: PostId, _at: DateTime<Utc>) -> Result<(), Self::Err> {

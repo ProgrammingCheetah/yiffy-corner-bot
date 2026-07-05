@@ -211,6 +211,10 @@ pub struct Post {
     /// from `/browse` (which enter the feed directly, bypassing moderation).
     pub submitted_by: Option<UserId>,
     pub submitted_at: DateTime<Utc>,
+    /// The moderator who last acted on this Post (approve/reject/save/
+    /// takedown). Audit trail for `/postinfo`.
+    pub moderated_by: Option<UserId>,
+    pub moderated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -251,6 +255,13 @@ pub trait PostRepository: Send + Sync {
     async fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err>;
     /// Replace the curated tag set (moderator "accept with more tags").
     async fn set_tags(&self, id: PostId, tags: Vec<Tag>) -> Result<Post, Self::Err>;
+    /// Record which moderator last acted on this Post, and when.
+    async fn record_moderation(
+        &self,
+        id: PostId,
+        by: UserId,
+        at: DateTime<Utc>,
+    ) -> Result<(), Self::Err>;
     /// Record that `id` was just published at `at`. Updates `last_posted`.
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
     /// All Posts currently in `status`, ordered oldest-submitted first.

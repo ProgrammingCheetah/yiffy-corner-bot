@@ -49,6 +49,10 @@ fn row_to_post(row: &sqlx::sqlite::SqliteRow) -> Result<Post, PostRepositoryErro
             .get::<Option<i64>, _>("submitted_by")
             .map(|id| UserId::from(id as u64)),
         submitted_at: row.get::<DateTime<Utc>, _>("submitted_at"),
+        moderated_by: row
+            .get::<Option<i64>, _>("moderated_by")
+            .map(|id| UserId::from(id as u64)),
+        moderated_at: row.get::<Option<DateTime<Utc>>, _>("moderated_at"),
     })
 }
 
@@ -118,6 +122,26 @@ impl PostRepository for SqlitePostRepository {
             .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
         if result.rows_affected() == 0 {
             return Err(PostRepositoryError::NotFound(post_id));
+        }
+        Ok(())
+    }
+
+    async fn record_moderation(
+        &self,
+        id: PostId,
+        by: UserId,
+        at: DateTime<Utc>,
+    ) -> Result<(), Self::Err> {
+        let result =
+            sqlx::query("UPDATE posts SET moderated_by = ?, moderated_at = ? WHERE id = ?")
+                .bind(*by.as_ref() as i64)
+                .bind(at)
+                .bind(*id.as_ref() as i64)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(PostRepositoryError::NotFound(id));
         }
         Ok(())
     }

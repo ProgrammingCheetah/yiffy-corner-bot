@@ -100,7 +100,7 @@ where
     P: PostRepository,
     E: E621Fetcher,
 {
-    require_role(users, cmd.actor, Role::Moderator).await?;
+    let curator = require_role(users, cmd.actor, Role::Moderator).await?;
     let source =
         Source::try_from(cmd.url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
     if !matches!(source, Source::E621(_)) {
@@ -132,6 +132,10 @@ where
         .map_err(|_| HandlerError::RepositoryError)?;
     let post = posts
         .accept_into_feed(post.id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    posts
+        .record_moderation(post.id, curator.id, Utc::now())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(

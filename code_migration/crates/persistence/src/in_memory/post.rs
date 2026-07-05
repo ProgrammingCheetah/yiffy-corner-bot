@@ -49,6 +49,8 @@ impl PostRepository for InMemoryPostRepository {
             last_posted: None,
             submitted_by,
             submitted_at,
+            moderated_by: None,
+            moderated_at: None,
         };
         posts.insert(raw_id, post.clone());
         Ok(post)
@@ -78,6 +80,21 @@ impl PostRepository for InMemoryPostRepository {
             .get_mut(post_id.as_ref())
             .ok_or(PostRepositoryError::NotFound(post_id))?;
         post.status = status;
+        Ok(())
+    }
+
+    async fn record_moderation(
+        &self,
+        id: PostId,
+        by: UserId,
+        at: DateTime<Utc>,
+    ) -> Result<(), Self::Err> {
+        let mut posts = self.posts.write().await;
+        let post = posts
+            .get_mut(id.as_ref())
+            .ok_or(PostRepositoryError::NotFound(id))?;
+        post.moderated_by = Some(by);
+        post.moderated_at = Some(at);
         Ok(())
     }
 

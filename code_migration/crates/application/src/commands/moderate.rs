@@ -24,7 +24,7 @@ async fn awaiting_post<P: PostRepository>(
     cmd: &ModerateCommand,
     users: &impl UserRepository,
     posts: &P,
-) -> HandlerResult<Post> {
+) -> HandlerResult<(Post, domain::elements::user::User)> {
     let moderator = require_role(users, cmd.actor, Role::Moderator).await?;
     tracing::debug!(event = %Event::ModerationRequested, moderator_id = %moderator.id, post_id = %cmd.post_id, "moderation requested");
     let post = posts
@@ -43,7 +43,7 @@ async fn awaiting_post<P: PostRepository>(
             post.id, post.status
         )));
     }
-    Ok(post)
+    Ok((post, moderator))
 }
 
 /// Approval accepts the Post INTO THE FEED: status → Accepted and the next
@@ -53,9 +53,13 @@ pub async fn approve<P: PostRepository>(
     users: &impl UserRepository,
     posts: &P,
 ) -> HandlerResult<Post> {
-    let post = awaiting_post(&cmd, users, posts).await?;
+    let (post, moderator) = awaiting_post(&cmd, users, posts).await?;
     let post = posts
         .accept_into_feed(post.id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    posts
+        .record_moderation(post.id, moderator.id, chrono::Utc::now())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(
@@ -73,7 +77,7 @@ pub async fn approve_with_extra_tags<P: PostRepository>(
     users: &impl UserRepository,
     posts: &P,
 ) -> HandlerResult<Post> {
-    let post = awaiting_post(&cmd, users, posts).await?;
+    let (post, moderator) = awaiting_post(&cmd, users, posts).await?;
     let mut merged = post.tags.clone();
     let mut added = 0usize;
     for tag in extra {
@@ -92,6 +96,10 @@ pub async fn approve_with_extra_tags<P: PostRepository>(
         .accept_into_feed(post.id)
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
+    posts
+        .record_moderation(post.id, moderator.id, chrono::Utc::now())
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(
         event = %Event::AcceptedIntoFeed, post_id = %post.id,
         position = post.feed_position, tags_added = added,
@@ -105,9 +113,13 @@ pub async fn reject<P: PostRepository>(
     users: &impl UserRepository,
     posts: &P,
 ) -> HandlerResult<Post> {
-    let post = awaiting_post(&cmd, users, posts).await?;
+    let (post, moderator) = awaiting_post(&cmd, users, posts).await?;
     posts
         .set_status_to(post.id, PostStatus::Rejected)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    posts
+        .record_moderation(post.id, moderator.id, chrono::Utc::now())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(event = %Event::ModerationApplied, post_id = %post.id, decision = %PostStatus::Rejected, "moderation decision applied");
