@@ -61,6 +61,34 @@ Channel forwards always go through the tag dialogue.
 5. Fill the feed: `/browse wolf` + Send buttons, or `/suggest <url> [tags…]`
    from anyone + Moderator approval via the DM buttons.
 
+## Production deployment
+
+On the target machine:
+
+```sh
+git clone https://github.com/ProgrammingCheetah/yiffy-corner-bot.git
+cd yiffy-corner-bot
+
+# Provision the vault (NOT in git) — create these files:
+#   config/vault/production/token.txt        Telegram bot token
+#   config/vault/production/e621_login.txt   e621 username        (optional)
+#   config/vault/production/e621_key.txt     e621 API key         (optional)
+#   config/vault/production/cookie_a.txt     FA session cookie a  (optional)
+#   config/vault/production/cookie_b.txt     FA session cookie b  (optional)
+mkdir -p config/vault/production config/vault/storage
+
+docker compose up -d --build bot-rust
+```
+
+That single `docker compose up -d --build bot-rust` is the production
+command: it builds the image, runs migrations against
+`config/vault/storage/rust-bot.sqlite` (persisted via the volume mount),
+and starts polling. `docker logs -f yiffy_corner_bot_rust` streams the
+JSON log. Update = `git pull && docker compose up -d --build bot-rust`.
+
+State (users, feed, cursors, posters) lives in the mounted sqlite file —
+back up `config/vault/` and you have everything.
+
 ## Logging
 
 Logs are **JSON lines** on stdout (set `YCB_LOG_FORMAT=pretty` for the human
