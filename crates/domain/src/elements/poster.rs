@@ -1,4 +1,4 @@
-use crate::elements::{cadence::PostInterval, tag::Tag};
+use crate::elements::{cadence::PostInterval, tag::Tag, tag_rule::TagRule};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosterId(u64);
@@ -43,6 +43,9 @@ pub struct Poster {
     /// The consumer's position in the feed: the highest `feed_position` this
     /// Poster has already consumed or scanned past. Starts at 0 (feed start).
     pub cursor: u64,
+    /// Conditional eligibility rules (see [`TagRule`]) — e.g. a straight
+    /// channel's `[solo]->[-male]`. All rules must pass.
+    pub rules: Vec<TagRule>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +74,8 @@ pub trait PosterRepository: Send + Sync {
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
     ) -> Result<Poster, Self::Err>;
+    /// Replace the conditional tag rules. Live on the next tick (DB-first).
+    async fn set_rules(&self, id: PosterId, rules: Vec<TagRule>) -> Result<Poster, Self::Err>;
     /// Change the posting cadence. Takes effect on the next tick (DB-first).
     async fn set_interval(&self, id: PosterId, interval: PostInterval)
     -> Result<Poster, Self::Err>;

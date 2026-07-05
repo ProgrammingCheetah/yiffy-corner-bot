@@ -3,6 +3,7 @@ use domain::elements::{
     cadence::PostInterval,
     poster::{Poster, PosterId, PosterRepository, PosterRepositoryError},
     tag::Tag,
+    tag_rule::TagRule,
 };
 use sqlx::{Row, sqlite::SqlitePool};
 
@@ -38,6 +39,8 @@ fn row_to_poster(row: &sqlx::sqlite::SqliteRow) -> Result<Poster, PosterReposito
         time_interval: PostInterval::new(interval as u8)
             .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?,
         cursor: row.get::<i64, _>("cursor") as u64,
+        rules: TagRule::parse_all(&row.get::<String, _>("conditional_rules"))
+            .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?,
     })
 }
 
@@ -89,6 +92,22 @@ impl PosterRepository for SqlitePosterRepository {
         .await
         .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?
         .ok_or(PosterRepositoryError::NotFound(id))?;
+        row_to_poster(&row)
+    }
+
+    async fn set_rules(&self, id: PosterId, rules: Vec<TagRule>) -> Result<Poster, Self::Err> {
+        let serialized = rules
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let row = sqlx::query("UPDATE posters SET conditional_rules = ? WHERE id = ? RETURNING *")
+            .bind(serialized)
+            .bind(*id.as_ref() as i64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?
+            .ok_or(PosterRepositoryError::NotFound(id))?;
         row_to_poster(&row)
     }
 

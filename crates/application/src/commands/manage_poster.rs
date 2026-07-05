@@ -101,6 +101,36 @@ where
     Ok(poster)
 }
 
+/// Replace a Poster's conditional tag rules. Owner-only; live next tick.
+pub async fn set_rules<P>(
+    actor: TelegramId,
+    poster_id: PosterId,
+    rules: Vec<domain::elements::tag_rule::TagRule>,
+    users: &impl UserRepository,
+    posters: &P,
+) -> HandlerResult<Poster>
+where
+    P: PosterRepository,
+{
+    require_role(users, actor, Role::Owner).await?;
+    let poster = posters
+        .set_rules(poster_id, rules)
+        .await
+        .map_err(|_| HandlerError::InvalidState(format!("poster {poster_id} does not exist")))?;
+    tracing::info!(
+        event = %Event::PosterRulesChanged,
+        poster_id = %poster.id,
+        rules = %poster
+            .rules
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+        "conditional rules replaced"
+    );
+    Ok(poster)
+}
+
 /// Change a Poster's cadence. Owner-only; live on the next tick.
 pub async fn set_interval<P>(
     actor: TelegramId,

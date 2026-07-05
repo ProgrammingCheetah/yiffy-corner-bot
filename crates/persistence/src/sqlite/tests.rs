@@ -449,6 +449,29 @@ mod posters {
     }
 
     #[tokio::test]
+    async fn set_rules_roundtrips_through_storage() {
+        use domain::elements::tag_rule::TagRule;
+
+        let repo = SqlitePosterRepository::new(test_pool().await);
+        let poster = repo
+            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .await
+            .unwrap();
+        assert!(poster.rules.is_empty());
+
+        let rules = TagRule::parse_all("[solo]->[-male] [canine feral]->[cw_feral]").unwrap();
+        let updated = repo.set_rules(poster.id, rules.clone()).await.unwrap();
+        assert_eq!(updated.rules, rules);
+
+        let stored = repo.find_by_id(poster.id).await.unwrap().unwrap();
+        assert_eq!(stored.rules, rules);
+
+        // Empty clears.
+        let cleared = repo.set_rules(poster.id, Vec::new()).await.unwrap();
+        assert!(cleared.rules.is_empty());
+    }
+
+    #[tokio::test]
     async fn list_all_returns_every_poster() {
         let repo = SqlitePosterRepository::new(test_pool().await);
         repo.create(vec![], vec![], PostInterval::new(5).unwrap())

@@ -83,6 +83,7 @@ vocabulary! {
         PosterCreated => "poster_created",
         PosterTagsChanged => "poster_tags_changed",
         PosterIntervalChanged => "poster_interval_changed",
+        PosterRulesChanged => "poster_rules_changed",
         PosterDeleted => "poster_deleted",
         ChannelBound => "channel_bound",
 
@@ -152,6 +153,7 @@ vocabulary! {
         SourceUnavailable => "source_unavailable",
         PosterForbiddenTag => "poster_forbidden_tag",
         MissingSubscribedTags => "missing_subscribed_tags",
+        ConditionalRule => "conditional_rule",
     }
 }
 

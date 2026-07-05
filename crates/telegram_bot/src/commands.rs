@@ -88,6 +88,10 @@ pub enum Command {
         description = "change a poster's cadence: /setinterval <poster|@channel|chat-id> <minutes> (owner)"
     )]
     Setinterval(String),
+    #[command(
+        description = "conditional tag rules: /setrules <poster|@channel|chat-id> [if…]->[then…] … (owner)"
+    )]
+    Setrules(String),
     #[command(description = "delete a poster: /delposter <poster-id> (owner)")]
     Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
@@ -133,6 +137,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Setchannel(_) => "setchannel",
         Command::Settags(_) => "settags",
         Command::Setinterval(_) => "setinterval",
+        Command::Setrules(_) => "setrules",
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
         Command::Announcements(_) => "announcements",
@@ -446,6 +451,7 @@ pub async fn handle_command(
         Command::Setchannel(arg) => handle_setchannel(&bot, &state, actor, &arg).await,
         Command::Settags(arg) => handle_settags(&bot, &state, actor, &arg).await,
         Command::Setinterval(arg) => handle_setinterval(&bot, &state, actor, &arg).await,
+        Command::Setrules(arg) => handle_setrules(&bot, &state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
@@ -1457,6 +1463,55 @@ async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
     lines.join("\n")
 }
 
+async fn handle_setrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use domain::elements::tag_rule::TagRule;
+
+    let arg = arg.trim();
+    let Some(target) = arg.split_whitespace().next() else {
+        return "Usage: /setrules <poster|@channel|chat-id> [if-tags…]->[then-tags…] …\n\
+                Example: /setrules @straightchannel [solo]->[-male]\n\
+                `-tag` means the tag must be absent. No rules = clear all rules."
+            .to_string();
+    };
+    let poster_ids = match resolve_posters(bot, state, target).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
+    let rules = match TagRule::parse_all(&arg[target.len()..]) {
+        Ok(rules) => rules,
+        Err(e) => return format!("Bad rule syntax: {e}"),
+    };
+    let mut lines = Vec::new();
+    for poster_id in poster_ids {
+        match manage_poster::set_rules(
+            actor,
+            poster_id,
+            rules.clone(),
+            &state.users,
+            &state.posters,
+        )
+        .await
+        {
+            Ok(poster) if poster.rules.is_empty() => lines.push(format!(
+                "Poster #{} has no conditional rules anymore — live within a minute.",
+                poster.id
+            )),
+            Ok(poster) => lines.push(format!(
+                "Poster #{} now enforces {} — live within a minute.",
+                poster.id,
+                poster
+                    .rules
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )),
+            Err(e) => lines.push(describe(e)),
+        }
+    }
+    lines.join("\n")
+}
+
 async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
     const USAGE: &str = "Usage: /newposter <interval-minutes> <@channel|chat-id> [tags… -forbidden…]\n\
         Interval must divide 60 (1,2,3,4,5,6,10,12,15,20,30,60). \
@@ -1756,8 +1811,21 @@ async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
             Ok(Some(config)) => format!("→ chat {} (announcements muted)", config.chat_id),
             _ => "→ UNBOUND (use /setchannel)".to_string(),
         };
+        let rules = if poster.rules.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", rules {}",
+                poster
+                    .rules
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        };
         lines.push(format!(
-            "#{} every {}min, tags [{}] minus [{}] {}",
+            "#{} every {}min, tags [{}] minus [{}]{} {}",
             poster.id,
             poster.time_interval.as_ref(),
             poster
@@ -1772,6 +1840,7 @@ async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(" "),
+            rules,
             binding
         ));
     }

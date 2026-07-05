@@ -8,6 +8,7 @@ use domain::elements::{
     cadence::PostInterval,
     poster::{Poster, PosterId, PosterRepository, PosterRepositoryError},
     tag::Tag,
+    tag_rule::TagRule,
 };
 use tokio::sync::RwLock;
 
@@ -41,6 +42,7 @@ impl PosterRepository for InMemoryPosterRepository {
             forbidden_tags,
             time_interval,
             cursor: 0,
+            rules: Vec::new(),
         };
         posters.insert(raw_id, poster.clone());
         Ok(poster)
@@ -62,6 +64,15 @@ impl PosterRepository for InMemoryPosterRepository {
             .ok_or(PosterRepositoryError::NotFound(id))?;
         poster.subscribed_tags = subscribed_tags;
         poster.forbidden_tags = forbidden_tags;
+        Ok(poster.clone())
+    }
+
+    async fn set_rules(&self, id: PosterId, rules: Vec<TagRule>) -> Result<Poster, Self::Err> {
+        let mut posters = self.posters.write().await;
+        let poster = posters
+            .get_mut(id.as_ref())
+            .ok_or(PosterRepositoryError::NotFound(id))?;
+        poster.rules = rules;
         Ok(poster.clone())
     }
 

@@ -138,6 +138,14 @@ where
             );
             return Ok(false);
         }
+        if let Some(rule) = self.poster.rules.iter().find(|rule| !rule.passes(&tags)) {
+            tracing::debug!(
+                event = %Event::CandidateSkipped, reason = %SkipReason::ConditionalRule,
+                post_id = %entry.id, poster_id = %self.poster.id, rule = %rule,
+                "skipped: conditional rule failed"
+            );
+            return Ok(false);
+        }
         let missing: Vec<&Tag> = self
             .poster
             .subscribed_tags
@@ -312,6 +320,7 @@ mod tests {
             forbidden_tags: tags(forbidden),
             time_interval: PostInterval::new(5).unwrap(),
             cursor: 0,
+            rules: Vec::new(),
         }
     }
 
@@ -486,6 +495,31 @@ mod tests {
         assert_eq!(pick.post.map(|p| p.id), Some(entry.id));
         let stored = fx.posts.find_by_id(entry.id).await.unwrap().unwrap();
         assert_eq!(stored.status, PostStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn conditional_rules_gate_eligibility_per_consumer() {
+        use domain::elements::tag_rule::TagRule;
+
+        let mut fx = Fixture::new();
+        let male_solo = fx
+            .feed_entry("https://e621.net/posts/1", &[], Some(&["solo", "male"]))
+            .await;
+        let female_solo = fx
+            .feed_entry("https://e621.net/posts/2", &[], Some(&["solo", "female"]))
+            .await;
+
+        // The straight channel: solo only without male.
+        let mut straight = poster(&[], &[]);
+        straight.rules = vec!["[solo]->[-male]".parse::<TagRule>().unwrap()];
+        let selector = fx.selector(straight);
+        let pick = selector.next_post(0).await.unwrap();
+        assert_eq!(pick.post.map(|p| p.id), Some(female_solo.id));
+
+        // An unruled consumer still takes the male solo (no status change).
+        let selector = fx.selector(poster(&[], &[]));
+        let pick = selector.next_post(0).await.unwrap();
+        assert_eq!(pick.post.map(|p| p.id), Some(male_solo.id));
     }
 
     #[tokio::test]

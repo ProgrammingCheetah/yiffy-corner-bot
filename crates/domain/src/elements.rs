@@ -9,5 +9,6 @@ pub mod publisher_config;
 pub mod report;
 pub mod tag;
 pub mod tag_policy;
+pub mod tag_rule;
 pub mod telegram;
 pub mod user;
