@@ -5,7 +5,9 @@
 
 pub mod post;
 pub mod poster;
+pub mod publication;
 pub mod publisher_config;
+pub mod report;
 pub mod tag_policy;
 pub mod telegram_copy;
 #[cfg(test)]

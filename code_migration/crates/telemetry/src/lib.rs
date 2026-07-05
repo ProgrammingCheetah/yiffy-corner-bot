@@ -100,8 +100,16 @@ vocabulary! {
         MediaResolveFailed => "media_resolve_failed",
         Published => "published",
         PublishFailed => "publish_failed",
+        PublicationRecordFailed => "publication_record_failed",
         MarkPostedFailed => "mark_posted_failed",
         TickFailed => "tick_failed",
+
+        // Reports
+        PostReported => "post_reported",
+        ReportDuplicate => "report_duplicate",
+        ReportNotifyFailed => "report_notify_failed",
+        PostTakenDown => "post_taken_down",
+        ReportsDismissed => "reports_dismissed",
 
         // Bot surface
         CommandReceived => "command_received",

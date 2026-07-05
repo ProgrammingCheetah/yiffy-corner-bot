@@ -6,40 +6,50 @@ use domain::elements::{
     media::MediaResolver,
     post::{Post, PostRepository, PostSelectorStrategy},
     poster::{Poster, PosterRepository},
-    publisher::{PublishItem, Publisher},
+    publisher::{Publication, PublicationRepository, PublishItem, Publisher},
     user::UserRepository,
 };
 use telemetry::Event;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::Instrument;
 
-/// One unit of scheduler work: a [`Poster`] (config) paired with the
-/// [`PostSelectorStrategy`] that walks the feed for it, the [`MediaResolver`]
-/// that turns a Post's source into publishable media, and the [`Publisher`]
-/// that delivers it.
-pub struct PosterRuntime {
-    pub poster: Poster,
-    pub selector: Box<dyn PostSelectorStrategy>,
-    pub resolver: Arc<dyn MediaResolver>,
-    pub publisher: Box<dyn Publisher>,
+/// Builds the feed-walking selector for one consumer. Called EVERY fire with
+/// the poster's config as read from the database that tick — this is what
+/// makes `/settags` live without a restart.
+pub trait SelectorFactory: Send + Sync {
+    fn for_poster(&self, poster: Poster) -> Box<dyn PostSelectorStrategy>;
 }
 
-pub struct SchedulerDeps<R, U, PR>
+/// Resolves a Poster's delivery destination at fire time (database-first:
+/// `/setchannel` binds take effect on the next tick). `Ok(None)` means the
+/// poster has no channel binding yet.
+#[async_trait::async_trait]
+pub trait PublisherFactory: Send + Sync {
+    async fn publisher_for(&self, poster: &Poster) -> Result<Option<Box<dyn Publisher>>, String>;
+}
+
+pub struct SchedulerDeps<R, U, PR, PB>
 where
     R: PostRepository + Send + Sync,
     U: UserRepository,
     PR: PosterRepository,
+    PB: PublicationRepository,
 {
-    pub runtimes: Vec<PosterRuntime>,
     pub posts: Arc<R>,
     pub users: Arc<U>,
     pub posters: Arc<PR>,
+    pub publications: Arc<PB>,
+    pub selectors: Arc<dyn SelectorFactory>,
+    pub publishers: Arc<dyn PublisherFactory>,
+    pub resolver: Arc<dyn MediaResolver>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum TickError {
     #[error("invalid PublishBlock: {0}")]
     Block(#[from] PublishBlockError),
+    #[error("poster listing failed: {0}")]
+    Posters(String),
 }
 
 /// Build the caption for a Post: attribution first, source reference last.
@@ -71,18 +81,17 @@ pub async fn build_caption<U: UserRepository>(post: &Post, users: &U) -> String 
     }
 }
 
-/// Run one scheduler tick: every Poster whose interval divides the current
-/// minute-of-hour walks the feed from its cursor and publishes the first
-/// matching entry (if any).
+/// Run one scheduler tick, DATABASE-FIRST: posters (config, tags, cursor)
+/// are read fresh, so `/newposter`, `/settags` and `/setchannel` are live
+/// within a minute — no restarts. Every Poster whose interval divides the
+/// current minute-of-hour walks the feed from its cursor and publishes the
+/// first matching entry.
 ///
-/// Per-runtime failures are logged and the tick continues with the next
-/// runtime — one Poster failing must not block the others.
-pub async fn run_tick<R, U, PR>(
+/// Per-poster failures are logged and the tick continues with the next
+/// poster — one failing must not block the others.
+pub async fn run_tick<R, U, PR, PB>(
     now: DateTime<Utc>,
-    runtimes: &[PosterRuntime],
-    posts: &R,
-    users: &U,
-    posters: &PR,
+    deps: &SchedulerDeps<R, U, PR, PB>,
 ) -> Result<(), TickError>
 where
     R: PostRepository + Send + Sync,
@@ -90,33 +99,36 @@ where
     U: UserRepository,
     PR: PosterRepository,
     PR::Err: std::fmt::Display,
+    PB: PublicationRepository,
+    PB::Err: std::fmt::Display,
 {
     let block = PublishBlock::try_from(now.minute_of_hour())?;
-    for rt in runtimes {
-        if !block.fires_for(&rt.poster.time_interval) {
+    let posters = deps
+        .posters
+        .list_all()
+        .await
+        .map_err(|e| TickError::Posters(e.to_string()))?;
+    for poster in posters {
+        if !block.fires_for(&poster.time_interval) {
             continue;
         }
         let span = tracing::info_span!(
             "poster_fire",
-            poster_id = %rt.poster.id,
+            poster_id = %poster.id,
             minute = now.minute_of_hour(),
         );
-        fire_one(rt, posts, users, posters, now)
-            .instrument(span)
-            .await;
+        fire_one(poster, deps, now).instrument(span).await;
     }
     Ok(())
 }
 
-/// One consumer's full fire pipeline: read cursor → scan feed → resolve →
-/// caption → publish → mark + advance cursor. The cursor only advances after
-/// a successful publish (or a clean empty scan), so failures retry the same
-/// entry next tick. Every exit path logs; failures never propagate.
-async fn fire_one<R, U, PR>(
-    rt: &PosterRuntime,
-    posts: &R,
-    users: &U,
-    posters: &PR,
+/// One consumer's full fire pipeline: resolve destination → scan feed →
+/// resolve media → caption → publish → record publication + advance cursor.
+/// The cursor only advances after a successful publish (or a clean empty
+/// scan), so failures retry the same entry next tick.
+async fn fire_one<R, U, PR, PB>(
+    poster: Poster,
+    deps: &SchedulerDeps<R, U, PR, PB>,
     now: DateTime<Utc>,
 ) where
     R: PostRepository + Send + Sync,
@@ -124,27 +136,31 @@ async fn fire_one<R, U, PR>(
     U: UserRepository,
     PR: PosterRepository,
     PR::Err: std::fmt::Display,
+    PB: PublicationRepository,
+    PB::Err: std::fmt::Display,
 {
-    // Cursor is state, not config: read fresh every fire.
-    let cursor = match posters.find_by_id(rt.poster.id).await {
-        Ok(Some(current)) => current.cursor,
-        Ok(None) => {
-            tracing::error!(event = %Event::SelectorFailed, "poster vanished from the repository");
-            return;
-        }
-        Err(e) => {
-            tracing::error!(event = %Event::SelectorFailed, error = %e, "cursor read failed");
-            return;
-        }
-    };
+    let cursor = poster.cursor;
     tracing::debug!(
         event = %Event::PosterFired,
-        interval_min = rt.poster.time_interval.as_ref(),
+        interval_min = poster.time_interval.as_ref(),
         cursor,
         "poster fires this tick"
     );
 
-    let pick = match rt.selector.next_post(cursor).await {
+    let publisher = match deps.publishers.publisher_for(&poster).await {
+        Ok(Some(publisher)) => publisher,
+        Ok(None) => {
+            tracing::debug!(event = %Event::PosterUnbound, "no channel binding; skipping");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(event = %Event::PosterUnbound, error = %e, "publisher construction failed");
+            return;
+        }
+    };
+    let selector = deps.selectors.for_poster(poster.clone());
+
+    let pick = match selector.next_post(cursor).await {
         Ok(pick) => pick,
         Err(e) => {
             tracing::error!(event = %Event::SelectorFailed, error = %e, "feed scan failed; cursor kept");
@@ -154,7 +170,7 @@ async fn fire_one<R, U, PR>(
 
     let Some(post) = pick.post else {
         if pick.advance_to != cursor {
-            if let Err(e) = posters.set_cursor(rt.poster.id, pick.advance_to).await {
+            if let Err(e) = deps.posters.set_cursor(poster.id, pick.advance_to).await {
                 tracing::error!(event = %Event::SelectorFailed, error = %e, "cursor write failed");
                 return;
             }
@@ -175,7 +191,7 @@ async fn fire_one<R, U, PR>(
         position = pick.advance_to,
         "feed entry selected"
     );
-    let media = match rt.resolver.resolve(&post.source).await {
+    let media = match deps.resolver.resolve(&post.source).await {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(
@@ -188,20 +204,37 @@ async fn fire_one<R, U, PR>(
     };
     tracing::debug!(event = %Event::MediaResolved, post_id = %post.id, media = ?media, "media resolved");
     let item = PublishItem {
+        post_id: post.id,
         media,
-        caption: Some(build_caption(&post, users).await),
+        caption: Some(build_caption(&post, &*deps.users).await),
     };
-    if let Err(e) = rt.publisher.publish(&item).await {
-        tracing::error!(
-            event = %Event::PublishFailed, post_id = %post.id, error = %e,
-            "publish failed; cursor kept for retry"
-        );
-        return;
+    let receipt = match publisher.publish(&item).await {
+        Ok(receipt) => receipt,
+        Err(e) => {
+            tracing::error!(
+                event = %Event::PublishFailed, post_id = %post.id, error = %e,
+                "publish failed; cursor kept for retry"
+            );
+            return;
+        }
+    };
+    if let Err(e) = deps
+        .publications
+        .record(Publication {
+            post_id: post.id,
+            chat_id: receipt.chat_id,
+            message_id: receipt.message_id,
+            published_at: now,
+        })
+        .await
+    {
+        // Takedowns for this delivery won't find it; publish itself is done.
+        tracing::error!(event = %Event::PublicationRecordFailed, post_id = %post.id, error = %e, "publication record failed");
     }
-    if let Err(e) = posts.mark_posted(post.id, now).await {
+    if let Err(e) = deps.posts.mark_posted(post.id, now).await {
         tracing::error!(event = %Event::MarkPostedFailed, post_id = %post.id, error = %e, "mark_posted failed");
     }
-    if let Err(e) = posters.set_cursor(rt.poster.id, pick.advance_to).await {
+    if let Err(e) = deps.posters.set_cursor(poster.id, pick.advance_to).await {
         // Publish succeeded but the cursor didn't move: the entry may repeat.
         tracing::error!(
             event = %Event::MarkPostedFailed, post_id = %post.id, error = %e,
@@ -211,18 +244,21 @@ async fn fire_one<R, U, PR>(
     }
     tracing::info!(
         event = %Event::Published, post_id = %post.id,
-        cursor = pick.advance_to, "published and cursor advanced"
+        chat_id = receipt.chat_id, cursor = pick.advance_to,
+        "published and cursor advanced"
     );
 }
 
 /// Loop forever, waking every minute to call [`run_tick`].
-pub async fn start_scheduler<R, U, PR>(deps: SchedulerDeps<R, U, PR>) -> !
+pub async fn start_scheduler<R, U, PR, PB>(deps: SchedulerDeps<R, U, PR, PB>) -> !
 where
     R: PostRepository + Send + Sync + 'static,
     R::Err: std::fmt::Display,
     U: UserRepository + 'static,
     PR: PosterRepository + 'static,
     PR::Err: std::fmt::Display,
+    PB: PublicationRepository + 'static,
+    PB::Err: std::fmt::Display,
 {
     let mut ticker = interval(Duration::from_secs(60));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -230,15 +266,7 @@ where
     loop {
         ticker.tick().await;
         let now = Utc::now();
-        if let Err(e) = run_tick(
-            now,
-            &deps.runtimes,
-            &*deps.posts,
-            &*deps.users,
-            &*deps.posters,
-        )
-        .await
-        {
+        if let Err(e) = run_tick(now, &deps).await {
             tracing::error!(event = %Event::TickFailed, error = %e, "scheduler tick failed");
         }
     }
@@ -270,9 +298,12 @@ mod tests {
         cadence::PostInterval,
         media::{MediaResolveError, ResolvedMedia},
         post::{FeedPick, Post, PostId, PostStatus, SelectorError, Source},
-        publisher::PublisherError,
+        publisher::{PublishReceipt, PublisherError},
     };
-    use persistence::in_memory::{poster::InMemoryPosterRepository, user::InMemoryUserRepository};
+    use persistence::in_memory::{
+        poster::InMemoryPosterRepository, publication::InMemoryPublicationRepository,
+        user::InMemoryUserRepository,
+    };
     use url::Url;
 
     fn make_post(id: u64, position: u64) -> Post {
@@ -288,21 +319,18 @@ mod tests {
         }
     }
 
-    /// Selector returning a fixed pick.
+    /// Factory handing out clones of a fixed pick.
+    struct FixedSelectorFactory(FeedPick);
+    impl SelectorFactory for FixedSelectorFactory {
+        fn for_poster(&self, _poster: Poster) -> Box<dyn PostSelectorStrategy> {
+            Box::new(FixedSelector(self.0.clone()))
+        }
+    }
     struct FixedSelector(FeedPick);
     #[async_trait]
     impl PostSelectorStrategy for FixedSelector {
         async fn next_post(&self, _cursor: u64) -> Result<FeedPick, SelectorError> {
             Ok(self.0.clone())
-        }
-    }
-
-    /// Selector that always errors.
-    struct ErroringSelector;
-    #[async_trait]
-    impl PostSelectorStrategy for ErroringSelector {
-        async fn next_post(&self, _cursor: u64) -> Result<FeedPick, SelectorError> {
-            Err(SelectorError::Fetch("e621 down".into()))
         }
     }
 
@@ -316,7 +344,7 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct CountingPublisher {
         count: Arc<AtomicUsize>,
         fail: bool,
@@ -324,17 +352,37 @@ mod tests {
     }
     #[async_trait]
     impl Publisher for CountingPublisher {
-        async fn publish(&self, item: &PublishItem) -> Result<(), PublisherError> {
+        async fn publish(&self, item: &PublishItem) -> Result<PublishReceipt, PublisherError> {
             if self.fail {
                 return Err(PublisherError::Send("telegram down".into()));
             }
             self.count.fetch_add(1, Ordering::SeqCst);
             *self.last_item.lock().unwrap() = Some(item.clone());
-            Ok(())
+            Ok(PublishReceipt {
+                chat_id: -100,
+                message_id: 555,
+            })
         }
     }
 
-    /// PostRepository that only records `mark_posted` calls.
+    /// Factory: bound posters get the shared CountingPublisher; unbound none.
+    struct StubPublisherFactory {
+        publisher: CountingPublisher,
+        bound: bool,
+    }
+    #[async_trait]
+    impl PublisherFactory for StubPublisherFactory {
+        async fn publisher_for(
+            &self,
+            _poster: &Poster,
+        ) -> Result<Option<Box<dyn Publisher>>, String> {
+            Ok(self
+                .bound
+                .then(|| Box::new(self.publisher.clone()) as Box<dyn Publisher>))
+        }
+    }
+
+    /// PostRepository stub recording mark_posted.
     #[derive(Default)]
     struct RecordingPostRepository {
         marked: Mutex<Vec<PostId>>,
@@ -388,41 +436,47 @@ mod tests {
 
     struct Fixture {
         posters: Arc<InMemoryPosterRepository>,
-        users: InMemoryUserRepository,
-        posts: RecordingPostRepository,
+        publisher: CountingPublisher,
     }
 
     impl Fixture {
-        async fn new() -> Self {
+        fn new() -> Self {
             Self {
                 posters: Arc::new(InMemoryPosterRepository::new()),
-                users: InMemoryUserRepository::new(),
-                posts: RecordingPostRepository::default(),
+                publisher: CountingPublisher::default(),
             }
         }
 
-        /// Register a poster (interval 5) and build a runtime around the
-        /// given selector/publisher.
-        async fn runtime(
-            &self,
-            selector: Box<dyn PostSelectorStrategy>,
-            publisher: CountingPublisher,
-        ) -> (PosterRuntime, domain::elements::poster::PosterId) {
-            let poster = self
-                .posters
+        async fn poster(&self) -> domain::elements::poster::PosterId {
+            self.posters
                 .create(vec![], vec![], PostInterval::new(5).unwrap())
                 .await
-                .unwrap();
-            let id = poster.id;
-            (
-                PosterRuntime {
-                    poster,
-                    selector,
-                    resolver: Arc::new(FixedResolver),
-                    publisher: Box::new(publisher),
-                },
-                id,
-            )
+                .unwrap()
+                .id
+        }
+
+        fn deps(
+            &self,
+            pick: FeedPick,
+            bound: bool,
+        ) -> SchedulerDeps<
+            RecordingPostRepository,
+            InMemoryUserRepository,
+            InMemoryPosterRepository,
+            InMemoryPublicationRepository,
+        > {
+            SchedulerDeps {
+                posts: Arc::new(RecordingPostRepository::default()),
+                users: Arc::new(InMemoryUserRepository::new()),
+                posters: self.posters.clone(),
+                publications: Arc::new(InMemoryPublicationRepository::new()),
+                selectors: Arc::new(FixedSelectorFactory(pick)),
+                publishers: Arc::new(StubPublisherFactory {
+                    publisher: self.publisher.clone(),
+                    bound,
+                }),
+                resolver: Arc::new(FixedResolver),
+            }
         }
 
         async fn cursor_of(&self, id: domain::elements::poster::PosterId) -> u64 {
@@ -430,185 +484,132 @@ mod tests {
         }
     }
 
-    fn publisher() -> (
-        CountingPublisher,
-        Arc<AtomicUsize>,
-        Arc<Mutex<Option<PublishItem>>>,
-    ) {
-        let p = CountingPublisher::default();
-        (
-            CountingPublisher {
-                count: p.count.clone(),
-                fail: false,
-                last_item: p.last_item.clone(),
-            },
-            p.count,
-            p.last_item,
-        )
-    }
-
     #[tokio::test]
-    async fn publishes_match_and_advances_cursor() {
-        let fx = Fixture::new().await;
-        let (pub_ok, count, _) = publisher();
-        let (rt, id) = fx
-            .runtime(
-                Box::new(FixedSelector(FeedPick {
-                    post: Some(make_post(100, 7)),
-                    advance_to: 7,
-                })),
-                pub_ok,
-            )
-            .await;
+    async fn publishes_match_records_publication_and_advances_cursor() {
+        let fx = Fixture::new();
+        let id = fx.poster().await;
+        let deps = fx.deps(
+            FeedPick {
+                post: Some(make_post(100, 7)),
+                advance_to: 7,
+            },
+            true,
+        );
 
-        run_tick(at_minute(5), &[rt], &fx.posts, &fx.users, &*fx.posters)
-            .await
-            .unwrap();
+        run_tick(at_minute(5), &deps).await.unwrap();
 
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 1);
         assert_eq!(fx.cursor_of(id).await, 7);
-        assert_eq!(*fx.posts.marked.lock().unwrap(), vec![PostId::from(100)]);
+        assert_eq!(*deps.posts.marked.lock().unwrap(), vec![PostId::from(100)]);
+        use domain::elements::publisher::PublicationRepository as _;
+        let recorded = deps.publications.list_for(PostId::from(100)).await.unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].chat_id, -100);
+        // The publish item carried the post id (for the Report button).
+        let item = fx.publisher.last_item.lock().unwrap().clone().unwrap();
+        assert_eq!(item.post_id, PostId::from(100));
     }
 
     #[tokio::test]
     async fn does_not_fire_off_interval() {
-        let fx = Fixture::new().await;
-        let (pub_ok, count, _) = publisher();
-        let (rt, id) = fx
-            .runtime(
-                Box::new(FixedSelector(FeedPick {
-                    post: Some(make_post(100, 7)),
-                    advance_to: 7,
-                })),
-                pub_ok,
-            )
-            .await;
+        let fx = Fixture::new();
+        let id = fx.poster().await;
+        let deps = fx.deps(
+            FeedPick {
+                post: Some(make_post(100, 7)),
+                advance_to: 7,
+            },
+            true,
+        );
 
-        run_tick(at_minute(7), &[rt], &fx.posts, &fx.users, &*fx.posters)
-            .await
-            .unwrap();
+        run_tick(at_minute(7), &deps).await.unwrap();
 
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 0);
         assert_eq!(fx.cursor_of(id).await, 0);
     }
 
     #[tokio::test]
+    async fn unbound_poster_is_skipped_quietly() {
+        let fx = Fixture::new();
+        let id = fx.poster().await;
+        let deps = fx.deps(
+            FeedPick {
+                post: Some(make_post(100, 7)),
+                advance_to: 7,
+            },
+            false, // no channel binding
+        );
+
+        run_tick(at_minute(5), &deps).await.unwrap();
+
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 0);
+        assert_eq!(fx.cursor_of(id).await, 0); // cursor untouched
+    }
+
+    #[tokio::test]
     async fn empty_scan_advances_cursor_without_publish() {
-        let fx = Fixture::new().await;
-        let (pub_ok, count, _) = publisher();
-        let (rt, id) = fx
-            .runtime(
-                Box::new(FixedSelector(FeedPick {
-                    post: None,
-                    advance_to: 9,
-                })),
-                pub_ok,
-            )
-            .await;
+        let fx = Fixture::new();
+        let id = fx.poster().await;
+        let deps = fx.deps(
+            FeedPick {
+                post: None,
+                advance_to: 9,
+            },
+            true,
+        );
 
-        run_tick(at_minute(5), &[rt], &fx.posts, &fx.users, &*fx.posters)
-            .await
-            .unwrap();
+        run_tick(at_minute(5), &deps).await.unwrap();
 
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 0);
         assert_eq!(fx.cursor_of(id).await, 9);
     }
 
     #[tokio::test]
     async fn publish_failure_keeps_cursor_for_retry() {
-        let fx = Fixture::new().await;
-        let (base, count, last) = publisher();
-        let failing = CountingPublisher {
-            count: base.count.clone(),
-            fail: true,
-            last_item: last,
-        };
-        let (rt, id) = fx
-            .runtime(
-                Box::new(FixedSelector(FeedPick {
-                    post: Some(make_post(100, 7)),
-                    advance_to: 7,
-                })),
-                failing,
-            )
-            .await;
+        let fx = Fixture::new();
+        let id = fx.poster().await;
+        let mut deps = fx.deps(
+            FeedPick {
+                post: Some(make_post(100, 7)),
+                advance_to: 7,
+            },
+            true,
+        );
+        deps.publishers = Arc::new(StubPublisherFactory {
+            publisher: CountingPublisher {
+                count: fx.publisher.count.clone(),
+                fail: true,
+                last_item: fx.publisher.last_item.clone(),
+            },
+            bound: true,
+        });
 
-        run_tick(at_minute(5), &[rt], &fx.posts, &fx.users, &*fx.posters)
-            .await
-            .unwrap();
+        run_tick(at_minute(5), &deps).await.unwrap();
 
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 0);
         assert_eq!(fx.cursor_of(id).await, 0); // retry next tick
-        assert!(fx.posts.marked.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn selector_error_keeps_cursor_and_other_runtimes_continue() {
-        let fx = Fixture::new().await;
-        let (pub_a, count_a, _) = publisher();
-        let (pub_b, count_b, _) = publisher();
-        let (rt_err, id_err) = fx.runtime(Box::new(ErroringSelector), pub_a).await;
-        let (rt_ok, _) = fx
-            .runtime(
-                Box::new(FixedSelector(FeedPick {
-                    post: Some(make_post(200, 3)),
-                    advance_to: 3,
-                })),
-                pub_b,
-            )
-            .await;
+    async fn new_poster_is_picked_up_without_restart() {
+        let fx = Fixture::new();
+        let deps = fx.deps(
+            FeedPick {
+                post: Some(make_post(100, 7)),
+                advance_to: 7,
+            },
+            true,
+        );
 
-        run_tick(
-            at_minute(5),
-            &[rt_err, rt_ok],
-            &fx.posts,
-            &fx.users,
-            &*fx.posters,
-        )
-        .await
-        .unwrap();
+        // No posters yet: nothing happens.
+        run_tick(at_minute(5), &deps).await.unwrap();
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 0);
 
-        assert_eq!(count_a.load(Ordering::SeqCst), 0);
-        assert_eq!(count_b.load(Ordering::SeqCst), 1);
-        assert_eq!(fx.cursor_of(id_err).await, 0);
-    }
-
-    #[tokio::test]
-    async fn published_item_credits_the_submitter() {
-        use domain::elements::user::{Role, TelegramId, UserRepository as _};
-
-        let fx = Fixture::new().await;
-        let submitter = fx
-            .users
-            .create(
-                TelegramId::from(42),
-                Role::User,
-                None,
-                Some("Ziel".to_string()),
-            )
-            .await
-            .unwrap();
-        let mut post = make_post(100, 7);
-        post.submitted_by = Some(submitter.id);
-
-        let (pub_ok, _, last_item) = publisher();
-        let (rt, _) = fx
-            .runtime(
-                Box::new(FixedSelector(FeedPick {
-                    post: Some(post),
-                    advance_to: 7,
-                })),
-                pub_ok,
-            )
-            .await;
-
-        run_tick(at_minute(5), &[rt], &fx.posts, &fx.users, &*fx.posters)
-            .await
-            .unwrap();
-
-        let item = last_item.lock().unwrap().clone().unwrap();
-        let caption = item.caption.unwrap();
-        assert!(caption.contains("Submitted by Ziel"), "caption: {caption}");
+        // Poster created between ticks (e.g. /newposter): next tick fires it.
+        let id = fx.poster().await;
+        run_tick(at_minute(10), &deps).await.unwrap();
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 1);
+        assert_eq!(fx.cursor_of(id).await, 7);
     }
 
     #[tokio::test]

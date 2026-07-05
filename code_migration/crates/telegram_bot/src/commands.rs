@@ -759,11 +759,11 @@ async fn handle_settags(state: &SharedState, actor: TelegramId, arg: &str) -> St
     .await
     {
         Ok(poster) if poster.subscribed_tags.is_empty() => format!(
-            "Poster #{} now posts ANYTHING (no subscription filter). Restart the bot to apply.",
+            "Poster #{} now posts ANYTHING (no subscription filter) — live within a minute.",
             poster.id
         ),
         Ok(poster) => format!(
-            "Poster #{} now subscribes to [{}] minus [{}]. Restart the bot to apply.",
+            "Poster #{} now subscribes to [{}] minus [{}] — live within a minute.",
             poster.id,
             poster
                 .subscribed_tags
@@ -852,7 +852,7 @@ async fn handle_setchannel(bot: &Bot, state: &SharedState, actor: TelegramId, ar
     .await
     {
         Ok(()) => {
-            format!("Poster #{poster_id} now publishes to {chat_id}. Restart the bot to activate.")
+            format!("Poster #{poster_id} now publishes to {chat_id} — live within a minute.")
         }
         Err(e) => describe(e),
     }
@@ -998,6 +998,126 @@ pub async fn handle_callback(
             };
             bot.answer_callback_query(query.id.clone()).await?;
             // Reflect the decision on the DM itself so the buttons disappear.
+            if let Some(message) = query.message.as_ref() {
+                let text = format!(
+                    "{}\n\n{outcome}",
+                    message
+                        .regular_message()
+                        .and_then(|m| m.text())
+                        .unwrap_or("")
+                );
+                bot.edit_message_text(message.chat().id, message.id(), text)
+                    .await?;
+            }
+        }
+        // Viewer report button on published posts.
+        ["report", id] => {
+            use application::commands::report::{self, ReportOutcome};
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            let toast = match parse_post_id(id) {
+                None => "Malformed report.".to_string(),
+                Some(post_id) => {
+                    match report::report(actor, post_id, &state.posts, &state.reports, &state.users)
+                        .await
+                    {
+                        Ok(ReportOutcome::Duplicate) => {
+                            "You already reported this post.".to_string()
+                        }
+                        Ok(ReportOutcome::New {
+                            post,
+                            reviewers,
+                            total_reports,
+                        }) => {
+                            let text = format!(
+                                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}",
+                                post.id,
+                                post.source.as_ref()
+                            );
+                            let keyboard = InlineKeyboardMarkup::new([[
+                                InlineKeyboardButton::callback(
+                                    "🗑 Take down",
+                                    format!("repmod:take:{}", post.id),
+                                ),
+                                InlineKeyboardButton::callback(
+                                    "✅ Dismiss",
+                                    format!("repmod:dismiss:{}", post.id),
+                                ),
+                            ]]);
+                            for reviewer in &reviewers {
+                                let chat = ChatId(*reviewer.telegram_id.as_ref());
+                                if let Err(e) = bot
+                                    .send_message(chat, text.clone())
+                                    .reply_markup(keyboard.clone())
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        event = %Event::ReportNotifyFailed, post_id = %post.id,
+                                        reviewer = %reviewer.id, error = %e, "report DM failed"
+                                    );
+                                }
+                            }
+                            "Thank you — the moderators have been notified.".to_string()
+                        }
+                        Err(e) => describe(e),
+                    }
+                }
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
+        }
+        // Moderator resolution buttons on report DMs.
+        ["repmod", verb @ ("take" | "dismiss"), id] => {
+            use application::commands::report;
+            use teloxide::types::MessageId;
+
+            let outcome = match parse_post_id(id) {
+                None => "Malformed callback.".to_string(),
+                Some(post_id) if verb == "take" => {
+                    match report::take_down(
+                        actor,
+                        post_id,
+                        &state.users,
+                        &state.posts,
+                        &state.publications,
+                    )
+                    .await
+                    {
+                        Ok(deliveries) => {
+                            let mut deleted = 0usize;
+                            for delivery in &deliveries {
+                                match bot
+                                    .delete_message(
+                                        ChatId(delivery.chat_id),
+                                        MessageId(delivery.message_id),
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => deleted += 1,
+                                    Err(e) => tracing::warn!(
+                                        event = %Event::PublishFailed, post_id = %post_id,
+                                        chat_id = delivery.chat_id, error = %e,
+                                        "channel message delete failed"
+                                    ),
+                                }
+                            }
+                            format!(
+                                "Post #{post_id} taken down ({deleted}/{} channel message(s) deleted).",
+                                deliveries.len()
+                            )
+                        }
+                        Err(e) => describe(e),
+                    }
+                }
+                Some(post_id) => {
+                    match report::dismiss(actor, post_id, &state.users, &state.reports).await {
+                        Ok(()) => format!("Reports for post #{post_id} dismissed."),
+                        Err(e) => describe(e),
+                    }
+                }
+            };
+            bot.answer_callback_query(query.id.clone()).await?;
             if let Some(message) = query.message.as_ref() {
                 let text = format!(
                     "{}\n\n{outcome}",

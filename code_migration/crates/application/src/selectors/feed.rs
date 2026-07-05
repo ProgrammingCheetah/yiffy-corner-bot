@@ -147,6 +147,33 @@ where
     }
 }
 
+/// Hands the scheduler a fresh [`FeedSelector`] per fire, wrapping shared
+/// repository handles. Config comes in via the poster argument each time —
+/// database-first, nothing cached.
+pub struct FeedSelectorFactory<P, E, F> {
+    pub posts: Arc<P>,
+    pub e621: Arc<E>,
+    pub forbidden: Arc<F>,
+}
+
+impl<P, E, F> crate::actors::scheduler::SelectorFactory for FeedSelectorFactory<P, E, F>
+where
+    P: PostRepository + Send + Sync + 'static,
+    P::Err: std::fmt::Display,
+    E: E621Fetcher + 'static,
+    F: ForbiddenTagRepository + 'static,
+    F::Err: std::fmt::Display,
+{
+    fn for_poster(&self, poster: Poster) -> Box<dyn PostSelectorStrategy> {
+        Box::new(FeedSelector::new(
+            poster,
+            self.posts.clone(),
+            self.e621.clone(),
+            self.forbidden.clone(),
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl<P, E, F> PostSelectorStrategy for FeedSelector<P, E, F>
 where

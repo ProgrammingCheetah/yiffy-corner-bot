@@ -1,0 +1,320 @@
+//! The report loop: viewers press ⚠️ on a published post; moderators take
+//! the post down or dismiss the reports.
+
+use chrono::Utc;
+use domain::elements::{
+    post::{Post, PostId, PostRepository},
+    publisher::{Publication, PublicationRepository},
+    report::{Report, ReportRepository},
+    user::{Role, TelegramId, User, UserRepository},
+};
+use telemetry::Event;
+
+use crate::commands::auth::require_role;
+use crate::traits::handler_response::{HandlerError, HandlerResult};
+
+/// What the bot layer needs to react to a viewer report.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // Duplicate is the rare arm; boxing New buys nothing
+pub enum ReportOutcome {
+    /// First report from this viewer: notify these reviewers.
+    New {
+        post: Post,
+        reviewers: Vec<User>,
+        total_reports: u64,
+    },
+    /// This viewer already reported this post (abuse dedupe) — acknowledge
+    /// quietly, no re-notification.
+    Duplicate,
+}
+
+/// A viewer (any Telegram user — registration not required) reports a post.
+pub async fn report<P, RR>(
+    reporter: TelegramId,
+    post_id: PostId,
+    posts: &P,
+    reports: &RR,
+    users: &impl UserRepository,
+) -> HandlerResult<ReportOutcome>
+where
+    P: PostRepository,
+    RR: ReportRepository,
+{
+    let post = posts
+        .find_by_id(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+        .ok_or(HandlerError::PostNotFound(post_id))?;
+
+    let fresh = reports
+        .add(Report {
+            post_id,
+            reporter,
+            reported_at: Utc::now(),
+        })
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    if !fresh {
+        tracing::debug!(
+            event = %Event::ReportDuplicate, post_id = %post_id,
+            reporter = reporter.as_ref(), "repeat report ignored"
+        );
+        return Ok(ReportOutcome::Duplicate);
+    }
+
+    let total_reports = reports
+        .count_for(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::PostReported, post_id = %post_id,
+        reporter = reporter.as_ref(), total_reports, "post reported"
+    );
+
+    let mut reviewers = users
+        .list_by_role(Role::Moderator)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    reviewers.extend(
+        users
+            .list_by_role(Role::Owner)
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?,
+    );
+    Ok(ReportOutcome::New {
+        post,
+        reviewers,
+        total_reports,
+    })
+}
+
+/// Moderator takedown: soft-delete the Post and hand back every recorded
+/// delivery so the bot layer can delete the channel messages.
+pub async fn take_down<P, PB>(
+    actor: TelegramId,
+    post_id: PostId,
+    users: &impl UserRepository,
+    posts: &P,
+    publications: &PB,
+) -> HandlerResult<Vec<Publication>>
+where
+    P: PostRepository,
+    PB: PublicationRepository,
+{
+    require_role(users, actor, Role::Moderator).await?;
+    posts
+        .find_by_id(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+        .ok_or(HandlerError::PostNotFound(post_id))?;
+    posts
+        .remove(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    let deliveries = publications
+        .list_for(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::PostTakenDown, post_id = %post_id,
+        deliveries = deliveries.len(), "post taken down"
+    );
+    Ok(deliveries)
+}
+
+/// Moderator dismissal: clear the post's reports (a fresh wave re-notifies).
+pub async fn dismiss<RR>(
+    actor: TelegramId,
+    post_id: PostId,
+    users: &impl UserRepository,
+    reports: &RR,
+) -> HandlerResult<()>
+where
+    RR: ReportRepository,
+{
+    require_role(users, actor, Role::Moderator).await?;
+    reports
+        .clear_for(post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::ReportsDismissed, post_id = %post_id, "reports dismissed");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use domain::elements::post::{PostStatus, Source};
+    use persistence::in_memory::{
+        post::InMemoryPostRepository, publication::InMemoryPublicationRepository,
+        report::InMemoryReportRepository, user::InMemoryUserRepository,
+    };
+    use url::Url;
+
+    struct Fixture {
+        users: InMemoryUserRepository,
+        posts: InMemoryPostRepository,
+        reports: InMemoryReportRepository,
+        publications: InMemoryPublicationRepository,
+    }
+
+    async fn fixture() -> (Fixture, PostId) {
+        let users = InMemoryUserRepository::new();
+        users
+            .create(TelegramId::from(1), Role::Moderator, None, None)
+            .await
+            .unwrap();
+        users
+            .create(TelegramId::from(2), Role::User, None, None)
+            .await
+            .unwrap();
+        let posts = InMemoryPostRepository::new();
+        let post = posts
+            .create(
+                Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
+            .await
+            .unwrap();
+        (
+            Fixture {
+                users,
+                posts,
+                reports: InMemoryReportRepository::new(),
+                publications: InMemoryPublicationRepository::new(),
+            },
+            post.id,
+        )
+    }
+
+    #[tokio::test]
+    async fn first_report_notifies_repeat_is_duplicate() {
+        let (fx, post_id) = fixture().await;
+        let outcome = report(
+            TelegramId::from(99),
+            post_id,
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+        )
+        .await
+        .unwrap();
+        let ReportOutcome::New {
+            reviewers,
+            total_reports,
+            ..
+        } = outcome
+        else {
+            panic!("expected New");
+        };
+        assert_eq!(reviewers.len(), 1); // the moderator
+        assert_eq!(total_reports, 1);
+
+        let again = report(
+            TelegramId::from(99),
+            post_id,
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(again, ReportOutcome::Duplicate));
+    }
+
+    #[tokio::test]
+    async fn reporting_unknown_post_fails() {
+        let (fx, _) = fixture().await;
+        let err = report(
+            TelegramId::from(99),
+            PostId::from(777),
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::PostNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn take_down_soft_deletes_and_returns_deliveries() {
+        let (fx, post_id) = fixture().await;
+        fx.publications
+            .record(Publication {
+                post_id,
+                chat_id: -100,
+                message_id: 7,
+                published_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let deliveries = take_down(
+            TelegramId::from(1),
+            post_id,
+            &fx.users,
+            &fx.posts,
+            &fx.publications,
+        )
+        .await
+        .unwrap();
+        assert_eq!(deliveries.len(), 1);
+        let stored = fx.posts.find_by_id(post_id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PostStatus::Deleted);
+    }
+
+    #[tokio::test]
+    async fn plain_user_cannot_take_down_or_dismiss() {
+        let (fx, post_id) = fixture().await;
+        assert!(matches!(
+            take_down(
+                TelegramId::from(2),
+                post_id,
+                &fx.users,
+                &fx.posts,
+                &fx.publications
+            )
+            .await
+            .unwrap_err(),
+            HandlerError::NotAuthorized(_)
+        ));
+        assert!(matches!(
+            dismiss(TelegramId::from(2), post_id, &fx.users, &fx.reports)
+                .await
+                .unwrap_err(),
+            HandlerError::NotAuthorized(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dismiss_clears_so_fresh_reports_renotify() {
+        let (fx, post_id) = fixture().await;
+        report(
+            TelegramId::from(99),
+            post_id,
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+        )
+        .await
+        .unwrap();
+        dismiss(TelegramId::from(1), post_id, &fx.users, &fx.reports)
+            .await
+            .unwrap();
+        let outcome = report(
+            TelegramId::from(99),
+            post_id,
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, ReportOutcome::New { .. }));
+    }
+}

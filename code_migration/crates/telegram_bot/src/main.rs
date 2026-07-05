@@ -5,17 +5,13 @@ mod state;
 
 use std::sync::Arc;
 
-use application::actors::scheduler::{PosterRuntime, SchedulerDeps, start_scheduler};
-use application::selectors::feed::FeedSelector;
+use application::actors::scheduler::{SchedulerDeps, start_scheduler};
+use application::selectors::feed::FeedSelectorFactory;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use domain::elements::{
-    poster::PosterRepository as _,
-    publisher_config::PublisherConfigRepository as _,
-    user::{Role, UserRepository as _},
-};
+use domain::elements::user::{Role, UserRepository as _};
 use infra_e621::RateLimitedE621Client;
 use infra_fixup::FixupResolver;
 use infra_furaffinity::{FaCookies, FuraffinityResolver};
@@ -23,16 +19,18 @@ use persistence::sqlite::{
     self,
     post::SqlitePostRepository,
     poster::SqlitePosterRepository,
+    publication::SqlitePublicationRepository,
     publisher_config::SqlitePublisherConfigRepository,
+    report::SqliteReportRepository,
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
     user::SqliteUserRepository,
 };
-use teloxide::{Bot, prelude::*, types::ChatId, utils::command::BotCommands as _};
+use teloxide::{Bot, prelude::*, utils::command::BotCommands as _};
 
 use telemetry::Event;
 
 use crate::commands::{Command, handle_callback, handle_channel_forward, handle_command};
-use crate::publishers::TelegramPublisher;
+use crate::publishers::DbPublisherFactory;
 use crate::resolvers::CompositeResolver;
 use crate::state::{AppConfig, AppState, USER_AGENT, read_secret};
 
@@ -68,53 +66,6 @@ fn build_resolver(
             .map_err(|e| anyhow::anyhow!(e.to_string()))?,
         telegram_copies,
     }))
-}
-
-/// Load every bound Poster into a scheduler runtime.
-async fn build_runtimes(
-    state: &AppState,
-    resolver: Arc<CompositeResolver>,
-    main_bot: &Bot,
-    main_token: &str,
-) -> anyhow::Result<Vec<PosterRuntime>> {
-    let mut runtimes = Vec::new();
-    for poster in state
-        .posters
-        .list_all()
-        .await
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-    {
-        let Some(config) = state
-            .publisher_configs
-            .find_by_poster(poster.id)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?
-        else {
-            tracing::warn!(event = %Event::PosterUnbound, poster_id = %poster.id, "poster has no channel binding; skipping");
-            continue;
-        };
-        // Posters may publish through their own bot token; the MVP flow binds
-        // them all to the main token, so reuse the running Bot in that case.
-        let token = read_secret(&config.token_path)?;
-        let bot = if token == main_token {
-            main_bot.clone()
-        } else {
-            Bot::new(token)
-        };
-        let selector = FeedSelector::new(
-            poster.clone(),
-            Arc::new(state.posts.clone()),
-            state.e621.clone(),
-            Arc::new(state.forbidden.clone()),
-        );
-        runtimes.push(PosterRuntime {
-            poster,
-            selector: Box::new(selector),
-            resolver: resolver.clone(),
-            publisher: Box::new(TelegramPublisher::new(bot, ChatId(config.chat_id))),
-        });
-    }
-    Ok(runtimes)
 }
 
 /// JSON lines by default (one object per line, event fields flattened to the
@@ -156,8 +107,10 @@ async fn main() -> anyhow::Result<()> {
         posters: SqlitePosterRepository::new(pool.clone()),
         publisher_configs: SqlitePublisherConfigRepository::new(pool.clone()),
         forbidden: SqliteForbiddenTagRepository::new(pool.clone()),
-        required: SqliteRequiredTagRepository::new(pool),
+        required: SqliteRequiredTagRepository::new(pool.clone()),
         telegram_copies: telegram_copies.clone(),
+        reports: SqliteReportRepository::new(pool.clone()),
+        publications: SqlitePublicationRepository::new(pool.clone()),
         e621: e621.clone(),
         config: config.clone(),
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -187,15 +140,27 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "set_my_commands failed; menu may be stale");
     }
 
-    // Scheduler: one runtime per bound Poster.
-    let resolver = build_resolver(&config, e621, telegram_copies)?;
-    let runtimes = build_runtimes(&state, resolver, &bot, &main_token).await?;
-    tracing::info!(event = %Event::RuntimesLoaded, count = runtimes.len(), "scheduler runtimes loaded");
+    // Scheduler, database-first: posters, tags, cursors and channel bindings
+    // are read fresh every tick — /newposter, /settags and /setchannel are
+    // live within a minute, no restarts.
+    let resolver = build_resolver(&config, e621.clone(), telegram_copies)?;
+    tracing::info!(event = %Event::RuntimesLoaded, "scheduler running database-first");
     tokio::spawn(start_scheduler(SchedulerDeps {
-        runtimes,
         posts: Arc::new(state.posts.clone()),
         users: Arc::new(state.users.clone()),
         posters: Arc::new(state.posters.clone()),
+        publications: Arc::new(state.publications.clone()),
+        selectors: Arc::new(FeedSelectorFactory {
+            posts: Arc::new(state.posts.clone()),
+            e621: e621.clone(),
+            forbidden: Arc::new(state.forbidden.clone()),
+        }),
+        publishers: Arc::new(DbPublisherFactory::new(
+            state.publisher_configs.clone(),
+            bot.clone(),
+            main_token.clone(),
+        )),
+        resolver,
     }));
 
     // Health endpoint for container checks.

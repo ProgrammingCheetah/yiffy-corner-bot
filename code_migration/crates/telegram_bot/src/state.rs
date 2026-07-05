@@ -9,7 +9,9 @@ use infra_e621::RateLimitedE621Client;
 use persistence::sqlite::{
     post::SqlitePostRepository,
     poster::SqlitePosterRepository,
+    publication::SqlitePublicationRepository,
     publisher_config::SqlitePublisherConfigRepository,
+    report::SqliteReportRepository,
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
     telegram_copy::SqliteTelegramCopyRepository,
     user::SqliteUserRepository,
@@ -95,6 +97,8 @@ pub struct AppState {
     pub forbidden: SqliteForbiddenTagRepository,
     pub required: SqliteRequiredTagRepository,
     pub telegram_copies: SqliteTelegramCopyRepository,
+    pub reports: SqliteReportRepository,
+    pub publications: SqlitePublicationRepository,
     pub e621: Arc<RateLimitedE621Client>,
     /// Submissions awaiting tags, keyed by submitter Telegram id.
     pub pending: tokio::sync::Mutex<std::collections::HashMap<i64, PendingSubmission>>,
