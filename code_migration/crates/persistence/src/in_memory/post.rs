@@ -87,6 +87,19 @@ impl PostRepository for InMemoryPostRepository {
         post.last_posted = Some(at);
         Ok(())
     }
+
+    async fn list_by_status(&self, status: PostStatus) -> Result<Vec<Post>, Self::Err> {
+        let mut matching: Vec<Post> = self
+            .posts
+            .read()
+            .await
+            .values()
+            .filter(|p| p.status == status)
+            .cloned()
+            .collect();
+        matching.sort_by_key(|p| (p.submitted_at, *p.id.as_ref()));
+        Ok(matching)
+    }
 }
 
 #[cfg(test)]

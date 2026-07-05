@@ -3,24 +3,33 @@ use std::{sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use domain::elements::{
     cadence::{PublishBlock, PublishBlockError},
-    post::{PostRepository, PostSelectorStrategy},
+    media::MediaResolver,
+    post::{Post, PostRepository, PostSelectorStrategy},
     poster::Poster,
-    publisher::Publisher,
+    publisher::{PublishItem, Publisher},
+    user::UserRepository,
 };
 use tokio::time::{MissedTickBehavior, interval};
 
 /// One unit of scheduler work: a [`Poster`] (config) paired with the per-Poster
-/// [`PostSelectorStrategy`] that picks its next [`Post`] and the [`Publisher`]
+/// [`PostSelectorStrategy`] that picks its next [`Post`], the [`MediaResolver`]
+/// that turns the Post's source into publishable media, and the [`Publisher`]
 /// that delivers it.
 pub struct PosterRuntime {
     pub poster: Poster,
     pub selector: Box<dyn PostSelectorStrategy>,
+    pub resolver: Arc<dyn MediaResolver>,
     pub publisher: Box<dyn Publisher>,
 }
 
-pub struct SchedulerDeps<R: PostRepository + Send + Sync> {
+pub struct SchedulerDeps<R, U>
+where
+    R: PostRepository + Send + Sync,
+    U: UserRepository,
+{
     pub runtimes: Vec<PosterRuntime>,
     pub posts: Arc<R>,
+    pub users: Arc<U>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -29,34 +38,69 @@ pub enum TickError {
     Block(#[from] PublishBlockError),
 }
 
+/// Build the caption for a Post: attribution first, source link always.
+///
+/// Posts submitted by a User carry "Submitted by <name>" (falling back to the
+/// User's Telegram ID when no display name is cached). Admin-added posts
+/// (`submitted_by: None`) get no attribution line.
+pub async fn build_caption<U: UserRepository>(post: &Post, users: &U) -> String {
+    let source_url = post.source.as_ref().as_str();
+    match post.submitted_by {
+        None => source_url.to_string(),
+        Some(user_id) => {
+            let name = match users.find_by_id(user_id).await {
+                Ok(Some(user)) => user
+                    .display_name
+                    .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref())),
+                Ok(None) | Err(_) => format!("user {user_id}"),
+            };
+            format!("Submitted by {name}\n{source_url}")
+        }
+    }
+}
+
 /// Run one scheduler tick: for every Poster whose interval divides the current
-/// minute-of-hour, select a post, publish it, and record `last_posted`.
+/// minute-of-hour, select a post, resolve its media, publish it with its
+/// attribution caption, and record `last_posted`.
 ///
 /// Per-runtime failures are logged and the tick continues with the next
 /// runtime — one Poster failing must not block the others.
-pub async fn run_tick<R>(
+pub async fn run_tick<R, U>(
     now: DateTime<Utc>,
     runtimes: &[PosterRuntime],
     posts: &R,
+    users: &U,
 ) -> Result<(), TickError>
 where
     R: PostRepository + Send + Sync,
     R::Err: std::fmt::Display,
+    U: UserRepository,
 {
     let block = PublishBlock::try_from(now.minute_of_hour())?;
     for rt in runtimes {
         if !block.fires_for(&rt.poster.time_interval) {
             continue;
         }
-        let post = match rt.selector.find_post() {
+        let post = match rt.selector.find_post().await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(poster_id = %rt.poster.id, error = %e, "selector failed");
                 continue;
             }
         };
-        if let Err(e) = rt.publisher.publish(&post).await {
-            tracing::error!(poster_id = %rt.poster.id, error = %e, "publish failed");
+        let media = match rt.resolver.resolve(&post.source).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(poster_id = %rt.poster.id, post_id = %post.id, error = %e, "media resolution failed");
+                continue;
+            }
+        };
+        let item = PublishItem {
+            media,
+            caption: Some(build_caption(&post, users).await),
+        };
+        if let Err(e) = rt.publisher.publish(&item).await {
+            tracing::error!(poster_id = %rt.poster.id, post_id = %post.id, error = %e, "publish failed");
             continue;
         }
         if let Err(e) = posts.mark_posted(post.id, now).await {
@@ -68,10 +112,11 @@ where
 }
 
 /// Loop forever, waking every minute to call [`run_tick`].
-pub async fn start_scheduler<R>(deps: SchedulerDeps<R>) -> !
+pub async fn start_scheduler<R, U>(deps: SchedulerDeps<R, U>) -> !
 where
     R: PostRepository + Send + Sync + 'static,
     R::Err: std::fmt::Display,
+    U: UserRepository + 'static,
 {
     let mut ticker = interval(Duration::from_secs(60));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -79,7 +124,7 @@ where
     loop {
         ticker.tick().await;
         let now = Utc::now();
-        if let Err(e) = run_tick(now, &deps.runtimes, &*deps.posts).await {
+        if let Err(e) = run_tick(now, &deps.runtimes, &*deps.posts, &*deps.users).await {
             tracing::error!(error = %e, "scheduler tick failed");
         }
     }
@@ -109,12 +154,15 @@ mod tests {
     use chrono::TimeZone;
     use domain::elements::{
         cadence::PostInterval,
+        media::{MediaResolveError, ResolvedMedia},
         post::{
             Post, PostId, PostRepositoryError, PostStatus, SelectorError, Source,
         },
         poster::PosterId,
         publisher::PublisherError,
+        user::UserId,
     };
+    use persistence::in_memory::user::InMemoryUserRepository;
     use url::Url;
 
     fn make_post(id: u64) -> Post {
@@ -139,33 +187,59 @@ mod tests {
 
     /// Selector that always returns a fixed Post.
     struct FixedSelector(Post);
+    #[async_trait]
     impl PostSelectorStrategy for FixedSelector {
-        fn find_due_post(&self) -> Result<Option<Post>, SelectorError> {
+        async fn find_due_post(&self) -> Result<Option<Post>, SelectorError> {
             Ok(Some(self.0.clone()))
         }
-        fn find_post(&self) -> Result<Post, SelectorError> {
+        async fn find_post(&self) -> Result<Post, SelectorError> {
             Ok(self.0.clone())
         }
     }
 
     /// Selector that always errors.
     struct ErroringSelector;
+    #[async_trait]
     impl PostSelectorStrategy for ErroringSelector {
-        fn find_due_post(&self) -> Result<Option<Post>, SelectorError> {
+        async fn find_due_post(&self) -> Result<Option<Post>, SelectorError> {
             Err(SelectorError::NoMatch)
         }
-        fn find_post(&self) -> Result<Post, SelectorError> {
+        async fn find_post(&self) -> Result<Post, SelectorError> {
             Err(SelectorError::NoMatch)
         }
     }
 
-    /// Publisher that counts how many times `publish` was called.
+    /// Resolver that maps any source to a fixed photo URL.
+    struct FixedResolver;
+    #[async_trait]
+    impl MediaResolver for FixedResolver {
+        async fn resolve(&self, _source: &Source) -> Result<ResolvedMedia, MediaResolveError> {
+            Ok(ResolvedMedia::Photo(
+                Url::parse("https://static1.e621.net/data/x.png").unwrap(),
+            ))
+        }
+    }
+
+    /// Resolver that always fails.
+    struct FailingResolver;
+    #[async_trait]
+    impl MediaResolver for FailingResolver {
+        async fn resolve(&self, source: &Source) -> Result<ResolvedMedia, MediaResolveError> {
+            Err(MediaResolveError::NotFound(source.clone()))
+        }
+    }
+
+    /// Publisher that counts calls and records the last item.
     #[derive(Default)]
-    struct CountingPublisher(Arc<AtomicUsize>);
+    struct CountingPublisher {
+        count: Arc<AtomicUsize>,
+        last_item: Arc<Mutex<Option<PublishItem>>>,
+    }
     #[async_trait]
     impl Publisher for CountingPublisher {
-        async fn publish(&self, _post: &Post) -> Result<(), PublisherError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+        async fn publish(&self, item: &PublishItem) -> Result<(), PublisherError> {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            *self.last_item.lock().unwrap() = Some(item.clone());
             Ok(())
         }
     }
@@ -181,7 +255,7 @@ mod tests {
         async fn create(
             &self,
             _source: Source,
-            _submitted_by: Option<domain::elements::user::UserId>,
+            _submitted_by: Option<UserId>,
             _submitted_at: DateTime<Utc>,
             _status: PostStatus,
         ) -> Result<Post, Self::Err> {
@@ -207,24 +281,53 @@ mod tests {
             self.marked.lock().unwrap().push((id, at));
             Ok(())
         }
+        async fn list_by_status(&self, _status: PostStatus) -> Result<Vec<Post>, Self::Err> {
+            unimplemented!("not needed by scheduler tests")
+        }
     }
 
     fn at_minute(minute: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 5, 17, 14, minute, 0).unwrap()
     }
 
+    fn runtime_with(
+        poster: Poster,
+        selector: Box<dyn PostSelectorStrategy>,
+        publisher: CountingPublisher,
+    ) -> PosterRuntime {
+        PosterRuntime {
+            poster,
+            selector,
+            resolver: Arc::new(FixedResolver),
+            publisher: Box::new(publisher),
+        }
+    }
+
+    fn counting_publisher() -> (CountingPublisher, Arc<AtomicUsize>, Arc<Mutex<Option<PublishItem>>>) {
+        let publisher = CountingPublisher::default();
+        (
+            CountingPublisher {
+                count: publisher.count.clone(),
+                last_item: publisher.last_item.clone(),
+            },
+            publisher.count,
+            publisher.last_item,
+        )
+    }
+
     #[tokio::test]
     async fn fires_when_block_matches_interval() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let runtimes = vec![PosterRuntime {
-            poster: make_poster(1, 5),
-            selector: Box::new(FixedSelector(make_post(100))),
-            publisher: Box::new(CountingPublisher(count.clone())),
-        }];
+        let (publisher, count, _) = counting_publisher();
+        let runtimes = vec![runtime_with(
+            make_poster(1, 5),
+            Box::new(FixedSelector(make_post(100))),
+            publisher,
+        )];
         let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
         let now = at_minute(5); // 5 % 5 == 0 → fires
 
-        run_tick(now, &runtimes, &posts).await.unwrap();
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         let marked = posts.marked.lock().unwrap();
@@ -235,16 +338,17 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_fire_when_block_does_not_match() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let runtimes = vec![PosterRuntime {
-            poster: make_poster(1, 5),
-            selector: Box::new(FixedSelector(make_post(100))),
-            publisher: Box::new(CountingPublisher(count.clone())),
-        }];
+        let (publisher, count, _) = counting_publisher();
+        let runtimes = vec![runtime_with(
+            make_poster(1, 5),
+            Box::new(FixedSelector(make_post(100))),
+            publisher,
+        )];
         let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
         let now = at_minute(7); // 7 % 5 != 0 → no fire
 
-        run_tick(now, &runtimes, &posts).await.unwrap();
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
 
         assert_eq!(count.load(Ordering::SeqCst), 0);
         assert!(posts.marked.lock().unwrap().is_empty());
@@ -252,53 +356,128 @@ mod tests {
 
     #[tokio::test]
     async fn selector_error_does_not_abort_other_runtimes() {
-        let count = Arc::new(AtomicUsize::new(0));
+        let (publisher_a, count_a, _) = counting_publisher();
+        let (publisher_b, count_b, _) = counting_publisher();
         let runtimes = vec![
-            PosterRuntime {
-                poster: make_poster(1, 5),
-                selector: Box::new(ErroringSelector),
-                publisher: Box::new(CountingPublisher(count.clone())),
-            },
-            PosterRuntime {
-                poster: make_poster(2, 5),
-                selector: Box::new(FixedSelector(make_post(200))),
-                publisher: Box::new(CountingPublisher(count.clone())),
-            },
+            runtime_with(make_poster(1, 5), Box::new(ErroringSelector), publisher_a),
+            runtime_with(
+                make_poster(2, 5),
+                Box::new(FixedSelector(make_post(200))),
+                publisher_b,
+            ),
         ];
         let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
         let now = at_minute(5);
 
-        run_tick(now, &runtimes, &posts).await.unwrap();
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
 
         // First runtime's selector failed → no publish.
         // Second runtime fires normally → one publish.
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(count_a.load(Ordering::SeqCst), 0);
+        assert_eq!(count_b.load(Ordering::SeqCst), 1);
         assert_eq!(posts.marked.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
+    async fn resolver_error_skips_publish_and_mark() {
+        let (publisher, count, _) = counting_publisher();
+        let runtimes = vec![PosterRuntime {
+            poster: make_poster(1, 5),
+            selector: Box::new(FixedSelector(make_post(100))),
+            resolver: Arc::new(FailingResolver),
+            publisher: Box::new(publisher),
+        }];
+        let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
+        let now = at_minute(5);
+
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
+
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(posts.marked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn two_runtimes_with_different_intervals_both_fire_at_block_zero() {
-        let count_a = Arc::new(AtomicUsize::new(0));
-        let count_b = Arc::new(AtomicUsize::new(0));
+        let (publisher_a, count_a, _) = counting_publisher();
+        let (publisher_b, count_b, _) = counting_publisher();
         let runtimes = vec![
-            PosterRuntime {
-                poster: make_poster(1, 5),
-                selector: Box::new(FixedSelector(make_post(100))),
-                publisher: Box::new(CountingPublisher(count_a.clone())),
-            },
-            PosterRuntime {
-                poster: make_poster(2, 15),
-                selector: Box::new(FixedSelector(make_post(200))),
-                publisher: Box::new(CountingPublisher(count_b.clone())),
-            },
+            runtime_with(
+                make_poster(1, 5),
+                Box::new(FixedSelector(make_post(100))),
+                publisher_a,
+            ),
+            runtime_with(
+                make_poster(2, 15),
+                Box::new(FixedSelector(make_post(200))),
+                publisher_b,
+            ),
         ];
         let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
         let now = at_minute(0); // divisible by every valid interval
 
-        run_tick(now, &runtimes, &posts).await.unwrap();
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
 
         assert_eq!(count_a.load(Ordering::SeqCst), 1);
         assert_eq!(count_b.load(Ordering::SeqCst), 1);
         assert_eq!(posts.marked.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn published_item_credits_the_submitter() {
+        use domain::elements::user::{Role, TelegramId, UserRepository as _};
+
+        let users = InMemoryUserRepository::new();
+        let submitter = users
+            .create(
+                TelegramId::from(42),
+                Role::User,
+                None,
+                Some("Ziel".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let mut post = make_post(100);
+        post.submitted_by = Some(submitter.id);
+
+        let (publisher, count, last_item) = counting_publisher();
+        let runtimes = vec![runtime_with(
+            make_poster(1, 5),
+            Box::new(FixedSelector(post)),
+            publisher,
+        )];
+        let posts = RecordingPostRepository::default();
+        let now = at_minute(5);
+
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let item = last_item.lock().unwrap().clone().unwrap();
+        let caption = item.caption.unwrap();
+        assert!(caption.contains("Submitted by Ziel"), "caption: {caption}");
+        assert!(caption.contains("e621.net"), "caption: {caption}");
+    }
+
+    #[tokio::test]
+    async fn admin_added_post_has_no_attribution_line() {
+        let (publisher, _, last_item) = counting_publisher();
+        let runtimes = vec![runtime_with(
+            make_poster(1, 5),
+            Box::new(FixedSelector(make_post(100))), // submitted_by: None
+            publisher,
+        )];
+        let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
+        let now = at_minute(5);
+
+        run_tick(now, &runtimes, &posts, &users).await.unwrap();
+
+        let item = last_item.lock().unwrap().clone().unwrap();
+        let caption = item.caption.unwrap();
+        assert!(!caption.contains("Submitted by"), "caption: {caption}");
+        assert!(caption.contains("e621.net"), "caption: {caption}");
     }
 }

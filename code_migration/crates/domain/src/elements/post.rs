@@ -168,6 +168,9 @@ pub trait PostRepository: Send + Sync {
     ) -> Result<(), Self::Err>;
     /// Record that `id` was just published at `at`. Updates `last_posted`.
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
+    /// All Posts currently in `status`, ordered oldest-submitted first.
+    /// `AwaitingModeration` ordering IS the moderation queue.
+    async fn list_by_status(&self, status: PostStatus) -> Result<Vec<Post>, Self::Err>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -266,15 +269,17 @@ mod source_tests {
 /// so the selection policy can evolve without changing the use case.
 ///
 /// `+ Send + Sync` so the scheduler can hold one instance per Poster across an
-/// async task boundary.
+/// async task boundary. Async because real selection hits the repository and
+/// re-validates against fresh e621 data.
+#[async_trait::async_trait]
 pub trait PostSelectorStrategy: Send + Sync {
     /// Try the moderation queue first: if its head matches this Poster's tag
     /// criteria, return it; otherwise `Ok(None)` so the caller can fall back
     /// to [`Self::find_post`].
-    fn find_due_post(&self) -> Result<Option<Post>, SelectorError>;
+    async fn find_due_post(&self) -> Result<Option<Post>, SelectorError>;
     /// Pick a Post from the saved pool (Accepted ∪ Banned). The strategy
     /// validates tags against fresh e621 data and may mutate Post.status as a
     /// side effect (Banned → Accepted on un-ban, Accepted → Banned on policy
     /// hit).
-    fn find_post(&self) -> Result<Post, SelectorError>;
+    async fn find_post(&self) -> Result<Post, SelectorError>;
 }

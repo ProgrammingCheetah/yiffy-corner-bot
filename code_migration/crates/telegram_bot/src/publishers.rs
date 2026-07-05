@@ -1,14 +1,12 @@
 use async_trait::async_trait;
-use domain::elements::{
-    post::Post,
-    publisher::{Publisher, PublisherError},
-};
+use domain::elements::publisher::{PublishItem, Publisher, PublisherError};
 use teloxide::{Bot, types::ChatId};
 
-/// Publishes Posts to a Telegram channel.
+/// Publishes resolved media to a Telegram channel.
 ///
 /// Stub today: logs the intent and returns Ok. A later commit will turn this
-/// into a real `bot.send_photo` / `send_video` dispatch.
+/// into a real `send_photo` / `send_video` / `send_animation` / `send_message`
+/// dispatch keyed on the [`ResolvedMedia`](domain::elements::media::ResolvedMedia) variant.
 pub struct TelegramPublisher {
     pub bot: Bot,
     pub chat_id: ChatId,
@@ -22,10 +20,11 @@ impl TelegramPublisher {
 
 #[async_trait]
 impl Publisher for TelegramPublisher {
-    async fn publish(&self, post: &Post) -> Result<(), PublisherError> {
+    async fn publish(&self, item: &PublishItem) -> Result<(), PublisherError> {
         tracing::info!(
             chat = self.chat_id.0,
-            post_id = %post.id,
+            media = ?item.media,
+            caption = ?item.caption,
             "stub publish — TelegramPublisher not yet wired to teloxide send"
         );
         Ok(())
