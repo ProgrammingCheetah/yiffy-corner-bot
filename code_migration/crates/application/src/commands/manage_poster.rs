@@ -25,19 +25,33 @@ pub struct NewPoster {
     pub subscribed_tags: Vec<Tag>,
     pub forbidden_tags: Vec<Tag>,
     pub interval: PostInterval,
+    /// The delivery destination — a poster is born bound (QoL: one command
+    /// instead of /newposter + /setchannel).
+    pub chat_id: i64,
+    pub token_path: PathBuf,
 }
 
-pub async fn new_poster<P>(
+pub async fn new_poster<P, C>(
     cmd: NewPoster,
     users: &impl UserRepository,
     posters: &P,
+    configs: &C,
 ) -> HandlerResult<Poster>
 where
     P: PosterRepository,
+    C: PublisherConfigRepository,
 {
     require_role(users, cmd.actor, Role::Owner).await?;
     let poster = posters
         .create(cmd.subscribed_tags, cmd.forbidden_tags, cmd.interval)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    configs
+        .upsert(PublisherConfig {
+            poster_id: poster.id,
+            chat_id: cmd.chat_id,
+            token_path: cmd.token_path,
+        })
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(
@@ -46,7 +60,8 @@ where
         interval_min = poster.time_interval.as_ref(),
         subscribed = ?poster.subscribed_tags,
         forbidden = ?poster.forbidden_tags,
-        "poster created"
+        chat_id = cmd.chat_id,
+        "poster created and bound"
     );
     Ok(poster)
 }
@@ -193,24 +208,29 @@ mod tests {
             subscribed_tags: vec![Tag::from("wolf")],
             forbidden_tags: vec![Tag::from("gore")],
             interval: PostInterval::new(15).unwrap(),
+            chat_id: -100555,
+            token_path: PathBuf::from("config/vault/dev/token.txt"),
         }
     }
 
     #[tokio::test]
     async fn owner_creates_poster() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
         assert_eq!(poster.subscribed_tags, vec![Tag::from("wolf")]);
         let stored = fx.posters.find_by_id(poster.id).await.unwrap();
         assert!(stored.is_some());
+        // Born bound: the binding was created alongside.
+        let config = fx.configs.find_by_poster(poster.id).await.unwrap().unwrap();
+        assert_eq!(config.chat_id, -100555);
     }
 
     #[tokio::test]
     async fn moderator_cannot_create_poster() {
         let fx = fixture().await;
-        let err = new_poster(new_poster_cmd(2), &fx.users, &fx.posters)
+        let err = new_poster(new_poster_cmd(2), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap_err();
         assert!(matches!(err, HandlerError::NotAuthorized(_)));
@@ -219,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn owner_replaces_poster_tags() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
         let updated = set_tags(
@@ -240,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn moderator_cannot_replace_poster_tags() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
         let err = set_tags(
@@ -261,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn set_channel_binds_existing_poster() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
         set_channel(
@@ -285,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn owner_deletes_poster_and_binding() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
         set_channel(
@@ -324,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn moderator_cannot_delete_poster() {
         let fx = fixture().await;
-        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
         let err = delete_poster(

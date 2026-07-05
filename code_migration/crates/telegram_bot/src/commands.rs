@@ -67,7 +67,7 @@ pub enum Command {
     #[command(description = "set a user's role: /setrole <@user|id> <moderator|user> (owner)")]
     Setrole(String),
     #[command(
-        description = "create a poster: /newposter <interval-min> <tags… -forbidden…> (owner)"
+        description = "create a poster: /newposter <interval-min> <@channel|chat-id> [tags… -forbidden…] (owner)"
     )]
     Newposter(String),
     #[command(
@@ -229,7 +229,7 @@ pub async fn handle_command(
         }
         Command::Listtags => list_tags(&state, actor).await,
         Command::Setrole(arg) => handle_setrole(&bot, &state, actor, &arg).await,
-        Command::Newposter(arg) => handle_newposter(&state, actor, &arg).await,
+        Command::Newposter(arg) => handle_newposter(&bot, &state, actor, &arg).await,
         Command::Setchannel(arg) => handle_setchannel(&bot, &state, actor, &arg).await,
         Command::Settags(arg) => handle_settags(&state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
@@ -786,16 +786,31 @@ async fn handle_settags(state: &SharedState, actor: TelegramId, arg: &str) -> St
     }
 }
 
-async fn handle_newposter(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    const USAGE: &str = "Usage: /newposter <interval-minutes> <@channel|chat-id> [tags… -forbidden…]\n\
+        Interval must divide 60 (1,2,3,4,5,6,10,12,15,20,30,60). \
+        No tags = post anything. The bot must be an admin of the channel.";
+
     let mut parts = arg.split_whitespace();
     let Some(interval) = parts.next().and_then(|v| v.parse::<u8>().ok()) else {
-        return "Usage: /newposter <interval-minutes> <tags… -forbidden…>\n\
-                Interval must divide 60 (1,2,3,4,5,6,10,12,15,20,30,60)."
-            .to_string();
+        return USAGE.to_string();
     };
     let interval = match PostInterval::new(interval) {
         Ok(i) => i,
         Err(e) => return e.to_string(),
+    };
+    let Some(chat_raw) = parts.next() else {
+        return USAGE.to_string();
+    };
+    let chat_id = if let Ok(id) = chat_raw.parse::<i64>() {
+        id
+    } else {
+        let resolver = BotUserResolver { bot: bot.clone() };
+        match resolve_target(&resolver, chat_raw).await {
+            Ok(Some(id)) => *id.as_ref(),
+            Ok(None) => return format!("Can't resolve {chat_raw} — is the bot in that channel?"),
+            Err(e) => return e,
+        }
     };
     let (subscribed, forbidden) = parse_tag_lists(parts);
     match manage_poster::new_poster(
@@ -804,15 +819,37 @@ async fn handle_newposter(state: &SharedState, actor: TelegramId, arg: &str) -> 
             subscribed_tags: subscribed,
             forbidden_tags: forbidden,
             interval,
+            chat_id,
+            // MVP: every Poster publishes with the main bot token.
+            token_path: state.config.token_path(),
         },
         &state.users,
         &state.posters,
+        &state.publisher_configs,
     )
     .await
     {
+        Ok(poster) if poster.subscribed_tags.is_empty() => format!(
+            "Poster #{} created, bound to {chat_raw}, posting ANYTHING every {}min — live within a minute.",
+            poster.id,
+            poster.time_interval.as_ref()
+        ),
         Ok(poster) => format!(
-            "Poster #{} created. Bind it with /setchannel {} <@channel|chat-id>.",
-            poster.id, poster.id
+            "Poster #{} created, bound to {chat_raw}, every {}min for [{}] minus [{}] — live within a minute.",
+            poster.id,
+            poster.time_interval.as_ref(),
+            poster
+                .subscribed_tags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
+            poster
+                .forbidden_tags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
         ),
         Err(e) => describe(e),
     }
