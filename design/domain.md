@@ -12,6 +12,7 @@ For the MVP:
   - User:
     - Can submit art through a source to the bot
   - Moderator:
+    - Can request changes on a submission: the change list is relayed to the submitter, and the SAME source becomes re-submittable by that submitter (the post returns to the moderation queue with fresh tags). Rejection stays permanent.
     - Everything the User can do
     - Approves or rejects submissions
     - Can check the queue
