@@ -4,11 +4,14 @@ use std::fmt::Display;
 ///
 /// Hierarchy (higher includes lower): `Owner > Moderator > User`.
 /// Per `design/domain.md`, Owner is the singleton role held by Zuri.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variant order is load-bearing: `derive(Ord)` gives `User < Moderator <
+/// Owner`, so permission checks read as `actor.role >= Role::Moderator`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
-    Owner,
-    Moderator,
     User,
+    Moderator,
+    Owner,
 }
 
 /// The internal ID for the user. Program-managed.

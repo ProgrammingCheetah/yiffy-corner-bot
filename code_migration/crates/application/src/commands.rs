@@ -1,2 +1,8 @@
+pub mod auth;
+pub mod ban_user;
+pub mod browse;
+pub mod manage_poster;
+pub mod moderate;
 pub mod set_user_role;
 pub mod start;
+pub mod suggest;

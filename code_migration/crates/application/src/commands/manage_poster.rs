@@ -1,0 +1,183 @@
+//! `/newposter` and `/setchannel` — Owner-only Poster lifecycle.
+//!
+//! Per design, only Zuri creates Posters. A Poster is born from its tag
+//! subscription + cadence; `/setchannel` then binds it to a delivery
+//! destination by upserting its [`PublisherConfig`] (re-running swaps the
+//! destination rather than erroring — the 1:1 invariant).
+
+use std::path::PathBuf;
+
+use domain::elements::{
+    cadence::PostInterval,
+    poster::{Poster, PosterId, PosterRepository},
+    publisher_config::{PublisherConfig, PublisherConfigRepository},
+    tag::Tag,
+    user::{Role, TelegramId, UserRepository},
+};
+
+use crate::commands::auth::require_role;
+use crate::traits::handler_response::{HandlerError, HandlerResult};
+
+#[derive(Debug)]
+pub struct NewPoster {
+    pub actor: TelegramId,
+    pub subscribed_tags: Vec<Tag>,
+    pub forbidden_tags: Vec<Tag>,
+    pub interval: PostInterval,
+}
+
+pub async fn new_poster<P>(
+    cmd: NewPoster,
+    users: &impl UserRepository,
+    posters: &P,
+) -> HandlerResult<Poster>
+where
+    P: PosterRepository,
+{
+    require_role(users, cmd.actor, Role::Owner).await?;
+    posters
+        .create(cmd.subscribed_tags, cmd.forbidden_tags, cmd.interval)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)
+}
+
+#[derive(Debug)]
+pub struct SetChannel {
+    pub actor: TelegramId,
+    pub poster_id: PosterId,
+    pub chat_id: i64,
+    pub token_path: PathBuf,
+}
+
+pub async fn set_channel<P, C>(
+    cmd: SetChannel,
+    users: &impl UserRepository,
+    posters: &P,
+    configs: &C,
+) -> HandlerResult<()>
+where
+    P: PosterRepository,
+    C: PublisherConfigRepository,
+{
+    require_role(users, cmd.actor, Role::Owner).await?;
+    posters
+        .find_by_id(cmd.poster_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+        .ok_or_else(|| {
+            HandlerError::InvalidState(format!("poster {} does not exist", cmd.poster_id))
+        })?;
+    configs
+        .upsert(PublisherConfig {
+            poster_id: cmd.poster_id,
+            chat_id: cmd.chat_id,
+            token_path: cmd.token_path,
+        })
+        .await
+        .map_err(|_| HandlerError::RepositoryError)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use persistence::in_memory::{
+        poster::InMemoryPosterRepository, publisher_config::InMemoryPublisherConfigRepository,
+        user::InMemoryUserRepository,
+    };
+
+    struct Fixture {
+        users: InMemoryUserRepository,
+        posters: InMemoryPosterRepository,
+        configs: InMemoryPublisherConfigRepository,
+    }
+
+    async fn fixture() -> Fixture {
+        let users = InMemoryUserRepository::new();
+        users
+            .create(TelegramId::from(1), Role::Owner, None, None)
+            .await
+            .unwrap();
+        users
+            .create(TelegramId::from(2), Role::Moderator, None, None)
+            .await
+            .unwrap();
+        Fixture {
+            users,
+            posters: InMemoryPosterRepository::new(),
+            configs: InMemoryPublisherConfigRepository::new(),
+        }
+    }
+
+    fn new_poster_cmd(actor: i64) -> NewPoster {
+        NewPoster {
+            actor: TelegramId::from(actor),
+            subscribed_tags: vec![Tag::from("wolf")],
+            forbidden_tags: vec![Tag::from("gore")],
+            interval: PostInterval::new(15).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_creates_poster() {
+        let fx = fixture().await;
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+            .await
+            .unwrap();
+        assert_eq!(poster.subscribed_tags, vec![Tag::from("wolf")]);
+        let stored = fx.posters.find_by_id(poster.id).await.unwrap();
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn moderator_cannot_create_poster() {
+        let fx = fixture().await;
+        let err = new_poster(new_poster_cmd(2), &fx.users, &fx.posters)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HandlerError::NotAuthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn set_channel_binds_existing_poster() {
+        let fx = fixture().await;
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+            .await
+            .unwrap();
+        set_channel(
+            SetChannel {
+                actor: TelegramId::from(1),
+                poster_id: poster.id,
+                chat_id: -100123,
+                token_path: PathBuf::from("config/vault/dev/posters/1/token.txt"),
+            },
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+        )
+        .await
+        .unwrap();
+
+        let config = fx.configs.find_by_poster(poster.id).await.unwrap().unwrap();
+        assert_eq!(config.chat_id, -100123);
+    }
+
+    #[tokio::test]
+    async fn set_channel_rejects_unknown_poster() {
+        let fx = fixture().await;
+        let err = set_channel(
+            SetChannel {
+                actor: TelegramId::from(1),
+                poster_id: PosterId::from(999),
+                chat_id: -100123,
+                token_path: PathBuf::from("x"),
+            },
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::InvalidState(_)));
+    }
+}

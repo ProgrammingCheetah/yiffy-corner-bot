@@ -82,7 +82,7 @@ impl AsRef<u8> for PostInterval {
 impl PublishBlock {
     /// True when this tick is a firing tick for a Poster on the given interval.
     pub fn fires_for(&self, interval: &PostInterval) -> bool {
-        self.0 % interval.0 == 0
+        self.0.is_multiple_of(interval.0)
     }
 }
 
