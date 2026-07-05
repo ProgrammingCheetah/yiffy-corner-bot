@@ -9,6 +9,7 @@ use domain::elements::{
     poster::{Poster, PosterId, PosterRepository, PosterRepositoryError},
     tag::Tag,
     tag_rule::TagRule,
+    tag_rule::TagTerm,
 };
 use tokio::sync::RwLock;
 
@@ -30,7 +31,7 @@ impl PosterRepository for InMemoryPosterRepository {
 
     async fn create(
         &self,
-        subscribed_tags: Vec<Tag>,
+        subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err> {
@@ -55,7 +56,7 @@ impl PosterRepository for InMemoryPosterRepository {
     async fn set_tags(
         &self,
         id: PosterId,
-        subscribed_tags: Vec<Tag>,
+        subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
     ) -> Result<Poster, Self::Err> {
         let mut posters = self.posters.write().await;
@@ -166,14 +167,18 @@ mod tests {
     async fn set_tags_replaces_subscription_only() {
         let repo = InMemoryPosterRepository::new();
         let poster = repo
-            .create(vec![Tag::from("fox")], vec![], fixture_interval())
+            .create(vec![Tag::from("fox").into()], vec![], fixture_interval())
             .await
             .unwrap();
         let updated = repo
-            .set_tags(poster.id, vec![Tag::from("wolf")], vec![Tag::from("gore")])
+            .set_tags(
+                poster.id,
+                vec![Tag::from("wolf").into()],
+                vec![Tag::from("gore")],
+            )
             .await
             .unwrap();
-        assert_eq!(updated.subscribed_tags, vec![Tag::from("wolf")]);
+        assert_eq!(updated.subscribed_tags, vec![Tag::from("wolf").into()]);
         assert_eq!(updated.forbidden_tags, vec![Tag::from("gore")]);
         assert_eq!(updated.time_interval, fixture_interval());
 
@@ -206,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn create_persists_tag_subscription_and_interval() {
         let repo = InMemoryPosterRepository::new();
-        let subscribed = vec![Tag::from("fox")];
+        let subscribed = vec![TagTerm::from(Tag::from("fox"))];
         let forbidden = vec![Tag::from("snake")];
         let interval = PostInterval::new(15).unwrap();
         let poster = repo

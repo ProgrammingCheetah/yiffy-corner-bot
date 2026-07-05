@@ -3,7 +3,7 @@ use domain::elements::{
     cadence::PostInterval,
     poster::{Poster, PosterId, PosterRepository, PosterRepositoryError},
     tag::Tag,
-    tag_rule::TagRule,
+    tag_rule::{TagRule, TagTerm},
 };
 use sqlx::{Row, sqlite::SqlitePool};
 
@@ -30,11 +30,22 @@ fn split_tags(joined: &str) -> Vec<Tag> {
     joined.split_whitespace().map(Tag::from).collect()
 }
 
+/// Subscription terms serialize through their Display form, so OR-groups
+/// keep their parentheses: `male (gay bisexual)`.
+fn join_terms(terms: &[TagTerm]) -> String {
+    terms
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn row_to_poster(row: &sqlx::sqlite::SqliteRow) -> Result<Poster, PosterRepositoryError> {
     let interval: i64 = row.get("time_interval");
     Ok(Poster {
         id: PosterId::from(row.get::<i64, _>("id") as u64),
-        subscribed_tags: split_tags(&row.get::<String, _>("subscribed_tags")),
+        subscribed_tags: TagTerm::parse_list(&row.get::<String, _>("subscribed_tags"))
+            .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?,
         forbidden_tags: split_tags(&row.get::<String, _>("forbidden_tags")),
         time_interval: PostInterval::new(interval as u8)
             .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?,
@@ -50,7 +61,7 @@ impl PosterRepository for SqlitePosterRepository {
 
     async fn create(
         &self,
-        subscribed_tags: Vec<Tag>,
+        subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err> {
@@ -58,7 +69,7 @@ impl PosterRepository for SqlitePosterRepository {
             "INSERT INTO posters (subscribed_tags, forbidden_tags, time_interval)
              VALUES (?, ?, ?) RETURNING *",
         )
-        .bind(join_tags(&subscribed_tags))
+        .bind(join_terms(&subscribed_tags))
         .bind(join_tags(&forbidden_tags))
         .bind(*time_interval.as_ref() as i64)
         .fetch_one(&self.pool)
@@ -79,13 +90,13 @@ impl PosterRepository for SqlitePosterRepository {
     async fn set_tags(
         &self,
         id: PosterId,
-        subscribed_tags: Vec<Tag>,
+        subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
     ) -> Result<Poster, Self::Err> {
         let row = sqlx::query(
             "UPDATE posters SET subscribed_tags = ?, forbidden_tags = ? WHERE id = ? RETURNING *",
         )
-        .bind(join_tags(&subscribed_tags))
+        .bind(join_terms(&subscribed_tags))
         .bind(join_tags(&forbidden_tags))
         .bind(*id.as_ref() as i64)
         .fetch_optional(&self.pool)

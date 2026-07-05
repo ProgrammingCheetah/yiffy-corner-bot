@@ -1,4 +1,8 @@
-use crate::elements::{cadence::PostInterval, tag::Tag, tag_rule::TagRule};
+use crate::elements::{
+    cadence::PostInterval,
+    tag::Tag,
+    tag_rule::{TagRule, TagTerm},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosterId(u64);
@@ -34,8 +38,9 @@ impl std::fmt::Display for PosterId {
 #[derive(Debug, Clone)]
 pub struct Poster {
     pub id: PosterId,
-    /// A Poster's post always has to have these tags
-    pub subscribed_tags: Vec<Tag>,
+    /// Every term must be satisfied by a post's tags. A term is a single
+    /// tag or an OR-group `(a b)` needing at least one hit.
+    pub subscribed_tags: Vec<TagTerm>,
     /// A Poster's post can't have any of these tags
     pub forbidden_tags: Vec<Tag>,
     /// At what interval to post
@@ -62,7 +67,7 @@ pub trait PosterRepository: Send + Sync {
     type Err;
     async fn create(
         &self,
-        subscribed_tags: Vec<Tag>,
+        subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err>;
@@ -71,7 +76,7 @@ pub trait PosterRepository: Send + Sync {
     async fn set_tags(
         &self,
         id: PosterId,
-        subscribed_tags: Vec<Tag>,
+        subscribed_tags: Vec<TagTerm>,
         forbidden_tags: Vec<Tag>,
     ) -> Result<Poster, Self::Err>;
     /// Replace the conditional tag rules. Live on the next tick (DB-first).

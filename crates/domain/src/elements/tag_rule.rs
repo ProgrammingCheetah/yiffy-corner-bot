@@ -2,13 +2,19 @@
 //! subscribe/forbid lists.
 //!
 //! Syntax (also the storage form): `[antecedent…]->[consequent…]`, where
-//! each side is whitespace-separated literals — `tag` (must be present) or
-//! `-tag` (must be absent). If ALL antecedent literals hold for an entry's
-//! effective tags, ALL consequent literals must hold too, otherwise the
-//! entry is skipped for this consumer only.
+//! each side is whitespace-separated *terms*. A term is a literal — `tag`
+//! (must be present) or `-tag` (must be absent) — or an OR-group
+//! `(literal literal …)` that holds when AT LEAST ONE of its literals
+//! holds. If ALL antecedent terms hold for an entry's effective tags, ALL
+//! consequent terms must hold too, otherwise the entry is skipped for this
+//! consumer only.
 //!
-//! Example: a straight channel forbidding ambiguous solo content:
-//! `[solo]->[-male]` — solo posts are eligible only when `male` is absent.
+//! Examples: a straight channel forbidding ambiguous solo content:
+//! `[solo]->[-male]`; requiring an orientation marker on every duo:
+//! `[duo]->[(gay straight bisexual)]`.
+//!
+//! [`TagTerm`] is also the unit of Poster tag subscriptions — one grammar
+//! everywhere tags filter.
 
 use std::collections::HashSet;
 
@@ -51,11 +57,82 @@ impl std::str::FromStr for TagLiteral {
     }
 }
 
+/// One conjunction unit: a single literal, or an OR-group `(a b -c)` that
+/// is satisfied when at least one of its literals holds. A bare literal is
+/// just a one-element group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagTerm(pub Vec<TagLiteral>);
+
+impl TagTerm {
+    pub fn passes(&self, tags: &HashSet<Tag>) -> bool {
+        self.0.iter().any(|literal| literal.holds(tags))
+    }
+
+    /// Parse a whitespace-separated list of terms, honoring `(…)` groups.
+    /// The empty string is an empty (always-true) list.
+    pub fn parse_list(raw: &str) -> Result<Vec<TagTerm>, TagRuleParseError> {
+        let mut terms = Vec::new();
+        let mut rest = raw.trim_start();
+        while !rest.is_empty() {
+            if let Some(after_open) = rest.strip_prefix('(') {
+                let close = after_open
+                    .find(')')
+                    .ok_or(TagRuleParseError::UnclosedGroup)?;
+                let inner = &after_open[..close];
+                if inner.contains('(') {
+                    return Err(TagRuleParseError::NestedGroup);
+                }
+                let literals: Vec<TagLiteral> = inner
+                    .split_whitespace()
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()?;
+                if literals.is_empty() {
+                    return Err(TagRuleParseError::EmptyGroup);
+                }
+                terms.push(TagTerm(literals));
+                rest = after_open[close + 1..].trim_start();
+            } else {
+                let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                let word = &rest[..end];
+                if word.contains('(') || word.contains(')') {
+                    return Err(TagRuleParseError::StrayParen);
+                }
+                terms.push(TagTerm(vec![word.parse()?]));
+                rest = rest[end..].trim_start();
+            }
+        }
+        Ok(terms)
+    }
+}
+
+/// A bare tag is the canonical singleton term.
+impl From<Tag> for TagTerm {
+    fn from(tag: Tag) -> Self {
+        TagTerm(vec![TagLiteral::Has(tag)])
+    }
+}
+
+impl std::fmt::Display for TagTerm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_slice() {
+            [single] => write!(f, "{single}"),
+            many => {
+                let joined = many
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                write!(f, "({joined})")
+            }
+        }
+    }
+}
+
 /// `[if_all…]->[then_all…]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagRule {
-    pub if_all: Vec<TagLiteral>,
-    pub then_all: Vec<TagLiteral>,
+    pub if_all: Vec<TagTerm>,
+    pub then_all: Vec<TagTerm>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -66,16 +143,24 @@ pub enum TagRuleParseError {
     EmptyLiteral,
     #[error("both sides of a rule need at least one literal")]
     EmptySide,
+    #[error("unclosed ( group")]
+    UnclosedGroup,
+    #[error("empty () group")]
+    EmptyGroup,
+    #[error("nested ( groups are not supported")]
+    NestedGroup,
+    #[error("( and ) must wrap whole groups, not sit inside a tag")]
+    StrayParen,
 }
 
 impl TagRule {
     /// Whether the entry's tags satisfy this rule (vacuously true when the
     /// antecedent doesn't fully match).
     pub fn passes(&self, tags: &HashSet<Tag>) -> bool {
-        if !self.if_all.iter().all(|literal| literal.holds(tags)) {
+        if !self.if_all.iter().all(|term| term.passes(tags)) {
             return true;
         }
-        self.then_all.iter().all(|literal| literal.holds(tags))
+        self.then_all.iter().all(|term| term.passes(tags))
     }
 
     /// Parse every `[…]->[…]` rule in a free-form string (the storage and
@@ -107,8 +192,8 @@ impl TagRule {
 
 impl std::fmt::Display for TagRule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let side = |literals: &[TagLiteral]| {
-            literals
+        let side = |terms: &[TagTerm]| {
+            terms
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -129,15 +214,12 @@ impl std::str::FromStr for TagRule {
         let right = right_part
             .strip_suffix(']')
             .ok_or(TagRuleParseError::Malformed)?;
-        let parse_side = |side: &str| -> Result<Vec<TagLiteral>, TagRuleParseError> {
-            let literals: Vec<TagLiteral> = side
-                .split_whitespace()
-                .map(str::parse)
-                .collect::<Result<_, _>>()?;
-            if literals.is_empty() {
+        let parse_side = |side: &str| -> Result<Vec<TagTerm>, TagRuleParseError> {
+            let terms = TagTerm::parse_list(side)?;
+            if terms.is_empty() {
                 return Err(TagRuleParseError::EmptySide);
             }
-            Ok(literals)
+            Ok(terms)
         };
         Ok(TagRule {
             if_all: parse_side(left)?,
@@ -184,6 +266,57 @@ mod tests {
         assert!(rule.passes(&tags(&["male", "gay"])));
         assert!(!rule.passes(&tags(&["male", "solo"])));
         assert!(rule.passes(&tags(&["female", "solo"])));
+    }
+
+    #[test]
+    fn or_groups_hold_on_any_hit() {
+        let terms = TagTerm::parse_list("male (gay bisexual) -cub").unwrap();
+        assert_eq!(terms.len(), 3);
+        let ok = |names: &[&str]| terms.iter().all(|t| t.passes(&tags(names)));
+        assert!(ok(&["male", "gay"]));
+        assert!(ok(&["male", "bisexual"]));
+        assert!(!ok(&["male", "straight"])); // no orientation hit
+        assert!(!ok(&["male", "gay", "cub"])); // -cub violated
+
+        // Display/parse roundtrip keeps the group form.
+        let printed = terms
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(printed, "male (gay bisexual) -cub");
+        assert_eq!(TagTerm::parse_list(&printed).unwrap(), terms);
+    }
+
+    #[test]
+    fn or_groups_inside_rules() {
+        // Every duo must carry an orientation marker.
+        let rule: TagRule = "[duo]->[(gay straight bisexual)]".parse().unwrap();
+        assert!(rule.passes(&tags(&["duo", "gay"])));
+        assert!(rule.passes(&tags(&["duo", "straight"])));
+        assert!(!rule.passes(&tags(&["duo", "male"])));
+        assert!(rule.passes(&tags(&["solo", "male"]))); // vacuous
+        assert_eq!(rule.to_string(), "[duo]->[(gay straight bisexual)]");
+    }
+
+    #[test]
+    fn group_parse_errors() {
+        assert_eq!(
+            TagTerm::parse_list("(gay bisexual"),
+            Err(TagRuleParseError::UnclosedGroup)
+        );
+        assert_eq!(
+            TagTerm::parse_list("()"),
+            Err(TagRuleParseError::EmptyGroup)
+        );
+        assert_eq!(
+            TagTerm::parse_list("ga)y"),
+            Err(TagRuleParseError::StrayParen)
+        );
+        assert_eq!(
+            TagTerm::parse_list("((a b))"),
+            Err(TagRuleParseError::NestedGroup)
+        );
     }
 
     #[test]

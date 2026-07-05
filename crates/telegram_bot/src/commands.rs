@@ -1324,16 +1324,25 @@ async fn handle_setrole(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
 }
 
 /// Split "wolf male -gore" into (subscribed, forbidden) tag lists.
-fn parse_tag_lists<'a>(parts: impl Iterator<Item = &'a str>) -> (Vec<Tag>, Vec<Tag>) {
+/// Parse a subscription tag list: bare tags (all required), `(a b)` OR-groups
+/// (at least one hit per group), and top-level `-tag` (forbidden). A `-tag`
+/// inside a group stays part of that group's disjunction.
+fn parse_tag_lists<'a>(
+    parts: impl Iterator<Item = &'a str>,
+) -> Result<(Vec<domain::elements::tag_rule::TagTerm>, Vec<Tag>), String> {
+    use domain::elements::tag_rule::{TagLiteral, TagTerm};
+
+    let raw = parts.collect::<Vec<_>>().join(" ");
+    let terms = TagTerm::parse_list(&raw).map_err(|e| format!("Bad tag syntax: {e}"))?;
     let mut subscribed = Vec::new();
     let mut forbidden = Vec::new();
-    for raw in parts {
-        match raw.strip_prefix('-') {
-            Some(tag) => forbidden.push(Tag::from(tag)),
-            None => subscribed.push(Tag::from(raw)),
+    for term in terms {
+        match term.0.as_slice() {
+            [TagLiteral::Lacks(tag)] => forbidden.push(tag.clone()),
+            _ => subscribed.push(term),
         }
     }
-    (subscribed, forbidden)
+    Ok((subscribed, forbidden))
 }
 
 /// Resolve a poster reference: `#7`/`7` = poster id; `@channel` or a
@@ -1414,7 +1423,8 @@ async fn handle_setinterval(
 async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
     let mut parts = arg.split_whitespace();
     let Some(target) = parts.next() else {
-        return "Usage: /settags <poster|@channel|chat-id> [tags… -forbidden…]\n\
+        return "Usage: /settags <poster|@channel|chat-id> [tags… (or groups…) -forbidden…]\n\
+                `(gay bisexual)` = at least one of the group must be present.\n\
                 No tags = post anything (subscription filter removed)."
             .to_string();
     };
@@ -1422,7 +1432,10 @@ async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
         Ok(ids) => ids,
         Err(e) => return e,
     };
-    let (subscribed, forbidden) = parse_tag_lists(parts);
+    let (subscribed, forbidden) = match parse_tag_lists(parts) {
+        Ok(lists) => lists,
+        Err(e) => return e,
+    };
     let mut lines = Vec::new();
     for poster_id in poster_ids {
         match manage_poster::set_tags(
@@ -1515,7 +1528,8 @@ async fn handle_setrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg:
 async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
     const USAGE: &str = "Usage: /newposter <interval-minutes> <@channel|chat-id> [tags… -forbidden…]\n\
         Interval must divide 60 (1,2,3,4,5,6,10,12,15,20,30,60). \
-        No tags = post anything. The bot must be an admin of the channel.";
+        No tags = post anything; `(gay bisexual)` groups need one hit. \
+        The bot must be an admin of the channel.";
 
     let mut parts = arg.split_whitespace();
     let Some(interval) = parts.next().and_then(|v| v.parse::<u8>().ok()) else {
@@ -1538,7 +1552,10 @@ async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg
             Err(e) => return e,
         }
     };
-    let (subscribed, forbidden) = parse_tag_lists(parts);
+    let (subscribed, forbidden) = match parse_tag_lists(parts) {
+        Ok(lists) => lists,
+        Err(e) => return e,
+    };
     match manage_poster::new_poster(
         NewPoster {
             actor,

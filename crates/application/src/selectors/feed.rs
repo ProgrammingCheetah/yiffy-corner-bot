@@ -146,19 +146,21 @@ where
             );
             return Ok(false);
         }
-        let missing: Vec<&Tag> = self
+        let missing: Vec<String> = self
             .poster
             .subscribed_tags
             .iter()
-            .filter(|t| !tags.contains(*t))
+            .filter(|term| !term.passes(&tags))
+            .map(ToString::to_string)
             .collect();
         if missing.is_empty() {
             Ok(true)
         } else {
             tracing::debug!(
                 event = %Event::CandidateSkipped, reason = %SkipReason::MissingSubscribedTags,
-                post_id = %entry.id, poster_id = %self.poster.id, missing = ?missing,
-                "subscription tags not all present"
+                post_id = %entry.id, poster_id = %self.poster.id,
+                missing = missing.join(" "),
+                "subscription terms not all satisfied"
             );
             Ok(false)
         }
@@ -316,7 +318,7 @@ mod tests {
     fn poster(subscribed: &[&str], forbidden: &[&str]) -> Poster {
         Poster {
             id: PosterId::from(1),
-            subscribed_tags: tags(subscribed),
+            subscribed_tags: tags(subscribed).into_iter().map(Into::into).collect(),
             forbidden_tags: tags(forbidden),
             time_interval: PostInterval::new(5).unwrap(),
             cursor: 0,
@@ -495,6 +497,35 @@ mod tests {
         assert_eq!(pick.post.map(|p| p.id), Some(entry.id));
         let stored = fx.posts.find_by_id(entry.id).await.unwrap().unwrap();
         assert_eq!(stored.status, PostStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn or_group_subscription_needs_one_hit_per_group() {
+        use domain::elements::tag_rule::TagTerm;
+
+        let mut fx = Fixture::new();
+        let straight = fx
+            .feed_entry("https://e621.net/posts/1", &[], Some(&["male", "straight"]))
+            .await;
+        fx.feed_entry("https://e621.net/posts/2", &[], Some(&["male", "feral"]))
+            .await;
+        let gay = fx
+            .feed_entry("https://e621.net/posts/3", &[], Some(&["male", "gay"]))
+            .await;
+
+        // One hit per group: male AND (gay bisexual).
+        let mut orientation = poster(&[], &[]);
+        orientation.subscribed_tags = TagTerm::parse_list("male (gay bisexual)").unwrap();
+        let selector = fx.selector(orientation);
+        let pick = selector.next_post(0).await.unwrap();
+        assert_eq!(pick.post.map(|p| p.id), Some(gay.id));
+
+        // A single group takes the first hit of any of its members.
+        let mut any_orientation = poster(&[], &[]);
+        any_orientation.subscribed_tags = TagTerm::parse_list("(gay straight bisexual)").unwrap();
+        let selector = fx.selector(any_orientation);
+        let pick = selector.next_post(0).await.unwrap();
+        assert_eq!(pick.post.map(|p| p.id), Some(straight.id));
     }
 
     #[tokio::test]

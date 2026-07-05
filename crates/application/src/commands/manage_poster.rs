@@ -12,6 +12,7 @@ use domain::elements::{
     poster::{Poster, PosterId, PosterRepository},
     publisher_config::{PublisherConfig, PublisherConfigRepository},
     tag::Tag,
+    tag_rule::TagTerm,
     user::{Role, TelegramId, UserRepository},
 };
 
@@ -22,7 +23,7 @@ use telemetry::Event;
 #[derive(Debug)]
 pub struct NewPoster {
     pub actor: TelegramId,
-    pub subscribed_tags: Vec<Tag>,
+    pub subscribed_tags: Vec<TagTerm>,
     pub forbidden_tags: Vec<Tag>,
     pub interval: PostInterval,
     /// The delivery destination — a poster is born bound (QoL: one command
@@ -71,7 +72,7 @@ where
 pub struct SetTags {
     pub actor: TelegramId,
     pub poster_id: PosterId,
-    pub subscribed_tags: Vec<Tag>,
+    pub subscribed_tags: Vec<TagTerm>,
     pub forbidden_tags: Vec<Tag>,
 }
 
@@ -291,7 +292,7 @@ mod tests {
     fn new_poster_cmd(actor: i64) -> NewPoster {
         NewPoster {
             actor: TelegramId::from(actor),
-            subscribed_tags: vec![Tag::from("wolf")],
+            subscribed_tags: vec![Tag::from("wolf").into()],
             forbidden_tags: vec![Tag::from("gore")],
             interval: PostInterval::new(15).unwrap(),
             chat_id: -100555,
@@ -305,7 +306,7 @@ mod tests {
         let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters, &fx.configs)
             .await
             .unwrap();
-        assert_eq!(poster.subscribed_tags, vec![Tag::from("wolf")]);
+        assert_eq!(poster.subscribed_tags, vec![Tag::from("wolf").into()]);
         let stored = fx.posters.find_by_id(poster.id).await.unwrap();
         assert!(stored.is_some());
         // Born bound: the binding was created alongside.
@@ -332,7 +333,7 @@ mod tests {
             SetTags {
                 actor: TelegramId::from(1),
                 poster_id: poster.id,
-                subscribed_tags: vec![Tag::from("dragon")],
+                subscribed_tags: vec![Tag::from("dragon").into()],
                 forbidden_tags: vec![],
             },
             &fx.users,
@@ -340,7 +341,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(updated.subscribed_tags, vec![Tag::from("dragon")]);
+        assert_eq!(updated.subscribed_tags, vec![Tag::from("dragon").into()]);
     }
 
     #[tokio::test]

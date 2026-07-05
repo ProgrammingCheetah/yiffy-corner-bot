@@ -401,7 +401,7 @@ mod posters {
         let repo = SqlitePosterRepository::new(test_pool().await);
         let poster = repo
             .create(
-                vec![Tag::from("wolf"), Tag::from("male")],
+                vec![Tag::from("wolf").into(), Tag::from("male").into()],
                 vec![Tag::from("gore")],
                 PostInterval::new(15).unwrap(),
             )
@@ -411,7 +411,7 @@ mod posters {
         let stored = repo.find_by_id(poster.id).await.unwrap().unwrap();
         assert_eq!(
             stored.subscribed_tags,
-            vec![Tag::from("wolf"), Tag::from("male")]
+            vec![Tag::from("wolf").into(), Tag::from("male").into()]
         );
         assert_eq!(stored.forbidden_tags, vec![Tag::from("gore")]);
         assert_eq!(stored.time_interval, PostInterval::new(15).unwrap());
@@ -434,18 +434,36 @@ mod posters {
         let repo = SqlitePosterRepository::new(test_pool().await);
         let poster = repo
             .create(
-                vec![Tag::from("fox")],
+                vec![Tag::from("fox").into()],
                 vec![],
                 PostInterval::new(5).unwrap(),
             )
             .await
             .unwrap();
         let updated = repo
-            .set_tags(poster.id, vec![Tag::from("wolf")], vec![Tag::from("gore")])
+            .set_tags(
+                poster.id,
+                vec![Tag::from("wolf").into()],
+                vec![Tag::from("gore")],
+            )
             .await
             .unwrap();
-        assert_eq!(updated.subscribed_tags, vec![Tag::from("wolf")]);
+        assert_eq!(updated.subscribed_tags, vec![Tag::from("wolf").into()]);
         assert_eq!(updated.forbidden_tags, vec![Tag::from("gore")]);
+    }
+
+    #[tokio::test]
+    async fn or_group_subscriptions_roundtrip_through_storage() {
+        use domain::elements::tag_rule::TagTerm;
+
+        let repo = SqlitePosterRepository::new(test_pool().await);
+        let terms = TagTerm::parse_list("male (gay bisexual)").unwrap();
+        let poster = repo
+            .create(terms.clone(), vec![], PostInterval::new(5).unwrap())
+            .await
+            .unwrap();
+        let stored = repo.find_by_id(poster.id).await.unwrap().unwrap();
+        assert_eq!(stored.subscribed_tags, terms);
     }
 
     #[tokio::test]
