@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.6
+// @version      1.7
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -106,26 +106,6 @@
     return b;
   }
 
-  // Media detection. Items WITHOUT media stay unmarked so a later rescan
-  // catches images that mount after the first pass.
-  const xHasMedia = (art) =>
-    [...art.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video')]
-      // Media inside link-cards or quoted posts isn't THIS post's media.
-      .some((el) => !el.closest('[data-testid="card.wrapper"]') && !el.closest('div[role="link"]'));
-  const bskyHasMedia = (item) => {
-    if ([...item.querySelectorAll('video')].some((v) => !v.closest('div[role="link"]'))) {
-      return true;
-    }
-    for (const img of item.querySelectorAll('img[src*="cdn.bsky.app/img/feed_"]')) {
-      if (img.closest('div[role="link"]')) continue; // quote embed / card
-      // External link-cards wrap the thumb in an http(s) anchor; real
-      // post media links internally (lightbox) or not at all.
-      const href = img.closest('a')?.getAttribute('href') ?? '';
-      if (!href.startsWith('http')) return true;
-    }
-    return false;
-  };
-
   const clean = (href) => {
     const u = new URL(href, location.origin);
     u.search = '';
@@ -139,17 +119,10 @@
     if (SITE === 'x') {
       // Every tweet card, timeline or detail: the action bar is the
       // [role=group] row; the permalink is the timestamp's link.
-      // Timelines RECYCLE nodes: a card that had media can be re-filled
-      // with a text post, keeping whatever we injected. So every scan
-      // re-verifies every card — inject where missing, REMOVE where the
-      // media went away — and the URL resolves at click time.
+      // Timelines RECYCLE nodes, so injection is idempotent per card and
+      // the permalink resolves at CLICK time from the button's current card.
       for (const art of document.querySelectorAll('article[data-testid="tweet"]')) {
-        const existing = art.querySelector('button[data-ycb-btn]');
-        if (!xHasMedia(art)) {
-          existing?.remove();
-          continue;
-        }
-        if (existing) continue;
+        if (art.querySelector('button[data-ycb-btn]')) continue;
         const group = art.querySelector('[role="group"]');
         if (!group) continue;
         const btn = pawButton(() => {
@@ -166,12 +139,7 @@
       for (const item of document.querySelectorAll(
         '[data-testid^="feedItem-by-"], [data-testid^="postThreadItem-by-"]'
       )) {
-        const existing = item.querySelector('button[data-ycb-btn]');
-        if (!bskyHasMedia(item)) {
-          existing?.remove();
-          continue;
-        }
-        if (existing) continue;
+        if (item.querySelector('button[data-ycb-btn]')) continue;
         const like = item.querySelector('[data-testid="likeBtn"]');
         if (!like) continue;
         // React Native Web stacks every container by default (column).
