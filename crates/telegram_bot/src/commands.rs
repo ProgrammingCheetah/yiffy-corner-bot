@@ -85,6 +85,14 @@ pub enum Command {
     )]
     Settags(String),
     #[command(
+        description = "add tags without rewriting: /addtags <poster|@channel|chat-id> [tags… -forbidden…] (owner)"
+    )]
+    Addtags(String),
+    #[command(
+        description = "remove tags without rewriting: /deltags <poster|@channel|chat-id> [tags… -forbidden…] (owner)"
+    )]
+    Deltags(String),
+    #[command(
         description = "change a poster's cadence: /setinterval <poster|@channel|chat-id> <minutes> (owner)"
     )]
     Setinterval(String),
@@ -136,6 +144,8 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Newposter(_) => "newposter",
         Command::Setchannel(_) => "setchannel",
         Command::Settags(_) => "settags",
+        Command::Addtags(_) => "addtags",
+        Command::Deltags(_) => "deltags",
         Command::Setinterval(_) => "setinterval",
         Command::Setrules(_) => "setrules",
         Command::Delposter(_) => "delposter",
@@ -450,6 +460,8 @@ pub async fn handle_command(
         Command::Newposter(arg) => handle_newposter(&bot, &state, actor, &arg).await,
         Command::Setchannel(arg) => handle_setchannel(&bot, &state, actor, &arg).await,
         Command::Settags(arg) => handle_settags(&bot, &state, actor, &arg).await,
+        Command::Addtags(arg) => handle_edit_tags(&bot, &state, actor, &arg, TagEdit::Add).await,
+        Command::Deltags(arg) => handle_edit_tags(&bot, &state, actor, &arg, TagEdit::Remove).await,
         Command::Setinterval(arg) => handle_setinterval(&bot, &state, actor, &arg).await,
         Command::Setrules(arg) => handle_setrules(&bot, &state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
@@ -1504,7 +1516,8 @@ async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
     let Some(target) = parts.next() else {
         return "Usage: /settags <poster|@channel|chat-id> [tags… (or groups…) -forbidden…]\n\
                 `(gay bisexual)` = at least one of the group must be present.\n\
-                No tags = post anything (subscription filter removed)."
+                No tags = post anything (subscription filter removed).\n\
+                To change a few without rewriting: /addtags and /deltags."
             .to_string();
     };
     let poster_ids = match resolve_posters(bot, state, target).await {
@@ -1531,6 +1544,126 @@ async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
         {
             Ok(poster) => lines
                 .push(poster_summary(state, &poster, "tags updated, live within a minute").await),
+            Err(e) => lines.push(describe(e)),
+        }
+    }
+    lines.join("\n\n")
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TagEdit {
+    Add,
+    Remove,
+}
+
+/// `/addtags` and `/deltags`: merge into (or strip from) the stored lists
+/// instead of replacing them. The same argument string given to /addtags is
+/// undone by giving it to /deltags.
+async fn handle_edit_tags(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+    edit: TagEdit,
+) -> String {
+    use domain::elements::poster::PosterRepository as _;
+
+    let mut parts = arg.split_whitespace();
+    let Some(target) = parts.next() else {
+        let verb = match edit {
+            TagEdit::Add => "/addtags",
+            TagEdit::Remove => "/deltags",
+        };
+        return format!(
+            "Usage: {verb} <poster|@channel|chat-id> [tags… (or groups…) -forbidden…]\n\
+             Only the listed entries change; everything else stays."
+        );
+    };
+    let poster_ids = match resolve_posters(bot, state, target).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
+    let (terms, forbidden) = match parse_tag_lists(parts) {
+        Ok(lists) => lists,
+        Err(e) => return e,
+    };
+    if terms.is_empty() && forbidden.is_empty() {
+        return "Nothing to change — list at least one tag.".to_string();
+    }
+    let mut lines = Vec::new();
+    for poster_id in poster_ids {
+        let poster = match state.posters.find_by_id(poster_id).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                lines.push(format!("Poster #{poster_id} does not exist."));
+                continue;
+            }
+            Err(e) => {
+                lines.push(e.to_string());
+                continue;
+            }
+        };
+        let mut subscribed = poster.subscribed_tags.clone();
+        let mut forbidden_now = poster.forbidden_tags.clone();
+        let mut untouched = Vec::new();
+        match edit {
+            TagEdit::Add => {
+                for term in &terms {
+                    if subscribed.contains(term) {
+                        untouched.push(term.to_string());
+                    } else {
+                        subscribed.push(term.clone());
+                    }
+                }
+                for tag in &forbidden {
+                    if forbidden_now.contains(tag) {
+                        untouched.push(format!("-{tag}"));
+                    } else {
+                        forbidden_now.push(tag.clone());
+                    }
+                }
+            }
+            TagEdit::Remove => {
+                for term in &terms {
+                    if subscribed.contains(term) {
+                        subscribed.retain(|t| t != term);
+                    } else {
+                        untouched.push(term.to_string());
+                    }
+                }
+                for tag in &forbidden {
+                    if forbidden_now.contains(tag) {
+                        forbidden_now.retain(|t| t != tag);
+                    } else {
+                        untouched.push(format!("-{tag}"));
+                    }
+                }
+            }
+        }
+        match manage_poster::set_tags(
+            manage_poster::SetTags {
+                actor,
+                poster_id,
+                subscribed_tags: subscribed,
+                forbidden_tags: forbidden_now,
+            },
+            &state.users,
+            &state.posters,
+        )
+        .await
+        {
+            Ok(poster) => {
+                let mut block =
+                    poster_summary(state, &poster, "tags updated, live within a minute").await;
+                if !untouched.is_empty() {
+                    let what = match edit {
+                        TagEdit::Add => "already there",
+                        TagEdit::Remove => "not found",
+                    };
+                    block.push_str(&format!("\n⚠️ {what}: {}", untouched.join(", ")));
+                }
+                lines.push(block);
+            }
             Err(e) => lines.push(describe(e)),
         }
     }
