@@ -1,15 +1,22 @@
 use async_trait::async_trait;
-use domain::elements::publisher::{PublishItem, Publisher, PublisherError};
-use teloxide::{Bot, types::ChatId};
+use domain::elements::{
+    media::ResolvedMedia,
+    publisher::{PublishItem, Publisher, PublisherError},
+};
+use teloxide::{
+    Bot,
+    payloads::{SendAnimationSetters, SendPhotoSetters, SendVideoSetters},
+    prelude::Requester,
+    types::{ChatId, InputFile},
+};
 
-/// Publishes resolved media to a Telegram channel.
-///
-/// Stub today: logs the intent and returns Ok. A later commit will turn this
-/// into a real `send_photo` / `send_video` / `send_animation` / `send_message`
-/// dispatch keyed on the [`ResolvedMedia`](domain::elements::media::ResolvedMedia) variant.
+/// Publishes resolved media to a Telegram chat, dispatching on the media
+/// kind: photo/video/animation as native media messages with the caption,
+/// links as a text message that leans on Telegram's link preview (this is
+/// how FixUp embeds and t.me sources render).
 pub struct TelegramPublisher {
-    pub bot: Bot,
-    pub chat_id: ChatId,
+    bot: Bot,
+    chat_id: ChatId,
 }
 
 impl TelegramPublisher {
@@ -21,12 +28,49 @@ impl TelegramPublisher {
 #[async_trait]
 impl Publisher for TelegramPublisher {
     async fn publish(&self, item: &PublishItem) -> Result<(), PublisherError> {
-        tracing::info!(
-            chat = self.chat_id.0,
-            media = ?item.media,
-            caption = ?item.caption,
-            "stub publish — TelegramPublisher not yet wired to teloxide send"
-        );
+        let send = |e: teloxide::RequestError| PublisherError::Send(e.to_string());
+        match &item.media {
+            ResolvedMedia::Photo(url) => {
+                let mut request = self
+                    .bot
+                    .send_photo(self.chat_id, InputFile::url(url.clone()));
+                if let Some(caption) = &item.caption {
+                    request = request.caption(caption.clone());
+                }
+                request.await.map_err(send)?;
+            }
+            ResolvedMedia::Video(url) => {
+                let mut request = self
+                    .bot
+                    .send_video(self.chat_id, InputFile::url(url.clone()));
+                if let Some(caption) = &item.caption {
+                    request = request.caption(caption.clone());
+                }
+                request.await.map_err(send)?;
+            }
+            ResolvedMedia::Animation(url) => {
+                let mut request = self
+                    .bot
+                    .send_animation(self.chat_id, InputFile::url(url.clone()));
+                if let Some(caption) = &item.caption {
+                    request = request.caption(caption.clone());
+                }
+                request.await.map_err(send)?;
+            }
+            ResolvedMedia::Link(url) => {
+                // The caption already ends with the source URL; when it does
+                // not contain the link we're embedding, append it.
+                let text = match &item.caption {
+                    Some(caption) if caption.contains(url.as_str()) => caption.clone(),
+                    Some(caption) => format!("{caption}\n{url}"),
+                    None => url.to_string(),
+                };
+                self.bot
+                    .send_message(self.chat_id, text)
+                    .await
+                    .map_err(send)?;
+            }
+        }
         Ok(())
     }
 }
