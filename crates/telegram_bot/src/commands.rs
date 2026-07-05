@@ -788,11 +788,43 @@ fn describe_user(user: &Option<domain::elements::user::User>) -> String {
     }
 }
 
+/// The caption header code (`#7K3M9QZA`) is derived, not stored: recompute
+/// it for every (feed entry, poster) pair until one matches. Owner-command
+/// scale — a few thousand hashes at worst.
+async fn resolve_publish_code(state: &SharedState, raw: &str) -> Option<PostId> {
+    use application::actors::scheduler::publish_code;
+    use domain::elements::post::PostRepository as _;
+    use domain::elements::poster::PosterRepository as _;
+
+    let code = raw.trim().trim_start_matches('#').to_ascii_uppercase();
+    if code.len() != 8 || !code.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let end = state.posts.feed_end().await.ok()?;
+    let entries = state.posts.feed_after(0, end).await.ok()?;
+    let posters = state.posters.list_all().await.ok()?;
+    for post in &entries {
+        for poster in &posters {
+            if publish_code(post, poster.id) == code {
+                return Some(post.id);
+            }
+        }
+    }
+    None
+}
+
 async fn handle_postinfo(state: &SharedState, actor: TelegramId, arg: &str) -> String {
     use application::commands::post_info::post_info;
 
-    let Some(post_id) = parse_post_id(arg) else {
-        return "Usage: /postinfo <post-id>".to_string();
+    let post_id = match parse_post_id(arg) {
+        Some(id) => Some(id),
+        None => resolve_publish_code(state, arg).await,
+    };
+    let Some(post_id) = post_id else {
+        return "Usage: /postinfo <post-id | #CODE>\n\
+                #CODE is the 8-character code at the top of a published post.\n\
+                (If its poster was deleted, the code can't be resolved — use the id.)"
+            .to_string();
     };
     match post_info(
         actor,
