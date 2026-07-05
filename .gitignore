@@ -6,4 +6,4 @@ config/vault/
 # Build output
 node_modules/
 dist/
-code_migration/target/
+/target/

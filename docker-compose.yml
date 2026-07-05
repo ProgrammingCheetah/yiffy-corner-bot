@@ -1,7 +1,7 @@
 services:
   bot-rust:
     build:
-      context: ./code_migration
+      context: .
       dockerfile: ./Dockerfile
     container_name: yiffy_corner_bot_rust
     restart: always
