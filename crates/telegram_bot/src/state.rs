@@ -13,6 +13,7 @@ use persistence::sqlite::{
     publication::SqlitePublicationRepository,
     publisher_config::SqlitePublisherConfigRepository,
     report::SqliteReportRepository,
+    scoreboard::SqliteScoreboardRepository,
     tag_policy::{
         SqliteForbiddenTagRepository, SqliteRequiredTagRepository, SqliteSpoilerTagRepository,
     },
@@ -120,6 +121,7 @@ pub struct AppState {
     pub reports: SqliteReportRepository,
     pub publications: SqlitePublicationRepository,
     pub announcements: SqliteAnnouncementRepository,
+    pub scoreboards: SqliteScoreboardRepository,
     pub e621: Arc<RateLimitedE621Client>,
     /// The same composite media resolver the scheduler publishes with —
     /// review DMs resolve real media through it too.

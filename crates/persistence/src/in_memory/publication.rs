@@ -35,6 +35,17 @@ impl PublicationRepository for InMemoryPublicationRepository {
             .cloned()
             .collect())
     }
+
+    async fn list_for_chat(&self, chat_id: i64) -> Result<Vec<Publication>, Self::Err> {
+        Ok(self
+            .publications
+            .read()
+            .await
+            .iter()
+            .filter(|p| p.chat_id == chat_id)
+            .cloned()
+            .collect())
+    }
 }
 
 #[cfg(test)]

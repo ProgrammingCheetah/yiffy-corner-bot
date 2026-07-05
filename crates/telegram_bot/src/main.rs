@@ -3,6 +3,7 @@ mod commands;
 mod housekeeper;
 mod publishers;
 mod resolvers;
+mod scoreboards;
 mod state;
 mod web;
 
@@ -129,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         announcements: persistence::sqlite::announcement::SqliteAnnouncementRepository::new(
             pool.clone(),
         ),
+        scoreboards: persistence::sqlite::scoreboard::SqliteScoreboardRepository::new(pool.clone()),
         e621: e621.clone(),
         resolver: resolver.clone(),
         hasher: Arc::new(infra_phash::HttpPerceptualHasher::new(USER_AGENT)),
@@ -199,6 +201,9 @@ async fn main() -> anyhow::Result<()> {
     // Dead-media sweep: report entries whose upstream vanished before a
     // Poster hits them, and backfill missing perceptual hashes.
     tokio::spawn(housekeeper::run(state.clone(), bot.clone()));
+
+    // Scoreboard cycle (per-channel community leaderboards).
+    tokio::spawn(scoreboards::run(state.clone(), bot.clone()));
 
     // WebApp menu button (Mini App entry point) when a public URL is set.
     if let Some(url) = &config.webapp_url {

@@ -42,14 +42,24 @@ impl PublicationRepository for SqlitePublicationRepository {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| PublicationRepositoryError::Storage(e.to_string()))?;
-        Ok(rows
-            .iter()
-            .map(|row| Publication {
-                post_id: PostId::from(row.get::<i64, _>("post_id") as u64),
-                chat_id: row.get("chat_id"),
-                message_id: row.get::<i64, _>("message_id") as i32,
-                published_at: row.get::<DateTime<Utc>, _>("published_at"),
-            })
-            .collect())
+        Ok(rows.iter().map(row_to_publication).collect())
+    }
+
+    async fn list_for_chat(&self, chat_id: i64) -> Result<Vec<Publication>, Self::Err> {
+        let rows = sqlx::query("SELECT * FROM publications WHERE chat_id = ? ORDER BY id")
+            .bind(chat_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| PublicationRepositoryError::Storage(e.to_string()))?;
+        Ok(rows.iter().map(row_to_publication).collect())
+    }
+}
+
+fn row_to_publication(row: &sqlx::sqlite::SqliteRow) -> Publication {
+    Publication {
+        post_id: PostId::from(row.get::<i64, _>("post_id") as u64),
+        chat_id: row.get("chat_id"),
+        message_id: row.get::<i64, _>("message_id") as i32,
+        published_at: row.get::<DateTime<Utc>, _>("published_at"),
     }
 }

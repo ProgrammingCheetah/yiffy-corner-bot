@@ -134,6 +134,11 @@ vocabulary! {
         AnnouncementSent => "announcement_sent",
         AnnouncementFailed => "announcement_failed",
 
+        // Scoreboards
+        ScoreboardConfigChanged => "scoreboard_config_changed",
+        ScoreboardSent => "scoreboard_sent",
+        ScoreboardFailed => "scoreboard_failed",
+
         // Bot surface
         CommandReceived => "command_received",
 

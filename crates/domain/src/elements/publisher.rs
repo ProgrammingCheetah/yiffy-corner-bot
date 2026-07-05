@@ -64,4 +64,6 @@ pub trait PublicationRepository: Send + Sync {
     type Err;
     async fn record(&self, publication: Publication) -> Result<(), Self::Err>;
     async fn list_for(&self, post_id: PostId) -> Result<Vec<Publication>, Self::Err>;
+    /// Everything ever published to one chat — the channel-scoreboard corpus.
+    async fn list_for_chat(&self, chat_id: i64) -> Result<Vec<Publication>, Self::Err>;
 }

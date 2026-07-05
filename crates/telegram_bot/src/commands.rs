@@ -120,6 +120,10 @@ pub enum Command {
     Highscore,
     #[command(description = "personal token for the browser userscript (rotates on each use)")]
     Apitoken,
+    #[command(
+        description = "per-channel community leaderboards: /scoreboards <hours|now|off> (owner)"
+    )]
+    Scoreboards(String),
     #[command(description = "channel directory broadcasts: /announcements <hours|now|off> (owner)")]
     Announcements(String),
     #[command(
@@ -171,6 +175,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Nextpost(_) => "nextpost",
         Command::Highscore => "highscore",
         Command::Apitoken => "apitoken",
+        Command::Scoreboards(_) => "scoreboards",
         Command::Announcements(_) => "announcements",
         Command::Spotlight(_) => "spotlight",
         Command::Announcemute(_) => "announcemute",
@@ -570,6 +575,7 @@ pub async fn handle_command(
         Command::Nextpost(arg) => handle_nextpost(&bot, &state, actor, &arg).await,
         Command::Highscore => handle_highscore(&state).await,
         Command::Apitoken => handle_apitoken(&state, &msg, actor).await,
+        Command::Scoreboards(arg) => handle_scoreboards(&bot, &state, actor, &arg).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
         Command::Spotlight(arg) => handle_spotlight(&bot, &state, actor, &arg).await,
         Command::Announcemute(arg) => handle_announce_mute(&bot, &state, actor, &arg, true).await,
@@ -1645,27 +1651,25 @@ pub(crate) fn parse_tag_lists<'a>(
     Ok((subscribed, forbidden))
 }
 
-/// The submitter leaderboard — public on purpose, that's what makes it a
-/// highscore. Scored on Posts accepted into the feed.
+/// The global submitter leaderboard — public on purpose, that's what makes
+/// it a highscore. Community members only (staff never rank), scored on
+/// Posts accepted into the feed.
 async fn handle_highscore(state: &SharedState) -> String {
-    use domain::elements::post::PostRepository as _;
-    use domain::elements::user::UserRepository as _;
-
-    let ranked = match state.posts.top_submitters(10).await {
-        Ok(ranked) => ranked,
-        Err(_) => return "Repository error reading the leaderboard.".to_string(),
-    };
-    if ranked.is_empty() {
+    let board =
+        match application::commands::scoreboard::global_board(&state.posts, &state.users, 10).await
+        {
+            Ok(board) => board,
+            Err(_) => return "Repository error reading the leaderboard.".to_string(),
+        };
+    if board.is_empty() {
         return "No accepted submissions yet — claim the crown with /suggest!".to_string();
     }
     let mut lines = vec!["🏆 Top submitters".to_string()];
-    for (rank, (user_id, score)) in ranked.iter().enumerate() {
-        let name = match state.users.find_by_id(*user_id).await {
-            Ok(Some(user)) => user
-                .display_name
-                .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref())),
-            _ => format!("user {user_id}"),
-        };
+    for (rank, (user, score)) in board.iter().enumerate() {
+        let name = user
+            .display_name
+            .clone()
+            .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref()));
         let medal = match rank {
             0 => "🥇".to_string(),
             1 => "🥈".to_string(),
@@ -1676,6 +1680,51 @@ async fn handle_highscore(state: &SharedState) -> String {
         lines.push(format!("{medal} {name} — {score} {noun}"));
     }
     lines.join("\n")
+}
+
+/// Configure (or fire) the per-channel scoreboard cycle. Owner-only,
+/// mirroring /announcements.
+async fn handle_scoreboards(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+) -> String {
+    use application::commands::auth::require_role;
+    use domain::elements::scoreboard::ScoreboardRepository as _;
+
+    if let Err(e) = require_role(&state.users, actor, Role::Owner).await {
+        return describe(e);
+    }
+    match arg.trim().to_lowercase().as_str() {
+        "now" => match crate::scoreboards::scoreboard_round(state, bot).await {
+            Ok((sent, 0)) => format!("Scoreboards posted to {sent} channel(s)."),
+            Ok((sent, failed)) => format!(
+                "Scoreboards posted to {sent} channel(s); {failed} delivery(ies) failed — see logs."
+            ),
+            Err(reason) => format!("Nothing posted: {reason}."),
+        },
+        "off" | "0" => match state.scoreboards.set_interval_hours(0).await {
+            Ok(()) => {
+                tracing::info!(event = %Event::ScoreboardConfigChanged, interval_hours = 0u32, "scoreboards disabled");
+                "Recurring scoreboards disabled.".to_string()
+            }
+            Err(e) => e.to_string(),
+        },
+        raw => match raw.parse::<u32>() {
+            Ok(hours) if hours > 0 => match state.scoreboards.set_interval_hours(hours).await {
+                Ok(()) => {
+                    tracing::info!(event = %Event::ScoreboardConfigChanged, interval_hours = hours, "scoreboard cadence set");
+                    format!(
+                        "Scoreboards every {hours}h. Next round fires within a minute of \
+                         becoming due (first one immediately if none was ever posted)."
+                    )
+                }
+                Err(e) => e.to_string(),
+            },
+            _ => "Usage: /scoreboards <hours|now|off>".to_string(),
+        },
+    }
 }
 
 /// Preview what a poster would publish on its next fire, WITHOUT advancing

@@ -8,6 +8,7 @@ pub mod poster;
 pub mod publisher;
 pub mod publisher_config;
 pub mod report;
+pub mod scoreboard;
 pub mod tag;
 pub mod tag_policy;
 pub mod tag_rule;

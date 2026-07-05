@@ -6,6 +6,7 @@ pub mod moderate;
 pub mod phash_check;
 pub mod post_info;
 pub mod report;
+pub mod scoreboard;
 pub mod set_user_role;
 pub mod start;
 pub mod suggest;

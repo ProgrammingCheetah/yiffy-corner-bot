@@ -111,6 +111,11 @@ feed, consumed BSky-style:
   `media_gone` — skipped by every consumer — and the Poster takes the next
   matching entry in the same fire. A cached verdict, not a takedown: the
   sweep revives the entry if the source comes back.
+- **Leaderboards**: community only — staff (Moderator+) never rank. The
+  global /highscore counts Posts accepted into the feed; each channel's
+  recurring scoreboard counts distinct Posts PUBLISHED there (so it
+  reflects that channel's tag taste), posted into the channel itself on a
+  Zuri-configured cadence.
 - **Tags on everything**: e621 entries get API tags at submission (and are
   still re-validated fresh at consume time — Banned↔Accepted flips live on);
   every other source requires submitter tags, inline or via the bot's
