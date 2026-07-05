@@ -94,6 +94,12 @@ pub enum Command {
         description = "pin a channel atop the directory: /spotlight <@channel|id|off> (owner)"
     )]
     Spotlight(String),
+    #[command(
+        description = "stop delivering announcements to a chat (it stays listed): /announcemute <@channel|id> (owner)"
+    )]
+    Announcemute(String),
+    #[command(description = "resume announcement delivery: /announceunmute <@channel|id> (owner)")]
+    Announceunmute(String),
 }
 
 /// Stable command label for the `command_received` event.
@@ -126,6 +132,8 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Posters => "posters",
         Command::Announcements(_) => "announcements",
         Command::Spotlight(_) => "spotlight",
+        Command::Announcemute(_) => "announcemute",
+        Command::Announceunmute(_) => "announceunmute",
     }
 }
 
@@ -448,6 +456,10 @@ pub async fn handle_command(
         Command::Posters => handle_posters(&state, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
         Command::Spotlight(arg) => handle_spotlight(&bot, &state, actor, &arg).await,
+        Command::Announcemute(arg) => handle_announce_mute(&bot, &state, actor, &arg, true).await,
+        Command::Announceunmute(arg) => {
+            handle_announce_mute(&bot, &state, actor, &arg, false).await
+        }
     };
 
     bot.send_message(msg.chat.id, reply)
@@ -1464,6 +1476,45 @@ async fn handle_spotlight(bot: &Bot, state: &SharedState, actor: TelegramId, arg
     }
 }
 
+async fn handle_announce_mute(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+    muted: bool,
+) -> String {
+    let raw = arg.trim();
+    if raw.is_empty() {
+        return "Usage: /announcemute <@channel|chat-id> (or /announceunmute)".to_string();
+    }
+    let chat_id = if let Ok(id) = raw.parse::<i64>() {
+        id
+    } else {
+        let resolver = BotUserResolver { bot: bot.clone() };
+        match resolve_target(&resolver, raw).await {
+            Ok(Some(id)) => *id.as_ref(),
+            Ok(None) => return format!("Can't resolve {raw}."),
+            Err(e) => return e,
+        }
+    };
+    match manage_poster::set_announcement_mute(
+        actor,
+        chat_id,
+        muted,
+        &state.users,
+        &state.publisher_configs,
+    )
+    .await
+    {
+        Ok(_) if muted => format!(
+            "Chat {chat_id} will no longer receive announcements — it still appears in the \
+             directory sent to other channels."
+        ),
+        Ok(_) => format!("Chat {chat_id} receives announcements again."),
+        Err(e) => describe(e),
+    }
+}
+
 async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
     use application::commands::auth::require_role;
     use domain::elements::poster::PosterRepository;
@@ -1482,7 +1533,10 @@ async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
     let mut lines = Vec::new();
     for poster in posters {
         let binding = match state.publisher_configs.find_by_poster(poster.id).await {
-            Ok(Some(config)) => format!("→ chat {}", config.chat_id),
+            Ok(Some(config)) if config.receive_announcements => {
+                format!("→ chat {}", config.chat_id)
+            }
+            Ok(Some(config)) => format!("→ chat {} (announcements muted)", config.chat_id),
             _ => "→ UNBOUND (use /setchannel)".to_string(),
         };
         lines.push(format!(

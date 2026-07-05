@@ -24,12 +24,30 @@ impl InMemoryPublisherConfigRepository {
 impl PublisherConfigRepository for InMemoryPublisherConfigRepository {
     type Err = PublisherConfigRepositoryError;
 
-    async fn upsert(&self, config: PublisherConfig) -> Result<(), Self::Err> {
-        self.configs
-            .write()
-            .await
-            .insert(*config.poster_id.as_ref(), config);
+    async fn upsert(&self, mut config: PublisherConfig) -> Result<(), Self::Err> {
+        let mut configs = self.configs.write().await;
+        // Re-binding preserves the announcement mute (chat policy).
+        if let Some(existing) = configs.get(config.poster_id.as_ref()) {
+            config.receive_announcements = existing.receive_announcements;
+        }
+        configs.insert(*config.poster_id.as_ref(), config);
         Ok(())
+    }
+
+    async fn set_receive_announcements(
+        &self,
+        chat_id: i64,
+        receive: bool,
+    ) -> Result<u64, Self::Err> {
+        let mut configs = self.configs.write().await;
+        let mut affected = 0u64;
+        for config in configs.values_mut() {
+            if config.chat_id == chat_id {
+                config.receive_announcements = receive;
+                affected += 1;
+            }
+        }
+        Ok(affected)
     }
 
     async fn find_by_poster(
@@ -59,6 +77,7 @@ mod tests {
             poster_id: PosterId::from(poster_id),
             chat_id: chat,
             token_path: PathBuf::from(format!("/vault/{poster_id}/token.txt")),
+            receive_announcements: true,
         }
     }
 

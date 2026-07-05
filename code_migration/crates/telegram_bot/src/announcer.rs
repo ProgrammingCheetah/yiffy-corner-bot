@@ -47,16 +47,16 @@ pub async fn announce_round(state: &SharedState, bot: &Bot) -> Result<(usize, us
         .list_all()
         .await
         .map_err(|e| e.to_string())?;
-    let chat_ids: Vec<i64> = {
-        let mut seen = BTreeMap::new();
-        for config in &configs {
-            seen.insert(config.chat_id, ());
-        }
-        seen.into_keys().collect()
-    };
-    if chat_ids.is_empty() {
+    // The directory lists EVERY consuming chat; delivery skips muted ones.
+    let mut chats: BTreeMap<i64, bool> = BTreeMap::new();
+    for config in &configs {
+        let receive = chats.entry(config.chat_id).or_insert(false);
+        *receive = *receive || config.receive_announcements;
+    }
+    if chats.is_empty() {
         return Err("no consuming channels are bound".to_string());
     }
+    let chat_ids: Vec<i64> = chats.keys().copied().collect();
 
     // Resolve names + links. Channels the bot can't inspect are skipped.
     let mut entries = Vec::new();
@@ -110,9 +110,13 @@ pub async fn announce_round(state: &SharedState, bot: &Bot) -> Result<(usize, us
     }
     let text = lines.join("\n");
 
-    // Deliver to every consuming chat.
+    // Deliver to every consuming chat that hasn't muted announcements.
     let (mut sent, mut failed) = (0usize, 0usize);
-    for chat_id in &chat_ids {
+    for (chat_id, receive) in &chats {
+        if !receive {
+            tracing::debug!(event = %Event::AnnouncementSent, chat_id, muted = true, "skipping muted chat");
+            continue;
+        }
         match bot
             .send_message(ChatId(*chat_id), text.clone())
             .parse_mode(ParseMode::Html)

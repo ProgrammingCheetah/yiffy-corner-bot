@@ -17,6 +17,9 @@ pub struct PublisherConfig {
     pub chat_id: i64,
     /// Filesystem path to the per-Poster bot token.
     pub token_path: PathBuf,
+    /// Whether this chat receives announcement broadcasts. Muted chats
+    /// still appear in the directory published to other channels.
+    pub receive_announcements: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,13 @@ pub trait PublisherConfigRepository: Send + Sync {
         &self,
         poster_id: PosterId,
     ) -> Result<Option<PublisherConfig>, Self::Err>;
+    /// Mute/unmute announcement delivery for every binding onto `chat_id`.
+    /// Returns how many bindings were affected.
+    async fn set_receive_announcements(
+        &self,
+        chat_id: i64,
+        receive: bool,
+    ) -> Result<u64, Self::Err>;
     /// Drop a Poster's binding (no-op when none exists). Part of poster
     /// deletion — the config row must go before the poster row (FK).
     async fn remove(&self, poster_id: PosterId) -> Result<(), Self::Err>;

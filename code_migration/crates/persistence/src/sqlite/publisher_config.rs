@@ -25,6 +25,7 @@ fn row_to_config(row: &sqlx::sqlite::SqliteRow) -> PublisherConfig {
         poster_id: PosterId::from(row.get::<i64, _>("poster_id") as u64),
         chat_id: row.get("chat_id"),
         token_path: PathBuf::from(row.get::<String, _>("token_path")),
+        receive_announcements: row.get::<i64, _>("receive_announcements") != 0,
     }
 }
 
@@ -33,9 +34,12 @@ impl PublisherConfigRepository for SqlitePublisherConfigRepository {
     type Err = PublisherConfigRepositoryError;
 
     async fn upsert(&self, config: PublisherConfig) -> Result<(), Self::Err> {
+        // Re-binding preserves the announcement mute (it is chat policy,
+        // not part of the destination).
         sqlx::query(
-            "INSERT INTO publisher_configs (poster_id, chat_id, token_path)
-             VALUES (?, ?, ?)
+            "INSERT INTO publisher_configs
+                 (poster_id, chat_id, token_path, receive_announcements)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT (poster_id) DO UPDATE SET
                  chat_id = excluded.chat_id,
                  token_path = excluded.token_path",
@@ -43,6 +47,7 @@ impl PublisherConfigRepository for SqlitePublisherConfigRepository {
         .bind(*config.poster_id.as_ref() as i64)
         .bind(config.chat_id)
         .bind(config.token_path.to_string_lossy().into_owned())
+        .bind(config.receive_announcements as i64)
         .execute(&self.pool)
         .await
         .map_err(|e| PublisherConfigRepositoryError::Storage(e.to_string()))?;
@@ -59,6 +64,21 @@ impl PublisherConfigRepository for SqlitePublisherConfigRepository {
             .await
             .map_err(|e| PublisherConfigRepositoryError::Storage(e.to_string()))?;
         Ok(row.as_ref().map(row_to_config))
+    }
+
+    async fn set_receive_announcements(
+        &self,
+        chat_id: i64,
+        receive: bool,
+    ) -> Result<u64, Self::Err> {
+        let result =
+            sqlx::query("UPDATE publisher_configs SET receive_announcements = ? WHERE chat_id = ?")
+                .bind(receive as i64)
+                .bind(chat_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| PublisherConfigRepositoryError::Storage(e.to_string()))?;
+        Ok(result.rows_affected())
     }
 
     async fn remove(&self, poster_id: PosterId) -> Result<(), Self::Err> {

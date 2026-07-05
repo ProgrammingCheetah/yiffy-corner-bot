@@ -51,6 +51,7 @@ where
             poster_id: poster.id,
             chat_id: cmd.chat_id,
             token_path: cmd.token_path,
+            receive_announcements: true,
         })
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
@@ -98,6 +99,35 @@ where
         "poster tag subscription replaced"
     );
     Ok(poster)
+}
+
+/// Mute or unmute announcement delivery for a chat (Owner-only). The chat
+/// keeps appearing in directories broadcast to other channels.
+pub async fn set_announcement_mute<C>(
+    actor: TelegramId,
+    chat_id: i64,
+    muted: bool,
+    users: &impl UserRepository,
+    configs: &C,
+) -> HandlerResult<u64>
+where
+    C: PublisherConfigRepository,
+{
+    require_role(users, actor, Role::Owner).await?;
+    let affected = configs
+        .set_receive_announcements(chat_id, !muted)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    if affected == 0 {
+        return Err(HandlerError::InvalidState(format!(
+            "no poster is bound to chat {chat_id}"
+        )));
+    }
+    tracing::info!(
+        event = %Event::AnnouncementConfigChanged,
+        chat_id, muted, affected, "announcement delivery toggled"
+    );
+    Ok(affected)
 }
 
 /// Delete a Poster (and its channel binding). Owner-only. The feed and its
@@ -165,6 +195,7 @@ where
             poster_id: cmd.poster_id,
             chat_id: cmd.chat_id,
             token_path: cmd.token_path,
+            receive_announcements: true,
         })
         .await
         .map_err(|_| HandlerError::RepositoryError)

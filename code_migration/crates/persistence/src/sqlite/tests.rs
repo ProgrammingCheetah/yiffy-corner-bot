@@ -478,6 +478,7 @@ mod publisher_configs {
             poster_id: poster.id,
             chat_id: -100,
             token_path: PathBuf::from("a/token.txt"),
+            receive_announcements: true,
         })
         .await
         .unwrap();
@@ -486,6 +487,7 @@ mod publisher_configs {
             poster_id: poster.id,
             chat_id: -200,
             token_path: PathBuf::from("b/token.txt"),
+            receive_announcements: true,
         })
         .await
         .unwrap();
@@ -494,6 +496,61 @@ mod publisher_configs {
         assert_eq!(config.chat_id, -200);
         assert_eq!(config.token_path, PathBuf::from("b/token.txt"));
         assert_eq!(repo.list_all().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn announcement_mute_roundtrips_and_survives_rebinding() {
+        let pool = test_pool().await;
+        let posters = SqlitePosterRepository::new(pool.clone());
+        let poster = posters
+            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .await
+            .unwrap();
+        let repo = SqlitePublisherConfigRepository::new(pool);
+        repo.upsert(PublisherConfig {
+            poster_id: poster.id,
+            chat_id: -100,
+            token_path: PathBuf::from("a"),
+            receive_announcements: true,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            repo.set_receive_announcements(-100, false).await.unwrap(),
+            1
+        );
+        assert!(
+            !repo
+                .find_by_poster(poster.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .receive_announcements
+        );
+
+        // Re-binding the same poster keeps the mute.
+        repo.upsert(PublisherConfig {
+            poster_id: poster.id,
+            chat_id: -100,
+            token_path: PathBuf::from("b"),
+            receive_announcements: true,
+        })
+        .await
+        .unwrap();
+        assert!(
+            !repo
+                .find_by_poster(poster.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .receive_announcements
+        );
+
+        assert_eq!(
+            repo.set_receive_announcements(-999, false).await.unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
