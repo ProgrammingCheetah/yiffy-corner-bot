@@ -1333,6 +1333,12 @@ fn parse_tag_lists<'a>(
     use domain::elements::tag_rule::{TagLiteral, TagTerm};
 
     let raw = parts.collect::<Vec<_>>().join(" ");
+    if raw.contains('[') || raw.contains(']') {
+        return Err(
+            "That looks like a conditional rule — [if]->[then] rules go in /setrules, not here."
+                .to_string(),
+        );
+    }
     let terms = TagTerm::parse_list(&raw).map_err(|e| format!("Bad tag syntax: {e}"))?;
     let mut subscribed = Vec::new();
     let mut forbidden = Vec::new();
@@ -1383,6 +1389,81 @@ async fn resolve_posters(
     Ok(posters)
 }
 
+/// One readable block per poster — every management command answers with
+/// the poster's full picture instead of a one-line prose summary.
+async fn poster_summary(
+    state: &SharedState,
+    poster: &domain::elements::poster::Poster,
+    headline: &str,
+) -> String {
+    use domain::elements::publisher_config::PublisherConfigRepository as _;
+
+    let join = |items: Vec<String>| items.join(", ");
+    let mut lines = if headline.is_empty() {
+        vec![format!("Poster #{}", poster.id)]
+    } else {
+        vec![format!("Poster #{} — {headline}", poster.id)]
+    };
+    lines.push(format!(
+        "⏱ Interval: every {} min",
+        poster.time_interval.as_ref()
+    ));
+    match state.publisher_configs.find_by_poster(poster.id).await {
+        Ok(Some(config)) if config.receive_announcements => {
+            lines.push(format!("📍 Posts to: chat {}", config.chat_id));
+        }
+        Ok(Some(config)) => lines.push(format!(
+            "📍 Posts to: chat {} (announcements muted)",
+            config.chat_id
+        )),
+        _ => lines.push("📍 Posts to: nowhere — bind with /setchannel".to_string()),
+    }
+    if poster.subscribed_tags.is_empty() {
+        lines.push("🏷 Tags: anything".to_string());
+    } else {
+        lines.push(format!(
+            "🏷 Tags: {}",
+            join(
+                poster
+                    .subscribed_tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            )
+        ));
+    }
+    if !poster.forbidden_tags.is_empty() {
+        lines.push(format!(
+            "🚫 Never: {}",
+            join(
+                poster
+                    .forbidden_tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            )
+        ));
+    }
+    if !poster.rules.is_empty() {
+        lines.push("📐 Rules:".to_string());
+        for rule in &poster.rules {
+            let side = |terms: &[domain::elements::tag_rule::TagTerm]| {
+                terms
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            lines.push(format!(
+                "  • [{}] → [{}]",
+                side(&rule.if_all),
+                side(&rule.then_all)
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
 async fn handle_setinterval(
     bot: &Bot,
     state: &SharedState,
@@ -1409,15 +1490,13 @@ async fn handle_setinterval(
         match manage_poster::set_interval(actor, poster_id, interval, &state.users, &state.posters)
             .await
         {
-            Ok(poster) => lines.push(format!(
-                "Poster #{} now fires every {}min — live within a minute.",
-                poster.id,
-                poster.time_interval.as_ref()
-            )),
+            Ok(poster) => lines.push(
+                poster_summary(state, &poster, "interval updated, live within a minute").await,
+            ),
             Err(e) => lines.push(describe(e)),
         }
     }
-    lines.join("\n")
+    lines.join("\n\n")
 }
 
 async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
@@ -1450,30 +1529,12 @@ async fn handle_settags(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
         )
         .await
         {
-            Ok(poster) if poster.subscribed_tags.is_empty() => lines.push(format!(
-                "Poster #{} now posts ANYTHING (no subscription filter) — live within a minute.",
-                poster.id
-            )),
-            Ok(poster) => lines.push(format!(
-                "Poster #{} now subscribes to [{}] minus [{}] — live within a minute.",
-                poster.id,
-                poster
-                    .subscribed_tags
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                poster
-                    .forbidden_tags
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )),
+            Ok(poster) => lines
+                .push(poster_summary(state, &poster, "tags updated, live within a minute").await),
             Err(e) => lines.push(describe(e)),
         }
     }
-    lines.join("\n")
+    lines.join("\n\n")
 }
 
 async fn handle_setrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
@@ -1505,24 +1566,14 @@ async fn handle_setrules(bot: &Bot, state: &SharedState, actor: TelegramId, arg:
         )
         .await
         {
-            Ok(poster) if poster.rules.is_empty() => lines.push(format!(
-                "Poster #{} has no conditional rules anymore — live within a minute.",
-                poster.id
-            )),
-            Ok(poster) => lines.push(format!(
-                "Poster #{} now enforces {} — live within a minute.",
-                poster.id,
-                poster
-                    .rules
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )),
+            Ok(poster) if poster.rules.is_empty() => lines
+                .push(poster_summary(state, &poster, "rules cleared, live within a minute").await),
+            Ok(poster) => lines
+                .push(poster_summary(state, &poster, "rules updated, live within a minute").await),
             Err(e) => lines.push(describe(e)),
         }
     }
-    lines.join("\n")
+    lines.join("\n\n")
 }
 
 async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
@@ -1572,28 +1623,7 @@ async fn handle_newposter(bot: &Bot, state: &SharedState, actor: TelegramId, arg
     )
     .await
     {
-        Ok(poster) if poster.subscribed_tags.is_empty() => format!(
-            "Poster #{} created, bound to {chat_raw}, posting ANYTHING every {}min — live within a minute.",
-            poster.id,
-            poster.time_interval.as_ref()
-        ),
-        Ok(poster) => format!(
-            "Poster #{} created, bound to {chat_raw}, every {}min for [{}] minus [{}] — live within a minute.",
-            poster.id,
-            poster.time_interval.as_ref(),
-            poster
-                .subscribed_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-            poster
-                .forbidden_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
+        Ok(poster) => poster_summary(state, &poster, "created, live within a minute").await,
         Err(e) => describe(e),
     }
 }
@@ -1807,7 +1837,6 @@ async fn handle_announce_mute(
 async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
     use application::commands::auth::require_role;
     use domain::elements::poster::PosterRepository;
-    use domain::elements::publisher_config::PublisherConfigRepository;
 
     if let Err(e) = require_role(&state.users, actor, Role::Owner).await {
         return describe(e);
@@ -1821,47 +1850,9 @@ async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
     }
     let mut lines = Vec::new();
     for poster in posters {
-        let binding = match state.publisher_configs.find_by_poster(poster.id).await {
-            Ok(Some(config)) if config.receive_announcements => {
-                format!("→ chat {}", config.chat_id)
-            }
-            Ok(Some(config)) => format!("→ chat {} (announcements muted)", config.chat_id),
-            _ => "→ UNBOUND (use /setchannel)".to_string(),
-        };
-        let rules = if poster.rules.is_empty() {
-            String::new()
-        } else {
-            format!(
-                ", rules {}",
-                poster
-                    .rules
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-        };
-        lines.push(format!(
-            "#{} every {}min, tags [{}] minus [{}]{} {}",
-            poster.id,
-            poster.time_interval.as_ref(),
-            poster
-                .subscribed_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-            poster
-                .forbidden_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-            rules,
-            binding
-        ));
+        lines.push(poster_summary(state, &poster, "").await);
     }
-    lines.join("\n")
+    lines.join("\n\n")
 }
 
 /// A message forwarded from a channel into the bot's private chat is a
