@@ -156,6 +156,11 @@ pub enum PostStatus {
     /// on re-validation if the offending tag is removed from the forbidden
     /// list or from the post on e621.
     Banned,
+    /// The upstream media is gone (fire-time or sweep resolution said
+    /// NotFound). A cached verdict like `Banned`, NOT a human decision:
+    /// every consumer skips it, and the sweep re-resolves it and flips it
+    /// back to `Accepted` if the source comes back.
+    MediaGone,
 }
 
 impl std::fmt::Display for PostStatus {
@@ -167,6 +172,7 @@ impl std::fmt::Display for PostStatus {
             PostStatus::ChangesRequested => "changes_requested",
             PostStatus::Deleted => "deleted",
             PostStatus::Banned => "banned",
+            PostStatus::MediaGone => "media_gone",
         })
     }
 }
@@ -185,6 +191,7 @@ impl std::str::FromStr for PostStatus {
             "changes_requested" => Ok(PostStatus::ChangesRequested),
             "deleted" => Ok(PostStatus::Deleted),
             "banned" => Ok(PostStatus::Banned),
+            "media_gone" => Ok(PostStatus::MediaGone),
             other => Err(PostStatusParseError(other.to_string())),
         }
     }

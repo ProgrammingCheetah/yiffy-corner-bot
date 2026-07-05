@@ -106,6 +106,11 @@ feed, consumed BSky-style:
 - **Consume-once**: at the feed end a consumer stays quiet until new content
   is curated. No recycling, no repost cooldown. Infinite consumers under one
   pool.
+- **Dead media**: when a source's media turns out gone (a Poster hits it at
+  fire time, or the periodic sweep finds it first), the entry flips to
+  `media_gone` — skipped by every consumer — and the Poster takes the next
+  matching entry in the same fire. A cached verdict, not a takedown: the
+  sweep revives the entry if the source comes back.
 - **Tags on everything**: e621 entries get API tags at submission (and are
   still re-validated fresh at consume time — Banned↔Accepted flips live on);
   every other source requires submitter tags, inline or via the bot's

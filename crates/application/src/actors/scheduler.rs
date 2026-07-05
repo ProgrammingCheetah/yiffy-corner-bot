@@ -243,46 +243,78 @@ async fn fire_one<R, U, PR, PB, ST>(
     };
     let selector = deps.selectors.for_poster(poster.clone());
 
-    let pick = match selector.next_post(cursor).await {
-        Ok(pick) => pick,
-        Err(e) => {
-            tracing::error!(event = %Event::SelectorFailed, error = %e, "feed scan failed; cursor kept");
-            return;
-        }
-    };
-
-    let Some(post) = pick.post else {
-        if pick.advance_to != cursor {
-            if let Err(e) = deps.posters.set_cursor(poster.id, pick.advance_to).await {
-                tracing::error!(event = %Event::SelectorFailed, error = %e, "cursor write failed");
+    // A dead entry must not wedge the consumer: when resolution says the
+    // upstream is GONE (NotFound — not a transient failure), the entry is
+    // marked MediaGone (dropping it from every consumer's scan) and the
+    // scan repeats for the next candidate in this same fire. Bounded, so
+    // one fire can't churn through an unbounded graveyard — the leftovers
+    // wait one tick. Transient errors keep the retry-same-entry behavior.
+    const MAX_DEAD_SKIPS: usize = 5;
+    let mut dead_skips = 0;
+    let (post, media, advance_to) = loop {
+        let pick = match selector.next_post(cursor).await {
+            Ok(pick) => pick,
+            Err(e) => {
+                tracing::error!(event = %Event::SelectorFailed, error = %e, "feed scan failed; cursor kept");
                 return;
             }
-            tracing::debug!(
-                event = %Event::CursorAdvanced, from = cursor, to = pick.advance_to,
-                "no match; cursor advanced past scanned window"
-            );
-        } else {
-            tracing::debug!(event = %Event::FeedEndReached, cursor, "feed exhausted; staying quiet");
-        }
-        return;
-    };
+        };
 
-    tracing::info!(
-        event = %Event::PostSelected,
-        post_id = %post.id,
-        source = %post.source.as_ref(),
-        position = pick.advance_to,
-        "feed entry selected"
-    );
-    let media = match deps.resolver.resolve(&post.source).await {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!(
-                event = %Event::MediaResolveFailed, post_id = %post.id,
-                source = %post.source.as_ref(), error = %e,
-                "media resolution failed; cursor kept for retry"
-            );
+        let Some(post) = pick.post else {
+            if pick.advance_to != cursor {
+                if let Err(e) = deps.posters.set_cursor(poster.id, pick.advance_to).await {
+                    tracing::error!(event = %Event::SelectorFailed, error = %e, "cursor write failed");
+                    return;
+                }
+                tracing::debug!(
+                    event = %Event::CursorAdvanced, from = cursor, to = pick.advance_to,
+                    "no match; cursor advanced past scanned window"
+                );
+            } else {
+                tracing::debug!(event = %Event::FeedEndReached, cursor, "feed exhausted; staying quiet");
+            }
             return;
+        };
+
+        tracing::info!(
+            event = %Event::PostSelected,
+            post_id = %post.id,
+            source = %post.source.as_ref(),
+            position = pick.advance_to,
+            "feed entry selected"
+        );
+        match deps.resolver.resolve(&post.source).await {
+            Ok(media) => break (post, media, pick.advance_to),
+            Err(domain::elements::media::MediaResolveError::NotFound(_))
+                if dead_skips < MAX_DEAD_SKIPS =>
+            {
+                dead_skips += 1;
+                tracing::warn!(
+                    event = %Event::DeadMediaFound, post_id = %post.id,
+                    source = %post.source.as_ref(),
+                    "upstream gone at fire time → MediaGone; taking the next entry"
+                );
+                if let Err(e) = deps
+                    .posts
+                    .set_status_to(post.id, domain::elements::post::PostStatus::MediaGone)
+                    .await
+                {
+                    tracing::error!(
+                        event = %Event::MediaResolveFailed, post_id = %post.id, error = %e,
+                        "MediaGone write failed; cursor kept for retry"
+                    );
+                    return;
+                }
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    event = %Event::MediaResolveFailed, post_id = %post.id,
+                    source = %post.source.as_ref(), error = %e,
+                    "media resolution failed; cursor kept for retry"
+                );
+                return;
+            }
         }
     };
     tracing::debug!(event = %Event::MediaResolved, post_id = %post.id, media = ?media, "media resolved");
@@ -326,7 +358,7 @@ async fn fire_one<R, U, PR, PB, ST>(
     if let Err(e) = deps.posts.mark_posted(post.id, now).await {
         tracing::error!(event = %Event::MarkPostedFailed, post_id = %post.id, error = %e, "mark_posted failed");
     }
-    if let Err(e) = deps.posters.set_cursor(poster.id, pick.advance_to).await {
+    if let Err(e) = deps.posters.set_cursor(poster.id, advance_to).await {
         // Publish succeeded but the cursor didn't move: the entry may repeat.
         tracing::error!(
             event = %Event::MarkPostedFailed, post_id = %post.id, error = %e,
@@ -336,7 +368,7 @@ async fn fire_one<R, U, PR, PB, ST>(
     }
     tracing::info!(
         event = %Event::Published, post_id = %post.id,
-        chat_id = receipt.chat_id, cursor = pick.advance_to,
+        chat_id = receipt.chat_id, cursor = advance_to,
         "published and cursor advanced"
     );
 }
@@ -403,7 +435,8 @@ mod tests {
     fn make_post(id: u64, position: u64) -> Post {
         Post {
             id: PostId::from(id),
-            source: Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
+            source: Source::try_from(Url::parse(&format!("https://e621.net/posts/{id}")).unwrap())
+                .unwrap(),
             status: PostStatus::Accepted,
             tags: vec![],
             artists: vec![],
@@ -436,6 +469,39 @@ mod tests {
     #[async_trait]
     impl MediaResolver for FixedResolver {
         async fn resolve(&self, _source: &Source) -> Result<ResolvedMedia, MediaResolveError> {
+            Ok(ResolvedMedia::Photo(
+                Url::parse("https://static1.e621.net/data/x.png").unwrap(),
+            ))
+        }
+    }
+
+    /// Factory replaying a scripted sequence of picks, shared across fires.
+    struct SequenceSelectorFactory(Arc<Mutex<std::collections::VecDeque<FeedPick>>>);
+    impl SelectorFactory for SequenceSelectorFactory {
+        fn for_poster(&self, _poster: Poster) -> Box<dyn PostSelectorStrategy> {
+            Box::new(SequenceSelector(self.0.clone()))
+        }
+    }
+    struct SequenceSelector(Arc<Mutex<std::collections::VecDeque<FeedPick>>>);
+    #[async_trait]
+    impl PostSelectorStrategy for SequenceSelector {
+        async fn next_post(&self, cursor: u64) -> Result<FeedPick, SelectorError> {
+            Ok(self.0.lock().unwrap().pop_front().unwrap_or(FeedPick {
+                post: None,
+                advance_to: cursor,
+            }))
+        }
+    }
+
+    /// Resolver where /posts/100 is gone for good; everything else is a photo.
+    struct DeadHundredResolver;
+    #[async_trait]
+    impl MediaResolver for DeadHundredResolver {
+        async fn resolve(&self, source: &Source) -> Result<ResolvedMedia, MediaResolveError> {
+            let url: &Url = source.as_ref();
+            if url.path().ends_with("/100") {
+                return Err(MediaResolveError::NotFound(source.clone()));
+            }
             Ok(ResolvedMedia::Photo(
                 Url::parse("https://static1.e621.net/data/x.png").unwrap(),
             ))
@@ -480,10 +546,11 @@ mod tests {
         }
     }
 
-    /// PostRepository stub recording mark_posted.
+    /// PostRepository stub recording mark_posted and status writes.
     #[derive(Default)]
     struct RecordingPostRepository {
         marked: Mutex<Vec<PostId>>,
+        status_set: Mutex<Vec<(PostId, PostStatus)>>,
     }
     #[async_trait]
     impl PostRepository for RecordingPostRepository {
@@ -508,8 +575,9 @@ mod tests {
         async fn remove(&self, _id: PostId) -> Result<(), Self::Err> {
             unimplemented!()
         }
-        async fn set_status_to(&self, _id: PostId, _status: PostStatus) -> Result<(), Self::Err> {
-            unimplemented!()
+        async fn set_status_to(&self, id: PostId, status: PostStatus) -> Result<(), Self::Err> {
+            self.status_set.lock().unwrap().push((id, status));
+            Ok(())
         }
         async fn set_tags(
             &self,
@@ -649,6 +717,46 @@ mod tests {
         // The publish item carried the post id (for the Report button).
         let item = fx.publisher.last_item.lock().unwrap().clone().unwrap();
         assert_eq!(item.post_id, PostId::from(100));
+    }
+
+    #[tokio::test]
+    async fn dead_entry_is_shelved_and_the_next_one_publishes() {
+        use std::collections::VecDeque;
+
+        let fx = Fixture::new();
+        let id = fx.poster().await;
+        let mut deps = fx.deps(
+            FeedPick {
+                post: None,
+                advance_to: 0,
+            },
+            true,
+        );
+        // First candidate (post 100) is dead upstream; second (101) is fine.
+        deps.selectors = Arc::new(SequenceSelectorFactory(Arc::new(Mutex::new(
+            VecDeque::from([
+                FeedPick {
+                    post: Some(make_post(100, 7)),
+                    advance_to: 7,
+                },
+                FeedPick {
+                    post: Some(make_post(101, 8)),
+                    advance_to: 8,
+                },
+            ]),
+        ))));
+        deps.resolver = Arc::new(DeadHundredResolver);
+
+        run_tick(at_minute(5), &deps).await.unwrap();
+
+        // The dead entry was shelved, the living one published, cursor on it.
+        assert_eq!(
+            *deps.posts.status_set.lock().unwrap(),
+            vec![(PostId::from(100), PostStatus::MediaGone)]
+        );
+        assert_eq!(fx.publisher.count.load(Ordering::SeqCst), 1);
+        assert_eq!(*deps.posts.marked.lock().unwrap(), vec![PostId::from(101)]);
+        assert_eq!(fx.cursor_of(id).await, 8);
     }
 
     #[tokio::test]

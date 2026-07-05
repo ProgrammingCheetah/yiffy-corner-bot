@@ -40,15 +40,25 @@ pub async fn run(state: SharedState, bot: Bot) {
             continue;
         }
         let mut lines = vec![format!(
-            "🧹 Dead-media sweep: {} of {} pending feed entries lost their upstream media:",
+            "🧹 Dead-media sweep: {} of {} pending feed entries lost their upstream media \
+             and were shelved (media_gone):",
             outcome.dead.len(),
             outcome.scanned
         )];
         for entry in &outcome.dead {
             lines.push(format!("#{} — {}", entry.post_id, entry.source));
         }
+        if outcome.revived > 0 {
+            lines.push(format!(
+                "(Also revived {} previously-shelved entr{} whose source came back.)",
+                outcome.revived,
+                if outcome.revived == 1 { "y" } else { "ies" }
+            ));
+        }
         lines.push(
-            "They'll be skipped at fire time; /delete the ones that are gone for good.".into(),
+            "Every poster skips shelved entries; they revive automatically if the source \
+             returns, or /delete for a permanent takedown."
+                .into(),
         );
         if let Err(e) = bot
             .send_message(ChatId(*state.config.owner_id.as_ref()), lines.join("\n"))

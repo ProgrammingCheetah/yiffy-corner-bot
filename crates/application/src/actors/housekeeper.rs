@@ -2,10 +2,13 @@
 //!
 //! Sources can vanish between curation and publication (FA takedowns,
 //! deleted tweets, nuked accounts). The sweep walks the feed entries no
-//! consumer has passed yet — `(min cursor, feed end]` — and re-resolves
-//! each source's media so a dead one is reported *before* a Poster trips
-//! over it at fire time. Report-only: nothing is deleted or re-statused;
-//! takedowns stay a human decision.
+//! consumer has passed yet — `(min cursor, feed end]` — re-resolves each
+//! source's media, and flips confirmed-gone entries to `MediaGone` before
+//! a Poster trips over them at fire time (the scheduler does the same
+//! reactively when it trips first). `MediaGone` is a cached verdict, so
+//! the sweep also runs the other direction: previously-gone entries that
+//! resolve again are revived to `Accepted` — a resolver false positive
+//! heals itself within a cycle.
 //!
 //! Along the way it backfills missing perceptual hashes (entries curated
 //! before the pHash era), keeping the duplicate-check corpus complete.
@@ -13,7 +16,7 @@
 use domain::elements::{
     media::{MediaResolveError, MediaResolver, ResolvedMedia},
     phash::PerceptualHasher,
-    post::{PostId, PostRepository},
+    post::{PostId, PostRepository, PostStatus},
     poster::PosterRepository,
 };
 use telemetry::Event;
@@ -22,7 +25,7 @@ use telemetry::Event;
 /// platforms; the next sweep continues where this one stopped.
 const BACKFILL_CAP: usize = 100;
 
-/// A feed entry whose upstream content is confirmed gone.
+/// A feed entry whose upstream content is confirmed gone (now `MediaGone`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadEntry {
     pub post_id: PostId,
@@ -33,10 +36,13 @@ pub struct DeadEntry {
 pub struct SweepOutcome {
     /// Feed entries examined (everything not yet consumed by every poster).
     pub scanned: usize,
-    /// Entries whose upstream is confirmed gone (resolver `NotFound`).
-    /// Transient failures (network, auth, parse) are NOT dead — they log
-    /// and retry next sweep.
+    /// Entries whose upstream is confirmed gone (resolver `NotFound`) and
+    /// were flipped to `MediaGone`. Transient failures (network, auth,
+    /// parse) are NOT dead — they log and retry next sweep.
     pub dead: Vec<DeadEntry>,
+    /// `MediaGone` entries whose upstream resolves again, revived to
+    /// `Accepted`.
+    pub revived: usize,
     /// Perceptual hashes computed for entries that were missing one.
     pub hashes_backfilled: usize,
 }
@@ -84,6 +90,31 @@ where
         ..Default::default()
     };
     let mut first = true;
+
+    // Revival pass FIRST (so entries marked below aren't immediately
+    // re-checked): a MediaGone verdict is cached, not final — sources come
+    // back (platform hiccups, restored accounts, resolver false positives).
+    let gone = posts
+        .list_by_status(PostStatus::MediaGone)
+        .await
+        .map_err(|e| e.to_string())?;
+    for entry in gone {
+        if !std::mem::take(&mut first) {
+            tokio::time::sleep(pace).await;
+        }
+        if resolver.resolve(&entry.source).await.is_ok() {
+            if let Err(e) = posts.set_status_to(entry.id, PostStatus::Accepted).await {
+                tracing::warn!(post_id = %entry.id, error = %e, "revival write failed");
+                continue;
+            }
+            outcome.revived += 1;
+            tracing::info!(
+                event = %Event::StatusFlipped, post_id = %entry.id,
+                to = %PostStatus::Accepted, "media resolves again → MediaGone lifted"
+            );
+        }
+    }
+
     for entry in entries {
         if !std::mem::take(&mut first) {
             tokio::time::sleep(pace).await;
@@ -93,8 +124,11 @@ where
             Err(MediaResolveError::NotFound(_)) => {
                 tracing::warn!(
                     event = %Event::DeadMediaFound, post_id = %entry.id,
-                    source = %entry.source.as_ref(), "upstream content gone"
+                    source = %entry.source.as_ref(), "upstream content gone → MediaGone"
                 );
+                if let Err(e) = posts.set_status_to(entry.id, PostStatus::MediaGone).await {
+                    tracing::warn!(post_id = %entry.id, error = %e, "MediaGone write failed");
+                }
                 outcome.dead.push(DeadEntry {
                     post_id: entry.id,
                     source: entry.source.as_ref().to_string(),
@@ -133,7 +167,8 @@ where
     }
     tracing::info!(
         event = %Event::SweepCompleted, scanned = outcome.scanned,
-        dead = outcome.dead.len(), hashes_backfilled = outcome.hashes_backfilled,
+        dead = outcome.dead.len(), revived = outcome.revived,
+        hashes_backfilled = outcome.hashes_backfilled,
         "dead-media sweep completed"
     );
     Ok(outcome)
@@ -232,8 +267,41 @@ mod tests {
                 source: gone.source.as_ref().to_string(),
             }]
         );
-        // The alive entry resolved; its hash just wasn't known to the stub.
-        let _ = alive;
+        // The dead entry was shelved; the flaky and alive ones were not.
+        let stored = posts.find_by_id(gone.id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PostStatus::MediaGone);
+        for survivor in [flaky.id, alive.id] {
+            let stored = posts.find_by_id(survivor).await.unwrap().unwrap();
+            assert_eq!(stored.status, PostStatus::Accepted);
+        }
+    }
+
+    #[tokio::test]
+    async fn media_gone_entries_revive_when_the_source_returns() {
+        let posts = InMemoryPostRepository::new();
+        let shelved = feed_entry(&posts, 1).await;
+        posts
+            .set_status_to(shelved.id, PostStatus::MediaGone)
+            .await
+            .unwrap();
+        let posters = InMemoryPosterRepository::new();
+
+        // Default resolver: everything resolves fine again.
+        let outcome = run_sweep(
+            &posts,
+            &posters,
+            &StubResolver::default(),
+            &StubHasher(HashMap::new()),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.revived, 1);
+        assert!(outcome.dead.is_empty());
+        let stored = posts.find_by_id(shelved.id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PostStatus::Accepted);
+        // Its feed position survived the round trip.
+        assert_eq!(stored.feed_position, shelved.feed_position);
     }
 
     #[tokio::test]
