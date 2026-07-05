@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.7
+// @version      1.8
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -41,8 +41,130 @@
     return null;
   })();
 
-  // e621 has authoritative tags server-side; everything else asks you.
-  function submitUrl(url, e621) {
+  // Non-e621 pieces are described through a small form: gender (any
+  // number), character count (exactly one), optional pairings, a required
+  // content rating, an irl checkbox, and a free-text row for artist
+  // credit + extra tags.
+  const GENDERS = ['male', 'female', 'intersex', 'unknown'];
+  const COUNTS = ['solo', 'duo', 'multiple'];
+  const PAIRINGS = ['male/male', 'male/female', 'female/female'];
+  const RATINGS = ['NSFW', 'SFW', 'Questionable'];
+
+  function tagForm() {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      Object.assign(overlay.style, {
+        position: 'fixed',
+        inset: '0',
+        zIndex: 100000,
+        background: 'rgba(0,0,0,.55)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      });
+
+      const check = (group, value, type = 'checkbox') =>
+        `<label style="display:inline-flex;align-items:center;gap:5px;margin:0 12px 6px 0;cursor:pointer">
+           <input type="${type}" name="${group}" value="${value}">${value}
+         </label>`;
+      const legend = (text) => `<div style="opacity:.7;margin-bottom:4px">${text}</div>`;
+
+      const form = document.createElement('form');
+      Object.assign(form.style, {
+        background: '#1b1e23',
+        color: '#fff',
+        borderRadius: '14px',
+        padding: '18px 20px',
+        width: '340px',
+        maxWidth: '92vw',
+        font: '14px system-ui, sans-serif',
+        boxShadow: '0 8px 30px rgba(0,0,0,.5)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px'
+      });
+      form.innerHTML = `
+        <strong style="font-size:15px">🐾 Submit to Yiffy Corner</strong>
+        <div>
+          ${legend('Gender (pick all that apply)')}
+          ${GENDERS.map((g) => check('gender', g)).join('')}
+        </div>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="opacity:.7">Characters</span>
+          <select required style="background:#2a2e35;color:#fff;border:1px solid #444;border-radius:8px;padding:7px 10px;font:inherit">
+            <option value="" disabled selected>choose…</option>
+            ${COUNTS.map((c) => `<option value="${c}">${c}</option>`).join('')}
+          </select>
+        </label>
+        <div>
+          ${legend('Pairings (optional)')}
+          ${PAIRINGS.map((p) => check('pairing', p)).join('')}
+        </div>
+        <div>
+          ${legend('Content rating')}
+          ${RATINGS.map((r) => check('rating', r, 'radio')).join('')}
+        </div>
+        ${check('irl', 'irl')}
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="opacity:.7">Extra tags — credit the artist with artist:&lt;name&gt;</span>
+          <input type="text" spellcheck="false" style="background:#2a2e35;color:#fff;border:1px solid #444;border-radius:8px;padding:7px 10px;font:inherit">
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" data-f="cancel" style="border:none;background:transparent;color:#aaa;cursor:pointer;padding:8px 12px;font:inherit">Cancel</button>
+          <button type="submit" style="border:none;background:#5288c1;color:#fff;cursor:pointer;padding:8px 16px;border-radius:999px;font:inherit;font-weight:600">Submit</button>
+        </div>`;
+      overlay.appendChild(form);
+      document.body.appendChild(overlay);
+
+      // Keep keystrokes in the form: feed sites bind single-key shortcuts
+      // (X likes on "l") on the document.
+      overlay.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') done(null);
+      });
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) done(null);
+      });
+
+      const done = (tags) => {
+        overlay.remove();
+        resolve(tags);
+      };
+      form.querySelector('[data-f="cancel"]').addEventListener('click', () => done(null));
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const picked = (name) =>
+          [...form.querySelectorAll(`input[name="${name}"]:checked`)].map((i) => i.value);
+        const genders = picked('gender');
+        if (!genders.length) {
+          alert('Yiffy Corner: pick at least one gender.');
+          return;
+        }
+        const rating = form.querySelector('input[name="rating"]:checked')?.value;
+        if (!rating) {
+          alert('Yiffy Corner: pick a content rating.');
+          return;
+        }
+        const extra = form
+          .querySelector('input[type="text"]')
+          .value.split(/\s+/)
+          .filter(Boolean);
+        done([
+          ...genders,
+          form.querySelector('select').value,
+          ...picked('pairing'),
+          rating.toLowerCase(),
+          ...picked('irl'),
+          ...extra
+        ]);
+      });
+      form.querySelector('input[type="checkbox"]').focus();
+    });
+  }
+
+  // e621 has authoritative tags server-side; everything else gets the form.
+  async function submitUrl(url, e621) {
     const base = GM_getValue('ycb_base', DEFAULT_BASE);
     const token = GM_getValue('ycb_token', '');
     if (!token) {
@@ -51,16 +173,8 @@
     }
     let tags = [];
     if (!e621) {
-      const raw = prompt(
-        'Tags for this piece (space-separated).\nCredit the artist with artist:<name>:',
-        ''
-      );
-      if (raw === null) return; // cancelled
-      tags = raw.split(/\s+/).filter(Boolean);
-      if (!tags.filter((t) => !t.startsWith('artist:')).length) {
-        alert('Yiffy Corner: at least one content tag is required.');
-        return;
-      }
+      tags = await tagForm();
+      if (!tags) return; // cancelled
     }
     flash('Submitting…');
     GM_xmlhttpRequest({
