@@ -58,22 +58,26 @@ where
     F::Err: std::fmt::Display,
 {
     /// The tags that count for this entry right now: fresh from e621 for
-    /// e621 sources, the curated set for everything else.
-    async fn effective_tags(&self, entry: &Post) -> Result<HashSet<Tag>, SelectorError> {
+    /// e621 sources, the curated set for everything else. `Ok(None)` means
+    /// the upstream post is permanently gone (deleted/restricted) — the
+    /// entry is skipped, never a scan-aborting error.
+    async fn effective_tags(&self, entry: &Post) -> Result<Option<HashSet<Tag>>, SelectorError> {
         match &entry.source {
             Source::E621(_) => {
-                let metadata = self
-                    .e621
-                    .fetch(&entry.source)
-                    .await
-                    .map_err(|e| SelectorError::Fetch(e.to_string()))?;
-                tracing::debug!(
-                    event = %Event::TagsFetched, post_id = %entry.id,
-                    tag_count = metadata.tags.len(), "fresh e621 tags fetched"
-                );
-                Ok(metadata.tags.into_iter().collect())
+                use domain::elements::e621::FetchError;
+                match self.e621.fetch(&entry.source).await {
+                    Ok(metadata) => {
+                        tracing::debug!(
+                            event = %Event::TagsFetched, post_id = %entry.id,
+                            tag_count = metadata.tags.len(), "fresh e621 tags fetched"
+                        );
+                        Ok(Some(metadata.tags.into_iter().collect()))
+                    }
+                    Err(FetchError::NotFound(_) | FetchError::Unavailable(_)) => Ok(None),
+                    Err(e) => Err(SelectorError::Fetch(e.to_string())),
+                }
             }
-            _ => Ok(entry.tags.iter().cloned().collect()),
+            _ => Ok(Some(entry.tags.iter().cloned().collect())),
         }
     }
 
@@ -83,7 +87,13 @@ where
         entry: &Post,
         global_forbidden: &HashSet<Tag>,
     ) -> Result<bool, SelectorError> {
-        let tags = self.effective_tags(entry).await?;
+        let Some(tags) = self.effective_tags(entry).await? else {
+            tracing::debug!(
+                event = %Event::CandidateSkipped, reason = %SkipReason::SourceUnavailable,
+                post_id = %entry.id, "upstream post gone; skipping"
+            );
+            return Ok(false);
+        };
 
         if let Some(hit) = tags.iter().find(|t| global_forbidden.contains(*t)) {
             if entry.status != PostStatus::Banned {
@@ -262,6 +272,10 @@ mod tests {
     impl E621Fetcher for StubFetcher {
         async fn fetch(&self, source: &Source) -> Result<E621PostMetadata, FetchError> {
             let url: &Url = source.as_ref();
+            // Sentinel for transient failures: /posts/500 → network error.
+            if url.path().ends_with("/500") {
+                return Err(FetchError::Network("e621 down".into()));
+            }
             let tags = self
                 .0
                 .get(url)
@@ -489,10 +503,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_error_propagates_without_advancing() {
+    async fn gone_upstream_post_is_skipped_and_scan_continues() {
         let mut fx = Fixture::new();
-        // e621 entry with NO fresh tags registered → stub returns NotFound.
+        // Entry 1: stub returns NotFound (upstream deleted) → skip.
         fx.feed_entry("https://e621.net/posts/404", &[], None).await;
+        let alive = fx
+            .feed_entry("https://e621.net/posts/2", &[], Some(&["wolf"]))
+            .await;
+
+        let selector = fx.selector(poster(&["wolf"], &[]));
+        let pick = selector.next_post(0).await.unwrap();
+        assert_eq!(pick.post.map(|p| p.id), Some(alive.id));
+        assert_eq!(pick.advance_to, 2);
+    }
+
+    #[tokio::test]
+    async fn transient_fetch_error_propagates_without_advancing() {
+        let mut fx = Fixture::new();
+        // /posts/500 → the stub's transient network failure.
+        fx.feed_entry("https://e621.net/posts/500", &[], None).await;
 
         let selector = fx.selector(poster(&[], &[]));
         let err = selector.next_post(0).await.unwrap_err();

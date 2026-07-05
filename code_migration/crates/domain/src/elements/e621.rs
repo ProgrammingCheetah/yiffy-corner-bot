@@ -45,6 +45,8 @@ pub enum E621Order {
 pub enum FetchError {
     #[error("e621 post not found: {0:?}")]
     NotFound(Source),
+    #[error("e621 post media is unavailable (deleted or login-restricted): {0:?}")]
+    Unavailable(Source),
     #[error("e621 rate limit hit")]
     RateLimit,
     #[error("network error talking to e621: {0}")]

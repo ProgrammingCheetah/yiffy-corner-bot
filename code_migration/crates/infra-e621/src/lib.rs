@@ -146,7 +146,21 @@ impl E621Fetcher for RateLimitedE621Client {
         .map_err(|e| FetchError::Parse(e.to_string()))?;
 
         let wrapper: SearchResponse = self.get_json(url).await?;
-        wrapper.posts.into_iter().map(metadata_from_raw).collect()
+        // One deleted/restricted post must not kill the whole page.
+        let mut results = Vec::new();
+        for raw in wrapper.posts {
+            match metadata_from_raw(raw) {
+                Ok(metadata) => results.push(metadata),
+                Err(FetchError::Unavailable(source)) => {
+                    tracing::debug!(
+                        event = %Event::UpstreamStatus, upstream = %Upstream::E621,
+                        source = %source.as_ref(), "skipping unavailable post in search results"
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(results)
     }
 }
 
@@ -157,7 +171,7 @@ impl MediaResolver for RateLimitedE621Client {
             return Err(MediaResolveError::Unsupported(source.clone()));
         }
         let metadata = self.fetch(source).await.map_err(|e| match e {
-            FetchError::NotFound(s) => MediaResolveError::NotFound(s),
+            FetchError::NotFound(s) | FetchError::Unavailable(s) => MediaResolveError::NotFound(s),
             FetchError::RateLimit => MediaResolveError::Network("e621 rate limit".into()),
             FetchError::Network(msg) => MediaResolveError::Network(msg),
             FetchError::Parse(msg) => MediaResolveError::Parse(msg),
@@ -196,10 +210,15 @@ const NON_ARTIST_TAGS: &[&str] = &[
 ];
 
 fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
+    let source_url = Url::parse(&format!("{E621_BASE}/posts/{}", raw.id))
+        .map_err(|e| FetchError::Parse(e.to_string()))?;
+    let source = Source::try_from(source_url)
+        .map_err(|e| FetchError::Parse(format!("source rejected: {e}")))?;
+    // Deleted and DNP/login-restricted posts come back with file.url: null.
     let file_url = raw
         .file
         .url
-        .ok_or_else(|| FetchError::Parse("post has no file.url".into()))?;
+        .ok_or_else(|| FetchError::Unavailable(source.clone()))?;
     // Prefer the ~850px sample over the 150px thumbnail — this URL feeds
     // browse albums and moderation previews, where a thumbnail is useless.
     let preview_url = raw
@@ -208,11 +227,6 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
         .and_then(|s| s.url.clone())
         .or_else(|| raw.preview.url.clone())
         .unwrap_or_else(|| file_url.clone());
-
-    let source_url = Url::parse(&format!("{E621_BASE}/posts/{}", raw.id))
-        .map_err(|e| FetchError::Parse(e.to_string()))?;
-    let source = Source::try_from(source_url)
-        .map_err(|e| FetchError::Parse(format!("source rejected: {e}")))?;
 
     // Telegram fetches video URLs only as MP4 and only up to ~20MB — pick
     // the best e621 h264 rendition that fits.
@@ -363,6 +377,18 @@ mod tests {
     fn extract_post_id_returns_none_for_non_post_url() {
         let s = Source::try_from(Url::parse("https://e621.net/").unwrap()).unwrap();
         assert_eq!(extract_post_id(&s), None);
+    }
+
+    #[test]
+    fn null_file_url_is_unavailable_not_parse_error() {
+        let raw: RawPost = serde_json::from_str(
+            r#"{"id":1,"file":{"url":null},"preview":{"url":null},"sample":null,"tags":{},"sources":[]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            metadata_from_raw(raw).unwrap_err(),
+            FetchError::Unavailable(_)
+        ));
     }
 
     #[test]

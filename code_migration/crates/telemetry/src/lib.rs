@@ -139,6 +139,7 @@ vocabulary! {
     /// `candidate_skipped`).
     SkipReason {
         GlobalForbiddenTag => "global_forbidden_tag",
+        SourceUnavailable => "source_unavailable",
         PosterForbiddenTag => "poster_forbidden_tag",
         MissingSubscribedTags => "missing_subscribed_tags",
     }
