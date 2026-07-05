@@ -41,7 +41,11 @@ impl RateLimitedE621Client {
     /// Build a new client. `user_agent` should identify the bot per e621's
     /// API policy (e.g. `"yiffy-corner-bot/0.1 by ZielAnima"`).
     pub fn new(user_agent: impl Into<String>) -> Result<Self, FetchError> {
+        // No default timeout in reqwest — without these a stalled
+        // connection hangs a handler forever.
         let http = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| FetchError::Network(e.to_string()))?;
         let quota = Quota::per_second(NonZeroU32::new(2).expect("2 is nonzero"));

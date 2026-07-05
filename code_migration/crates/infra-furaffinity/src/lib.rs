@@ -55,6 +55,8 @@ impl FuraffinityResolver {
         cookies: Option<FaCookies>,
     ) -> Result<Self, MediaResolveError> {
         let http = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| MediaResolveError::Network(e.to_string()))?;
         let quota = Quota::per_second(NonZeroU32::new(1).expect("1 is nonzero"));

@@ -43,6 +43,8 @@ pub struct FixupResolver {
 impl FixupResolver {
     pub fn new(user_agent: impl Into<String>) -> Result<Self, MediaResolveError> {
         let http = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| MediaResolveError::Network(e.to_string()))?;
         Ok(Self {
