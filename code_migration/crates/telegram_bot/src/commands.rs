@@ -582,6 +582,107 @@ async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {
     lines.join("\n")
 }
 
+/// A message forwarded from a channel into the bot's private chat is a
+/// submission. Per design (2026-07-04): the bot never re-*forwards* — it
+/// *copies* the content and tags the origin at the bottom with
+/// "Forwarded from channel: @<channel>". Reviewers see exactly that copy.
+pub async fn handle_channel_forward(
+    bot: Bot,
+    msg: Message,
+    state: SharedState,
+) -> ResponseResult<()> {
+    use domain::elements::telegram::{TelegramCopyRef, TelegramCopyRepository as _};
+    use teloxide::payloads::CopyMessageSetters as _;
+    use teloxide::types::MessageOrigin;
+
+    let Some((from, actor)) = sender(&msg) else {
+        return Ok(());
+    };
+    let display_name = Some(from.full_name());
+    let Some(MessageOrigin::Channel {
+        chat, message_id, ..
+    }) = msg.forward_origin()
+    else {
+        return Ok(());
+    };
+    let Some(channel) = chat.username() else {
+        bot.send_message(
+            msg.chat.id,
+            "I can only take submissions forwarded from public channels \
+             (the channel needs an @username).",
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let Ok(url) = Url::parse(&format!("https://t.me/{channel}/{}", message_id.0)) else {
+        bot.send_message(msg.chat.id, "That forward has no usable origin link.")
+            .await?;
+        return Ok(());
+    };
+    let submitter_name = display_name.clone().unwrap_or_else(|| "a user".to_string());
+
+    let outcome = suggest::handle(
+        SuggestCommand {
+            submitter: actor,
+            display_name,
+            url,
+        },
+        &state.users,
+        &state.posts,
+        &*state.e621,
+        &state.forbidden,
+    )
+    .await;
+
+    let reply = match outcome {
+        Ok(SuggestOutcome::Queued { post, reviewers }) => {
+            // Remember how to re-copy this content at publish time.
+            if let Err(e) = state
+                .telegram_copies
+                .upsert(TelegramCopyRef {
+                    source_url: post.source.as_ref().as_str().to_string(),
+                    origin_chat_id: msg.chat.id.0,
+                    origin_message_id: msg.id.0,
+                    channel_username: channel.to_string(),
+                })
+                .await
+            {
+                tracing::error!(post = %post.id, error = %e, "copy-ref store failed");
+            }
+
+            let caption = format!(
+                "New submission #{}\nSubmitted by {submitter_name}\nForwarded from channel: @{channel}",
+                post.id
+            );
+            for reviewer in &reviewers {
+                let reviewer_chat = ChatId(*reviewer.telegram_id.as_ref());
+                if let Err(e) = bot
+                    .copy_message(reviewer_chat, msg.chat.id, msg.id)
+                    .caption(caption.clone())
+                    .reply_markup(review_keyboard(post.id))
+                    .await
+                {
+                    tracing::warn!(reviewer = %reviewer.id, error = %e, "review copy failed");
+                }
+            }
+            format!(
+                "Submission #{} is in the moderation queue — it will be posted as a copy \
+                 credited to @{channel} once approved!",
+                post.id
+            )
+        }
+        Ok(SuggestOutcome::AutoBanned { .. }) => {
+            "This post contains content that is not allowed here.".to_string()
+        }
+        Err(e) => describe(e),
+    };
+    bot.send_message(msg.chat.id, reply)
+        .link_preview_options(no_preview())
+        .await?;
+    Ok(())
+}
+
 /// Inline Approve/Reject buttons on review DMs.
 pub async fn handle_callback(
     bot: Bot,

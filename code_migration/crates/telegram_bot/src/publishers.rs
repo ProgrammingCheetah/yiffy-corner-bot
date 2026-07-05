@@ -5,9 +5,9 @@ use domain::elements::{
 };
 use teloxide::{
     Bot,
-    payloads::{SendAnimationSetters, SendPhotoSetters, SendVideoSetters},
+    payloads::{CopyMessageSetters, SendAnimationSetters, SendPhotoSetters, SendVideoSetters},
     prelude::Requester,
-    types::{ChatId, InputFile},
+    types::{ChatId, InputFile, MessageId},
 };
 
 /// Publishes resolved media to a Telegram chat, dispatching on the media
@@ -52,6 +52,22 @@ impl Publisher for TelegramPublisher {
                 let mut request = self
                     .bot
                     .send_animation(self.chat_id, InputFile::url(url.clone()));
+                if let Some(caption) = &item.caption {
+                    request = request.caption(caption.clone());
+                }
+                request.await.map_err(send)?;
+            }
+            ResolvedMedia::TelegramCopy {
+                origin_chat_id,
+                origin_message_id,
+            } => {
+                // Copy = content without the "Forwarded from" header; the
+                // caption carries the channel attribution instead.
+                let mut request = self.bot.copy_message(
+                    self.chat_id,
+                    ChatId(*origin_chat_id),
+                    MessageId(*origin_message_id),
+                );
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone());
                 }

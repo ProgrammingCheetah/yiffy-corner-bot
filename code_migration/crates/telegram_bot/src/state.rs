@@ -11,6 +11,7 @@ use persistence::sqlite::{
     poster::SqlitePosterRepository,
     publisher_config::SqlitePublisherConfigRepository,
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
+    telegram_copy::SqliteTelegramCopyRepository,
     user::SqliteUserRepository,
 };
 
@@ -82,6 +83,7 @@ pub struct AppState {
     pub publisher_configs: SqlitePublisherConfigRepository,
     pub forbidden: SqliteForbiddenTagRepository,
     pub required: SqliteRequiredTagRepository,
+    pub telegram_copies: SqliteTelegramCopyRepository,
     pub e621: Arc<RateLimitedE621Client>,
 }
 

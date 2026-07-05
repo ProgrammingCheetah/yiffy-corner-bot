@@ -29,7 +29,7 @@ use persistence::sqlite::{
 };
 use teloxide::{Bot, prelude::*, types::ChatId};
 
-use crate::commands::{Command, handle_callback, handle_command};
+use crate::commands::{Command, handle_callback, handle_channel_forward, handle_command};
 use crate::publishers::TelegramPublisher;
 use crate::resolvers::CompositeResolver;
 use crate::state::{AppConfig, AppState, USER_AGENT, read_secret};
@@ -43,6 +43,7 @@ async fn health() -> impl IntoResponse {
 fn build_resolver(
     config: &AppConfig,
     e621: Arc<RateLimitedE621Client>,
+    telegram_copies: persistence::sqlite::telegram_copy::SqliteTelegramCopyRepository,
 ) -> anyhow::Result<Arc<CompositeResolver>> {
     let cookies = match (
         read_secret(&config.vault_env_dir.join("cookie_a.txt")),
@@ -62,6 +63,7 @@ fn build_resolver(
         fixup: FixupResolver::new(USER_AGENT).map_err(|e| anyhow::anyhow!(e.to_string()))?,
         furaffinity: FuraffinityResolver::new(USER_AGENT, cookies)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+        telegram_copies,
     }))
 }
 
@@ -129,6 +131,8 @@ async fn main() -> anyhow::Result<()> {
     let e621 = Arc::new(
         RateLimitedE621Client::new(USER_AGENT).map_err(|e| anyhow::anyhow!(e.to_string()))?,
     );
+    let telegram_copies =
+        persistence::sqlite::telegram_copy::SqliteTelegramCopyRepository::new(pool.clone());
     let state = Arc::new(AppState {
         users: SqliteUserRepository::new(pool.clone()),
         posts: SqlitePostRepository::new(pool.clone()),
@@ -136,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         publisher_configs: SqlitePublisherConfigRepository::new(pool.clone()),
         forbidden: SqliteForbiddenTagRepository::new(pool.clone()),
         required: SqliteRequiredTagRepository::new(pool),
+        telegram_copies: telegram_copies.clone(),
         e621: e621.clone(),
         config: config.clone(),
     });
@@ -160,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
     let bot = Bot::new(main_token.clone());
 
     // Scheduler: one runtime per bound Poster.
-    let resolver = build_resolver(&config, e621)?;
+    let resolver = build_resolver(&config, e621, telegram_copies)?;
     let runtimes = build_runtimes(&state, resolver, &bot, &main_token).await?;
     tracing::info!(count = runtimes.len(), "scheduler runtimes loaded");
     tokio::spawn(start_scheduler(SchedulerDeps {
@@ -183,12 +188,23 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // The command dispatcher runs the foreground.
+    // The command dispatcher runs the foreground. Channel forwards are the
+    // non-command submission path (checked after commands).
     let handler = dptree::entry()
         .branch(
             Update::filter_message()
                 .filter_command::<Command>()
                 .endpoint(handle_command),
+        )
+        .branch(
+            Update::filter_message()
+                .filter(|msg: Message| {
+                    matches!(
+                        msg.forward_origin(),
+                        Some(teloxide::types::MessageOrigin::Channel { .. })
+                    )
+                })
+                .endpoint(handle_channel_forward),
         )
         .branch(Update::filter_callback_query().endpoint(handle_callback));
 

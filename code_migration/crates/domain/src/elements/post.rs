@@ -85,6 +85,23 @@ impl AsRef<Url> for Source {
     }
 }
 
+impl Source {
+    /// The public channel handle (without `@`) of a `t.me/<channel>/<msg>`
+    /// source. `None` for other variants and for non-channel t.me paths.
+    pub fn telegram_channel(&self) -> Option<&str> {
+        let Source::Telegram(url) = self else {
+            return None;
+        };
+        let mut segments = url.path_segments()?;
+        let channel = segments.next()?;
+        // t.me/c/<internal>/<msg> is a private-channel link — no handle.
+        if channel.is_empty() || channel == "c" {
+            return None;
+        }
+        Some(channel)
+    }
+}
+
 /// The status of a [`Post`] in the local workflow.
 ///
 /// **Important**: this is a cached prior verdict for `Banned`, not a permanent
@@ -307,5 +324,19 @@ mod source_tests {
         let url = parse("https://e621.net/posts/1");
         let source = Source::try_from(url.clone()).unwrap();
         assert_eq!(source.as_ref(), &url);
+    }
+
+    #[test]
+    fn telegram_channel_extracts_public_handle() {
+        let source = Source::try_from(parse("https://t.me/somechannel/42")).unwrap();
+        assert_eq!(source.telegram_channel(), Some("somechannel"));
+    }
+
+    #[test]
+    fn telegram_channel_none_for_private_links_and_other_sources() {
+        let private = Source::try_from(parse("https://t.me/c/123456/42")).unwrap();
+        assert_eq!(private.telegram_channel(), None);
+        let e621 = Source::try_from(parse("https://e621.net/posts/1")).unwrap();
+        assert_eq!(e621.telegram_channel(), None);
     }
 }

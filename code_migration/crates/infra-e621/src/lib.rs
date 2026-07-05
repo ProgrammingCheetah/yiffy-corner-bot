@@ -322,6 +322,6 @@ mod live_tests {
 
         // Resolve the same post through the MediaResolver port.
         let media = client.resolve(&first.source).await.unwrap();
-        assert!(!media.as_ref().as_str().is_empty());
+        assert!(media.url().is_some_and(|u| !u.as_str().is_empty()));
     }
 }

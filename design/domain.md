@@ -79,6 +79,12 @@ For the MVP:
   attribution.
 - **Bans.** Moderators+ can ban a User from submitting (`is_banned` on User;
   strict outranking required). A ban blocks new submissions only.
+- **Channel-forward submissions.** Forwarding a public channel's post to the
+  bot is a submission (source: `https://t.me/<channel>/<msg>`). The bot never
+  re-forwards — it *copies* the content (no "Forwarded from" header) and tags
+  the origin at the bottom of the caption as
+  `Forwarded from channel: @<channel>`. Moderation DMs show the same copy
+  with the same attribution. Private channels (no @username) are rejected.
 
 # Open Questions
 

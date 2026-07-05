@@ -225,7 +225,9 @@ mod live_tests {
         .unwrap();
         let media = resolver.resolve(&source).await.unwrap();
         assert!(
-            media.as_ref().as_str().contains("d.furaffinity.net"),
+            media
+                .url()
+                .is_some_and(|u| u.as_str().contains("d.furaffinity.net")),
             "unexpected media: {media:?}"
         );
     }

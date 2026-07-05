@@ -38,15 +38,23 @@ pub enum TickError {
     Block(#[from] PublishBlockError),
 }
 
-/// Build the caption for a Post: attribution first, source link always.
+/// Build the caption for a Post: attribution first, source reference last.
 ///
 /// Posts submitted by a User carry "Submitted by <name>" (falling back to the
 /// User's Telegram ID when no display name is cached). Admin-added posts
 /// (`submitted_by: None`) get no attribution line.
+///
+/// The source reference is the source URL — except channel-forward
+/// submissions (`t.me/<channel>/<msg>`), which are published as *copies* and
+/// therefore tag their origin as "Forwarded from channel: @<channel>" at the
+/// bottom instead of a bare link.
 pub async fn build_caption<U: UserRepository>(post: &Post, users: &U) -> String {
-    let source_url = post.source.as_ref().as_str();
+    let source_line = match post.source.telegram_channel() {
+        Some(channel) => format!("Forwarded from channel: @{channel}"),
+        None => post.source.as_ref().as_str().to_string(),
+    };
     match post.submitted_by {
-        None => source_url.to_string(),
+        None => source_line,
         Some(user_id) => {
             let name = match users.find_by_id(user_id).await {
                 Ok(Some(user)) => user
@@ -54,7 +62,7 @@ pub async fn build_caption<U: UserRepository>(post: &Post, users: &U) -> String 
                     .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref())),
                 Ok(None) | Err(_) => format!("user {user_id}"),
             };
-            format!("Submitted by {name}\n{source_url}")
+            format!("Submitted by {name}\n{source_line}")
         }
     }
 }
@@ -525,6 +533,32 @@ mod tests {
         let caption = item.caption.unwrap();
         assert!(caption.contains("Submitted by Ziel"), "caption: {caption}");
         assert!(caption.contains("e621.net"), "caption: {caption}");
+    }
+
+    #[tokio::test]
+    async fn telegram_forward_caption_credits_the_channel_not_the_url() {
+        use domain::elements::user::{Role, TelegramId, UserRepository as _};
+
+        let users = InMemoryUserRepository::new();
+        let submitter = users
+            .create(
+                TelegramId::from(42),
+                Role::User,
+                None,
+                Some("Ziel".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let mut post = make_post(100);
+        post.source = Source::try_from(Url::parse("https://t.me/somechannel/42").unwrap()).unwrap();
+        post.submitted_by = Some(submitter.id);
+
+        let caption = build_caption(&post, &users).await;
+        assert_eq!(
+            caption,
+            "Submitted by Ziel\nForwarded from channel: @somechannel"
+        );
     }
 
     #[tokio::test]

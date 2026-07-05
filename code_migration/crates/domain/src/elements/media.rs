@@ -27,6 +27,14 @@ pub enum ResolvedMedia {
     /// No direct media could (or should) be resolved; publish the URL itself
     /// and let the destination platform render its embed.
     Link(Url),
+    /// A Telegram message the bot has seen (a channel post forwarded into a
+    /// private chat). The Publisher re-*copies* it — content without the
+    /// "Forwarded from" header — with the caption carrying the
+    /// "Forwarded from channel: @…" attribution instead.
+    TelegramCopy {
+        origin_chat_id: i64,
+        origin_message_id: i32,
+    },
 }
 
 impl ResolvedMedia {
@@ -44,13 +52,16 @@ impl ResolvedMedia {
     }
 }
 
-impl AsRef<Url> for ResolvedMedia {
-    fn as_ref(&self) -> &Url {
+impl ResolvedMedia {
+    /// The media/page URL, when this media is URL-shaped.
+    /// `TelegramCopy` has none — its content lives inside Telegram.
+    pub fn url(&self) -> Option<&Url> {
         match self {
             ResolvedMedia::Photo(u)
             | ResolvedMedia::Video(u)
             | ResolvedMedia::Animation(u)
-            | ResolvedMedia::Link(u) => u,
+            | ResolvedMedia::Link(u) => Some(u),
+            ResolvedMedia::TelegramCopy { .. } => None,
         }
     }
 }
