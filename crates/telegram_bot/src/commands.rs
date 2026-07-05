@@ -112,6 +112,10 @@ pub enum Command {
     Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
     Posters,
+    #[command(
+        description = "preview a poster's next publication: /nextpost <poster|@channel|chat-id> (mods)"
+    )]
+    Nextpost(String),
     #[command(description = "personal token for the browser userscript (rotates on each use)")]
     Apitoken,
     #[command(description = "channel directory broadcasts: /announcements <hours|now|off> (owner)")]
@@ -162,6 +166,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Delrules(_) => "delrules",
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
+        Command::Nextpost(_) => "nextpost",
         Command::Apitoken => "apitoken",
         Command::Announcements(_) => "announcements",
         Command::Spotlight(_) => "spotlight",
@@ -559,6 +564,7 @@ pub async fn handle_command(
         Command::Delrules(arg) => handle_delrules(&bot, &state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
+        Command::Nextpost(arg) => handle_nextpost(&bot, &state, actor, &arg).await,
         Command::Apitoken => handle_apitoken(&state, &msg, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
         Command::Spotlight(arg) => handle_spotlight(&bot, &state, actor, &arg).await,
@@ -1637,6 +1643,91 @@ pub(crate) fn parse_tag_lists<'a>(
 
 /// Resolve a poster reference: `#7`/`7` = poster id; `@channel` or a
 /// (negative) chat id = every poster bound to that chat.
+/// Preview what a poster would publish on its next fire, WITHOUT advancing
+/// its cursor or publishing anything. Runs the exact selector the scheduler
+/// runs, so the answer can't drift from reality — including its side
+/// effects (Banned ↔ Accepted revalidation flips).
+async fn handle_nextpost(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use std::sync::Arc;
+
+    use application::selectors::feed::FeedSelector;
+    use domain::elements::post::{PostRepository as _, PostSelectorStrategy as _};
+    use domain::elements::poster::PosterRepository as _;
+
+    if let Err(e) =
+        application::commands::auth::require_role(&state.users, actor, Role::Moderator).await
+    {
+        return describe(e);
+    }
+    let token = arg.trim();
+    if token.is_empty() {
+        return "Usage: /nextpost <poster-id|@channel|chat-id>".to_string();
+    }
+    let poster_ids = match resolve_posters(bot, state, token).await {
+        Ok(ids) => ids,
+        Err(e) => return e,
+    };
+    let feed_end = match state.posts.feed_end().await {
+        Ok(end) => end,
+        Err(_) => return "Repository error reading the feed.".to_string(),
+    };
+
+    let mut blocks = Vec::new();
+    for poster_id in poster_ids {
+        let poster = match state.posters.find_by_id(poster_id).await {
+            Ok(Some(poster)) => poster,
+            Ok(None) => {
+                blocks.push(format!(
+                    "Poster #{poster_id} does not exist — see /posters."
+                ));
+                continue;
+            }
+            Err(_) => {
+                blocks.push(format!("Poster #{poster_id}: repository error."));
+                continue;
+            }
+        };
+        let selector = FeedSelector::new(
+            poster.clone(),
+            Arc::new(state.posts.clone()),
+            state.e621.clone(),
+            Arc::new(state.forbidden.clone()),
+        );
+        blocks.push(match selector.next_post(poster.cursor).await {
+            Err(e) => format!(
+                "Poster #{}: scan failed — {e}. Try again in a bit.",
+                poster.id
+            ),
+            Ok(pick) => match pick.post {
+                None => format!(
+                    "Poster #{} has nothing queued (cursor {} / feed end {feed_end}) — \
+                     it stays quiet until new matching content is curated.",
+                    poster.id, poster.cursor
+                ),
+                Some(post) => {
+                    let tag_line = post
+                        .tags
+                        .iter()
+                        .take(12)
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!(
+                        "Poster #{} posts next:\n#{} — {}\nFeed position {} \
+                         (cursor {} / feed end {feed_end})\nTags: {tag_line}",
+                        poster.id,
+                        post.id,
+                        post.source.as_ref(),
+                        pick.advance_to,
+                        poster.cursor
+                    )
+                }
+            },
+        });
+    }
+    blocks.join("\n\n")
+}
+
 pub(crate) async fn resolve_posters(
     bot: &Bot,
     state: &SharedState,
