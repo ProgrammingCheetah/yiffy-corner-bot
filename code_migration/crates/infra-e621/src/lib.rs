@@ -122,19 +122,6 @@ impl E621Fetcher for RateLimitedE621Client {
     }
 }
 
-/// Classify a direct media URL by file extension. e621's `file.url` always
-/// carries the real extension.
-fn media_from_file_url(file_url: Url) -> ResolvedMedia {
-    let path = file_url.path().to_ascii_lowercase();
-    if path.ends_with(".webm") || path.ends_with(".mp4") {
-        ResolvedMedia::Video(file_url)
-    } else if path.ends_with(".gif") {
-        ResolvedMedia::Animation(file_url)
-    } else {
-        ResolvedMedia::Photo(file_url)
-    }
-}
-
 #[async_trait]
 impl MediaResolver for RateLimitedE621Client {
     async fn resolve(&self, source: &Source) -> Result<ResolvedMedia, MediaResolveError> {
@@ -147,7 +134,7 @@ impl MediaResolver for RateLimitedE621Client {
             FetchError::Network(msg) => MediaResolveError::Network(msg),
             FetchError::Parse(msg) => MediaResolveError::Parse(msg),
         })?;
-        Ok(media_from_file_url(metadata.file_url))
+        Ok(ResolvedMedia::classify(metadata.file_url))
     }
 }
 
@@ -283,15 +270,15 @@ mod tests {
     fn media_kind_follows_file_extension() {
         let u = |s: &str| Url::parse(s).unwrap();
         assert!(matches!(
-            media_from_file_url(u("https://static1.e621.net/data/a.png")),
+            ResolvedMedia::classify(u("https://static1.e621.net/data/a.png")),
             ResolvedMedia::Photo(_)
         ));
         assert!(matches!(
-            media_from_file_url(u("https://static1.e621.net/data/a.webm")),
+            ResolvedMedia::classify(u("https://static1.e621.net/data/a.webm")),
             ResolvedMedia::Video(_)
         ));
         assert!(matches!(
-            media_from_file_url(u("https://static1.e621.net/data/a.gif")),
+            ResolvedMedia::classify(u("https://static1.e621.net/data/a.gif")),
             ResolvedMedia::Animation(_)
         ));
     }

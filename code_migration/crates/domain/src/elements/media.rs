@@ -29,6 +29,21 @@ pub enum ResolvedMedia {
     Link(Url),
 }
 
+impl ResolvedMedia {
+    /// Classify a *direct* media URL by its file extension. For URLs that are
+    /// pages rather than files, use [`ResolvedMedia::Link`] directly instead.
+    pub fn classify(file_url: Url) -> Self {
+        let path = file_url.path().to_ascii_lowercase();
+        if path.ends_with(".webm") || path.ends_with(".mp4") {
+            ResolvedMedia::Video(file_url)
+        } else if path.ends_with(".gif") {
+            ResolvedMedia::Animation(file_url)
+        } else {
+            ResolvedMedia::Photo(file_url)
+        }
+    }
+}
+
 impl AsRef<Url> for ResolvedMedia {
     fn as_ref(&self) -> &Url {
         match self {
