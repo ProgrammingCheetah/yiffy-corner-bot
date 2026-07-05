@@ -33,7 +33,7 @@ use telemetry::{Event, RejectReason};
 #[command(rename_rule = "lowercase")]
 pub enum Command {
     #[command(description = "register with the bot")]
-    Start,
+    Start(String),
     #[command(description = "show this help")]
     Help,
     #[command(description = "submit art by source URL")]
@@ -87,7 +87,7 @@ pub enum Command {
 /// Stable command label for the `command_received` event.
 fn command_name(cmd: &Command) -> &'static str {
     match cmd {
-        Command::Start => "start",
+        Command::Start(_) => "start",
         Command::Help => "help",
         Command::Suggest(_) => "suggest",
         Command::Queue => "queue",
@@ -126,6 +126,59 @@ fn describe(err: HandlerError) -> String {
     }
 }
 
+/// File a viewer report and fan the moderator DM out. Shared by the
+/// caption deep link (`/start report_<id>`) and the legacy inline button.
+async fn file_report(
+    bot: &Bot,
+    state: &SharedState,
+    reporter: TelegramId,
+    post_id: PostId,
+) -> String {
+    use application::commands::report::{self, ReportOutcome};
+
+    match report::report(
+        reporter,
+        post_id,
+        &state.posts,
+        &state.reports,
+        &state.users,
+    )
+    .await
+    {
+        Ok(ReportOutcome::Duplicate) => "You already reported this post.".to_string(),
+        Ok(ReportOutcome::New {
+            post,
+            reviewers,
+            total_reports,
+        }) => {
+            let text = format!(
+                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}",
+                post.id,
+                post.source.as_ref()
+            );
+            let keyboard = InlineKeyboardMarkup::new([[
+                InlineKeyboardButton::callback("🗑 Take down", format!("repmod:take:{}", post.id)),
+                InlineKeyboardButton::callback("✅ Dismiss", format!("repmod:dismiss:{}", post.id)),
+            ]]);
+            for reviewer in &reviewers {
+                let chat = ChatId(*reviewer.telegram_id.as_ref());
+                if let Err(e) = bot
+                    .send_message(chat, text.clone())
+                    .reply_markup(keyboard.clone())
+                    .await
+                {
+                    tracing::warn!(
+                        event = %Event::ReportNotifyFailed, post_id = %post.id,
+                        reviewer = %reviewer.id, error = %e, "report DM failed"
+                    );
+                }
+            }
+            "Thank you — the moderators have been notified.".to_string()
+        }
+        Err(e) => describe(e),
+    }
+}
+
 /// The moderation inline keyboard attached to review DMs.
 fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new([[
@@ -152,20 +205,28 @@ pub async fn handle_command(
     );
 
     let reply = match cmd {
-        Command::Start => {
-            match start::handle(
+        Command::Start(payload) => {
+            let registration = start::handle(
                 StartCommand {
                     id: actor,
                     display_name,
                 },
                 &state.users,
             )
-            .await
-            {
-                Ok(()) => {
-                    "Welcome to Yiffy Corner! Submit art with /suggest <source-url>.".to_string()
+            .await;
+            // Deep-link payloads: `t.me/<bot>?start=report_<id>` arrives as
+            // `/start report_<id>` — the buttonless Report path.
+            if let Some(raw_id) = payload.trim().strip_prefix("report_") {
+                match parse_post_id(raw_id) {
+                    Some(post_id) => file_report(&bot, &state, actor, post_id).await,
+                    None => "That report link is malformed.".to_string(),
                 }
-                Err(e) => describe(e),
+            } else {
+                match registration {
+                    Ok(()) => "Welcome to Yiffy Corner! Submit art with /suggest <source-url>."
+                        .to_string(),
+                    Err(e) => describe(e),
+                }
             }
         }
         Command::Help => Command::descriptions().to_string(),
@@ -1078,58 +1139,14 @@ pub async fn handle_callback(
                     .await?;
             }
         }
-        // Viewer report button on published posts.
+        // Viewer report button on published posts (legacy messages; new
+        // publications use the caption deep link instead).
         ["report", id] => {
-            use application::commands::report::{self, ReportOutcome};
             use teloxide::payloads::AnswerCallbackQuerySetters as _;
 
             let toast = match parse_post_id(id) {
                 None => "Malformed report.".to_string(),
-                Some(post_id) => {
-                    match report::report(actor, post_id, &state.posts, &state.reports, &state.users)
-                        .await
-                    {
-                        Ok(ReportOutcome::Duplicate) => {
-                            "You already reported this post.".to_string()
-                        }
-                        Ok(ReportOutcome::New {
-                            post,
-                            reviewers,
-                            total_reports,
-                        }) => {
-                            let text = format!(
-                                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}",
-                                post.id,
-                                post.source.as_ref()
-                            );
-                            let keyboard = InlineKeyboardMarkup::new([[
-                                InlineKeyboardButton::callback(
-                                    "🗑 Take down",
-                                    format!("repmod:take:{}", post.id),
-                                ),
-                                InlineKeyboardButton::callback(
-                                    "✅ Dismiss",
-                                    format!("repmod:dismiss:{}", post.id),
-                                ),
-                            ]]);
-                            for reviewer in &reviewers {
-                                let chat = ChatId(*reviewer.telegram_id.as_ref());
-                                if let Err(e) = bot
-                                    .send_message(chat, text.clone())
-                                    .reply_markup(keyboard.clone())
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        event = %Event::ReportNotifyFailed, post_id = %post.id,
-                                        reviewer = %reviewer.id, error = %e, "report DM failed"
-                                    );
-                                }
-                            }
-                            "Thank you — the moderators have been notified.".to_string()
-                        }
-                        Err(e) => describe(e),
-                    }
-                }
+                Some(post_id) => file_report(&bot, &state, actor, post_id).await,
             };
             bot.answer_callback_query(query.id.clone())
                 .text(toast)

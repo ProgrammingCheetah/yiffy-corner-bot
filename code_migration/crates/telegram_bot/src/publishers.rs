@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use domain::elements::{
     media::ResolvedMedia,
-    post::PostId,
     poster::Poster,
     publisher::{PublishItem, PublishReceipt, Publisher, PublisherError},
     publisher_config::PublisherConfigRepository as _,
@@ -17,24 +16,17 @@ use teloxide::{
         SendVideoSetters,
     },
     prelude::Requester,
-    types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId},
+    types::{ChatId, InputFile, LinkPreviewOptions, MessageId, ParseMode},
 };
 
 use crate::state::read_secret;
 
-/// The viewer-facing control on every published message.
-fn report_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new([[InlineKeyboardButton::callback(
-        "⚠️ Report",
-        format!("report:{post_id}"),
-    )]])
-}
-
 /// Publishes resolved media to a Telegram chat, dispatching on the media
 /// kind: photo/video/animation as native media messages with the caption,
 /// links as a text message that leans on Telegram's link preview (this is
-/// how FixUp embeds and t.me sources render). Every message carries the
-/// ⚠️ Report button, and the returned receipt records where it landed.
+/// how FixUp embeds and t.me sources render). Captions are HTML (code
+/// header, Source/Report hyperlinks — no bulky buttons); the returned
+/// receipt records where the message landed.
 pub struct TelegramPublisher {
     bot: Bot,
     chat_id: ChatId,
@@ -54,35 +46,31 @@ impl Publisher for TelegramPublisher {
             chat = self.chat_id.0, media = ?item.media, "sending publish message"
         );
         let send = |e: teloxide::RequestError| PublisherError::Send(e.to_string());
-        let keyboard = report_keyboard(item.post_id);
         let message_id = match &item.media {
             ResolvedMedia::Photo(url) => {
                 let mut request = self
                     .bot
-                    .send_photo(self.chat_id, InputFile::url(url.clone()))
-                    .reply_markup(keyboard);
+                    .send_photo(self.chat_id, InputFile::url(url.clone()));
                 if let Some(caption) = &item.caption {
-                    request = request.caption(caption.clone());
+                    request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
                 request.await.map_err(send)?.id
             }
             ResolvedMedia::Video(url) => {
                 let mut request = self
                     .bot
-                    .send_video(self.chat_id, InputFile::url(url.clone()))
-                    .reply_markup(keyboard);
+                    .send_video(self.chat_id, InputFile::url(url.clone()));
                 if let Some(caption) = &item.caption {
-                    request = request.caption(caption.clone());
+                    request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
                 request.await.map_err(send)?.id
             }
             ResolvedMedia::Animation(url) => {
                 let mut request = self
                     .bot
-                    .send_animation(self.chat_id, InputFile::url(url.clone()))
-                    .reply_markup(keyboard);
+                    .send_animation(self.chat_id, InputFile::url(url.clone()));
                 if let Some(caption) = &item.caption {
-                    request = request.caption(caption.clone());
+                    request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
                 request.await.map_err(send)?.id
             }
@@ -92,30 +80,31 @@ impl Publisher for TelegramPublisher {
             } => {
                 // Copy = content without the "Forwarded from" header; the
                 // caption carries the channel attribution instead.
-                let mut request = self
-                    .bot
-                    .copy_message(
-                        self.chat_id,
-                        ChatId(*origin_chat_id),
-                        MessageId(*origin_message_id),
-                    )
-                    .reply_markup(keyboard);
+                let mut request = self.bot.copy_message(
+                    self.chat_id,
+                    ChatId(*origin_chat_id),
+                    MessageId(*origin_message_id),
+                );
                 if let Some(caption) = &item.caption {
-                    request = request.caption(caption.clone());
+                    request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
                 request.await.map_err(send)?
             }
             ResolvedMedia::Link(url) => {
-                // The caption already ends with the source URL; when it does
-                // not contain the link we're embedding, append it.
-                let text = match &item.caption {
-                    Some(caption) if caption.contains(url.as_str()) => caption.clone(),
-                    Some(caption) => format!("{caption}\n{url}"),
-                    None => url.to_string(),
-                };
+                // Embed-URL publish: the caption's Source link points at the
+                // original page, so force the preview onto the embed URL
+                // (fixupx/fxbsky) — that's the whole point of the rewrite.
+                let text = item.caption.clone().unwrap_or_else(|| url.to_string());
                 self.bot
                     .send_message(self.chat_id, text)
-                    .reply_markup(keyboard)
+                    .parse_mode(ParseMode::Html)
+                    .link_preview_options(LinkPreviewOptions {
+                        is_disabled: false,
+                        url: Some(url.to_string()),
+                        prefer_small_media: false,
+                        prefer_large_media: true,
+                        show_above_text: false,
+                    })
                     .await
                     .map_err(send)?
                     .id

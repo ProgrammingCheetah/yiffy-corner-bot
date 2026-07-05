@@ -42,6 +42,8 @@ where
     pub selectors: Arc<dyn SelectorFactory>,
     pub publishers: Arc<dyn PublisherFactory>,
     pub resolver: Arc<dyn MediaResolver>,
+    /// The bot's @username (without `@`), for the Report deep link.
+    pub bot_username: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,33 +54,77 @@ pub enum TickError {
     Posters(String),
 }
 
-/// Build the caption for a Post: attribution first, source reference last.
-///
-/// Posts submitted by a User carry "Submitted by <name>" (falling back to the
-/// User's Telegram ID when no display name is cached). Admin-added posts
-/// (`submitted_by: None`) get no attribution line.
-///
-/// The source reference is the source URL — except channel-forward
-/// submissions (`t.me/<channel>/<msg>`), which are published as *copies* and
-/// therefore tag their origin as "Forwarded from channel: @<channel>" at the
-/// bottom instead of a bare link.
-pub async fn build_caption<U: UserRepository>(post: &Post, users: &U) -> String {
-    let source_line = match post.source.telegram_channel() {
-        Some(channel) => format!("Forwarded from channel: @{channel}"),
-        None => post.source.as_ref().as_str().to_string(),
-    };
-    match post.submitted_by {
-        None => source_line,
-        Some(user_id) => {
-            let name = match users.find_by_id(user_id).await {
-                Ok(Some(user)) => user
-                    .display_name
-                    .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref())),
-                Ok(None) | Err(_) => format!("user {user_id}"),
-            };
-            format!("Submitted by {name}\n{source_line}")
-        }
+/// Fixed-size publication code shown at the top of every published caption:
+/// 8 base-36 chars derived (FNV-1a) from the source URL and the consuming
+/// Poster's id. Deterministic, so the same (post, channel) pair always shows
+/// the same code — a stable handle for humans talking about a publication.
+pub fn publish_code(post: &Post, poster_id: domain::elements::poster::PosterId) -> String {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in post
+        .source
+        .as_ref()
+        .as_str()
+        .bytes()
+        .chain(poster_id.to_string().bytes())
+    {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
     }
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut code = String::with_capacity(8);
+    for _ in 0..8 {
+        code.push(ALPHABET[(hash % 36) as usize] as char);
+        hash /= 36;
+    }
+    code
+}
+
+/// Minimal HTML escaping for user-controlled text in captions.
+fn escape_html(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Build the HTML caption for a publication:
+///
+/// ```text
+/// #<8-char code>                       (source id × poster id, fixed size)
+/// Submitted by <name>                  (user submissions only)
+/// Forwarded from channel: @chan        (channel forwards only)
+/// Source · Report                      (hyperlinks)
+/// ```
+///
+/// "Report" is a deep link (`t.me/<bot>?start=report_<post id>`) — no bulky
+/// inline button on the message.
+pub async fn build_caption<U: UserRepository>(
+    post: &Post,
+    poster_id: domain::elements::poster::PosterId,
+    users: &U,
+    bot_username: &str,
+) -> String {
+    let mut lines = vec![format!("<code>#{}</code>", publish_code(post, poster_id))];
+
+    if let Some(user_id) = post.submitted_by {
+        let name = match users.find_by_id(user_id).await {
+            Ok(Some(user)) => user
+                .display_name
+                .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref())),
+            Ok(None) | Err(_) => format!("user {user_id}"),
+        };
+        lines.push(format!("Submitted by {}", escape_html(&name)));
+    }
+    if let Some(channel) = post.source.telegram_channel() {
+        lines.push(format!("Forwarded from channel: @{}", escape_html(channel)));
+    }
+    lines.push(format!(
+        "<a href=\"{}\">Source</a> · <a href=\"https://t.me/{bot_username}?start=report_{}\">Report</a>",
+        post.source.as_ref(),
+        post.id
+    ));
+    lines.join("\n")
 }
 
 /// Run one scheduler tick, DATABASE-FIRST: posters (config, tags, cursor)
@@ -206,7 +252,7 @@ async fn fire_one<R, U, PR, PB>(
     let item = PublishItem {
         post_id: post.id,
         media,
-        caption: Some(build_caption(&post, &*deps.users).await),
+        caption: Some(build_caption(&post, poster.id, &*deps.users, &deps.bot_username).await),
     };
     let receipt = match publisher.publish(&item).await {
         Ok(receipt) => receipt,
@@ -476,6 +522,7 @@ mod tests {
                     bound,
                 }),
                 resolver: Arc::new(FixedResolver),
+                bot_username: "testbot".to_string(),
             }
         }
 
@@ -613,7 +660,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telegram_forward_caption_credits_the_channel_not_the_url() {
+    async fn caption_has_code_attribution_forward_credit_and_links() {
+        use domain::elements::poster::PosterId;
         use domain::elements::user::{Role, TelegramId, UserRepository as _};
 
         let users = InMemoryUserRepository::new();
@@ -622,7 +670,7 @@ mod tests {
                 TelegramId::from(42),
                 Role::User,
                 None,
-                Some("Ziel".to_string()),
+                Some("Ziel <3".to_string()),
             )
             .await
             .unwrap();
@@ -631,18 +679,40 @@ mod tests {
         post.source = Source::try_from(Url::parse("https://t.me/somechannel/42").unwrap()).unwrap();
         post.submitted_by = Some(submitter.id);
 
-        let caption = build_caption(&post, &users).await;
-        assert_eq!(
-            caption,
-            "Submitted by Ziel\nForwarded from channel: @somechannel"
-        );
+        let caption = build_caption(&post, PosterId::from(1), &users, "testbot").await;
+        let lines: Vec<&str> = caption.lines().collect();
+        // Fixed-size code header.
+        assert!(lines[0].starts_with("<code>#"), "caption: {caption}");
+        assert_eq!(lines[0].len(), "<code>#XXXXXXXX</code>".len());
+        // HTML-escaped attribution.
+        assert_eq!(lines[1], "Submitted by Ziel &lt;3");
+        assert_eq!(lines[2], "Forwarded from channel: @somechannel");
+        // Source + Report links.
+        assert!(lines[3].contains("<a href=\"https://t.me/somechannel/42\">Source</a>"));
+        assert!(lines[3].contains("https://t.me/testbot?start=report_100\">Report</a>"));
     }
 
     #[tokio::test]
     async fn admin_added_post_has_no_attribution_line() {
+        use domain::elements::poster::PosterId;
         let users = InMemoryUserRepository::new();
-        let caption = build_caption(&make_post(100, 1), &users).await;
+        let caption = build_caption(&make_post(100, 1), PosterId::from(1), &users, "testbot").await;
         assert!(!caption.contains("Submitted by"), "caption: {caption}");
         assert!(caption.contains("e621.net"), "caption: {caption}");
+    }
+
+    #[test]
+    fn publish_code_is_fixed_size_and_deterministic() {
+        use domain::elements::poster::PosterId;
+        let post = make_post(1, 1);
+        let a = publish_code(&post, PosterId::from(1));
+        let b = publish_code(&post, PosterId::from(1));
+        let other_poster = publish_code(&post, PosterId::from(2));
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 8);
+        assert_ne!(
+            a, other_poster,
+            "same source, different consumer → different code"
+        );
     }
 }

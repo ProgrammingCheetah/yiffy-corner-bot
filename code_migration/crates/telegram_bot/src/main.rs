@@ -139,6 +139,13 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
         tracing::warn!(error = %e, "set_my_commands failed; menu may be stale");
     }
+    // The bot's @username feeds the Report deep links in captions.
+    let bot_username = bot
+        .get_me()
+        .await
+        .ok()
+        .and_then(|me| me.username.clone())
+        .unwrap_or_default();
 
     // Scheduler, database-first: posters, tags, cursors and channel bindings
     // are read fresh every tick — /newposter, /settags and /setchannel are
@@ -161,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
             main_token.clone(),
         )),
         resolver,
+        bot_username,
     }));
 
     // Health endpoint for container checks.
