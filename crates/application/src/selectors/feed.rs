@@ -28,8 +28,56 @@ use domain::elements::{
     poster::Poster,
     tag::Tag,
     tag_policy::ForbiddenTagRepository,
+    tag_rule::{TagRule, TagTerm},
 };
 use telemetry::{Event, SkipReason};
+
+/// Why one consumer refuses an entry, given the entry's effective tags.
+/// Pure — shared by the live selector and the /postinfo diagnosis so the
+/// two can never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    ForbiddenTag(Tag),
+    RuleFailed(TagRule),
+    MissingTerms(Vec<TagTerm>),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::ForbiddenTag(tag) => write!(f, "forbidden tag: {tag}"),
+            Refusal::RuleFailed(rule) => write!(f, "rule fails: {rule}"),
+            Refusal::MissingTerms(terms) => {
+                let joined = terms
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "missing: {joined}")
+            }
+        }
+    }
+}
+
+/// The consumer-local eligibility verdict (global bans are judged upstream).
+pub fn refusal_for(poster: &Poster, tags: &HashSet<Tag>) -> Option<Refusal> {
+    if let Some(hit) = poster.forbidden_tags.iter().find(|t| tags.contains(*t)) {
+        return Some(Refusal::ForbiddenTag(hit.clone()));
+    }
+    if let Some(rule) = poster.rules.iter().find(|rule| !rule.passes(tags)) {
+        return Some(Refusal::RuleFailed(rule.clone()));
+    }
+    let missing: Vec<TagTerm> = poster
+        .subscribed_tags
+        .iter()
+        .filter(|term| !term.passes(tags))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Some(Refusal::MissingTerms(missing));
+    }
+    None
+}
 
 pub struct FeedSelector<P, E, F> {
     poster: Poster,
@@ -125,44 +173,21 @@ where
                 .map_err(|e| SelectorError::Repository(e.to_string()))?;
         }
 
-        if let Some(hit) = self
-            .poster
-            .forbidden_tags
-            .iter()
-            .find(|t| tags.contains(*t))
-        {
-            tracing::debug!(
-                event = %Event::CandidateSkipped, reason = %SkipReason::PosterForbiddenTag,
-                post_id = %entry.id, poster_id = %self.poster.id, tag = %hit,
-                "skipped for this consumer only"
-            );
-            return Ok(false);
-        }
-        if let Some(rule) = self.poster.rules.iter().find(|rule| !rule.passes(&tags)) {
-            tracing::debug!(
-                event = %Event::CandidateSkipped, reason = %SkipReason::ConditionalRule,
-                post_id = %entry.id, poster_id = %self.poster.id, rule = %rule,
-                "skipped: conditional rule failed"
-            );
-            return Ok(false);
-        }
-        let missing: Vec<String> = self
-            .poster
-            .subscribed_tags
-            .iter()
-            .filter(|term| !term.passes(&tags))
-            .map(ToString::to_string)
-            .collect();
-        if missing.is_empty() {
-            Ok(true)
-        } else {
-            tracing::debug!(
-                event = %Event::CandidateSkipped, reason = %SkipReason::MissingSubscribedTags,
-                post_id = %entry.id, poster_id = %self.poster.id,
-                missing = missing.join(" "),
-                "subscription terms not all satisfied"
-            );
-            Ok(false)
+        match refusal_for(&self.poster, &tags) {
+            None => Ok(true),
+            Some(refusal) => {
+                let reason = match &refusal {
+                    Refusal::ForbiddenTag(_) => SkipReason::PosterForbiddenTag,
+                    Refusal::RuleFailed(_) => SkipReason::ConditionalRule,
+                    Refusal::MissingTerms(_) => SkipReason::MissingSubscribedTags,
+                };
+                tracing::debug!(
+                    event = %Event::CandidateSkipped, reason = %reason,
+                    post_id = %entry.id, poster_id = %self.poster.id, detail = %refusal,
+                    "skipped for this consumer only"
+                );
+                Ok(false)
+            }
         }
     }
 }

@@ -904,9 +904,120 @@ async fn handle_postinfo(state: &SharedState, actor: TelegramId, arg: &str) -> S
                     ));
                 }
             }
+            lines.push(String::new());
+            lines.extend(poster_verdicts(state, post, &info.publications).await);
             lines.join("\n")
         }
     }
+}
+
+/// Per-poster diagnosis: for each configured Poster, why this entry was —
+/// or will be, or won't ever be — published there. Judged with the same
+/// `refusal_for` the live selector uses, against the entry's CURRENT
+/// effective tags.
+async fn poster_verdicts(
+    state: &SharedState,
+    post: &domain::elements::post::Post,
+    publications: &[domain::elements::publisher::Publication],
+) -> Vec<String> {
+    use application::selectors::feed::refusal_for;
+    use domain::elements::e621::{E621Fetcher as _, FetchError};
+    use domain::elements::post::{PostStatus, Source};
+    use domain::elements::poster::PosterRepository as _;
+    use domain::elements::publisher_config::PublisherConfigRepository as _;
+    use domain::elements::tag_policy::ForbiddenTagRepository as _;
+
+    let Some(position) = post.feed_position else {
+        return vec![format!(
+            "Posters: not in the feed ({}) — nothing publishes it.",
+            post.status
+        )];
+    };
+    if matches!(post.status, PostStatus::Rejected | PostStatus::Deleted) {
+        return vec![format!(
+            "Posters: {} — out of circulation, nothing publishes it.",
+            post.status
+        )];
+    }
+
+    // Effective tags, exactly like the selector: fresh for e621, curated
+    // otherwise; a permanently-gone upstream skips everywhere.
+    let tags: std::collections::HashSet<Tag> = if let Source::E621(_) = &post.source {
+        match state.e621.fetch(&post.source).await {
+            Ok(metadata) => metadata.tags.into_iter().collect(),
+            Err(FetchError::NotFound(_) | FetchError::Unavailable(_)) => {
+                return vec![
+                    "Posters: upstream post is gone (deleted/DNP) — every poster skips it."
+                        .to_string(),
+                ];
+            }
+            Err(e) => {
+                return vec![format!(
+                    "Posters: diagnosis unavailable, e621 fetch failed: {e}"
+                )];
+            }
+        }
+    } else {
+        post.tags.iter().cloned().collect()
+    };
+
+    let global_forbidden = match state.forbidden.list_all().await {
+        Ok(list) => list,
+        Err(e) => return vec![format!("Posters: diagnosis unavailable: {e}")],
+    };
+    if let Some(hit) = tags.iter().find(|t| global_forbidden.contains(t)) {
+        return vec![format!(
+            "Posters: globally forbidden tag `{hit}` — Banned for every poster."
+        )];
+    }
+
+    let posters = match state.posters.list_all().await {
+        Ok(p) => p,
+        Err(e) => return vec![format!("Posters: diagnosis unavailable: {e}")],
+    };
+    if posters.is_empty() {
+        return vec!["Posters: none configured.".to_string()];
+    }
+
+    let mut lines = vec!["Posters:".to_string()];
+    for poster in posters {
+        let chat = state
+            .publisher_configs
+            .find_by_poster(poster.id)
+            .await
+            .ok()
+            .flatten()
+            .map(|c| c.chat_id);
+        let published_here = chat.is_some_and(|chat_id| {
+            publications
+                .iter()
+                .any(|publication| publication.chat_id == chat_id)
+        });
+        let place = match chat {
+            Some(chat_id) => format!("chat {chat_id}"),
+            None => "UNBOUND".to_string(),
+        };
+        let verdict = if published_here {
+            "✅ published here".to_string()
+        } else if let Some(refusal) = refusal_for(&poster, &tags) {
+            format!("⛔ {refusal}")
+        } else if chat.is_none() {
+            "⏸ eligible, but the poster has no channel".to_string()
+        } else if poster.cursor >= position {
+            format!(
+                "⏭ missed — cursor {} is already past position {position} \
+                 (eligible now; it was skipped or unpostable when scanned)",
+                poster.cursor
+            )
+        } else {
+            format!(
+                "⏳ queued — cursor {} of {position}, posts on an upcoming tick",
+                poster.cursor
+            )
+        };
+        lines.push(format!("  #{} ({place}): {verdict}", poster.id));
+    }
+    lines
 }
 
 async fn moderate_reply(
