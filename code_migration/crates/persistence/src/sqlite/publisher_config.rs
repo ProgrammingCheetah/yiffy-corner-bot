@@ -61,6 +61,15 @@ impl PublisherConfigRepository for SqlitePublisherConfigRepository {
         Ok(row.as_ref().map(row_to_config))
     }
 
+    async fn remove(&self, poster_id: PosterId) -> Result<(), Self::Err> {
+        sqlx::query("DELETE FROM publisher_configs WHERE poster_id = ?")
+            .bind(*poster_id.as_ref() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PublisherConfigRepositoryError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
     async fn list_all(&self) -> Result<Vec<PublisherConfig>, Self::Err> {
         let rows = sqlx::query("SELECT * FROM publisher_configs ORDER BY poster_id")
             .fetch_all(&self.pool)

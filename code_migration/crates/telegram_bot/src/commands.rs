@@ -78,6 +78,8 @@ pub enum Command {
         description = "replace a poster's tags: /settags <poster-id> [tags… -forbidden…] (owner)"
     )]
     Settags(String),
+    #[command(description = "delete a poster: /delposter <poster-id> (owner)")]
+    Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
     Posters,
 }
@@ -105,6 +107,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Newposter(_) => "newposter",
         Command::Setchannel(_) => "setchannel",
         Command::Settags(_) => "settags",
+        Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
     }
 }
@@ -229,6 +232,7 @@ pub async fn handle_command(
         Command::Newposter(arg) => handle_newposter(&state, actor, &arg).await,
         Command::Setchannel(arg) => handle_setchannel(&bot, &state, actor, &arg).await,
         Command::Settags(arg) => handle_settags(&state, actor, &arg).await,
+        Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
     };
 
@@ -854,6 +858,33 @@ async fn handle_setchannel(bot: &Bot, state: &SharedState, actor: TelegramId, ar
         Ok(()) => {
             format!("Poster #{poster_id} now publishes to {chat_id} — live within a minute.")
         }
+        Err(e) => describe(e),
+    }
+}
+
+async fn handle_delposter(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    let Some(poster_id) = arg
+        .trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(domain::elements::poster::PosterId::from)
+    else {
+        return "Usage: /delposter <poster-id> — see /posters for the ids.".to_string();
+    };
+    match manage_poster::delete_poster(
+        actor,
+        poster_id,
+        &state.users,
+        &state.posters,
+        &state.publisher_configs,
+    )
+    .await
+    {
+        Ok(()) => format!(
+            "Poster #{poster_id} deleted — it stops firing within a minute. \
+             The feed and its posts are untouched."
+        ),
         Err(e) => describe(e),
     }
 }

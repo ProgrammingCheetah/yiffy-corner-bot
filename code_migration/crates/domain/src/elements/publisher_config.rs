@@ -39,5 +39,8 @@ pub trait PublisherConfigRepository: Send + Sync {
         &self,
         poster_id: PosterId,
     ) -> Result<Option<PublisherConfig>, Self::Err>;
+    /// Drop a Poster's binding (no-op when none exists). Part of poster
+    /// deletion — the config row must go before the poster row (FK).
+    async fn remove(&self, poster_id: PosterId) -> Result<(), Self::Err>;
     async fn list_all(&self) -> Result<Vec<PublisherConfig>, Self::Err>;
 }

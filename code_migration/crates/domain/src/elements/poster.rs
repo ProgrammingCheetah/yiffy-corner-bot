@@ -74,5 +74,8 @@ pub trait PosterRepository: Send + Sync {
     /// Persist the consumer's feed cursor. Written after every successful
     /// consume (or empty scan); read fresh at every fire.
     async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err>;
+    /// Remove a Poster outright. Posters are pure config — deletion is hard;
+    /// the database-first scheduler stops firing it on the next tick.
+    async fn delete(&self, id: PosterId) -> Result<(), Self::Err>;
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err>;
 }

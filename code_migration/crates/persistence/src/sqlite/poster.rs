@@ -92,6 +92,18 @@ impl PosterRepository for SqlitePosterRepository {
         row_to_poster(&row)
     }
 
+    async fn delete(&self, id: PosterId) -> Result<(), Self::Err> {
+        let result = sqlx::query("DELETE FROM posters WHERE id = ?")
+            .bind(*id.as_ref() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(PosterRepositoryError::NotFound(id));
+        }
+        Ok(())
+    }
+
     async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err> {
         let result = sqlx::query("UPDATE posters SET cursor = ? WHERE id = ?")
             .bind(cursor as i64)

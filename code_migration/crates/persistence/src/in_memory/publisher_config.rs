@@ -39,6 +39,11 @@ impl PublisherConfigRepository for InMemoryPublisherConfigRepository {
         Ok(self.configs.read().await.get(poster_id.as_ref()).cloned())
     }
 
+    async fn remove(&self, poster_id: PosterId) -> Result<(), Self::Err> {
+        self.configs.write().await.remove(poster_id.as_ref());
+        Ok(())
+    }
+
     async fn list_all(&self) -> Result<Vec<PublisherConfig>, Self::Err> {
         Ok(self.configs.read().await.values().cloned().collect())
     }

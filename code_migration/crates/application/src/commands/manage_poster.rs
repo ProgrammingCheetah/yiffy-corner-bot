@@ -85,6 +85,39 @@ where
     Ok(poster)
 }
 
+/// Delete a Poster (and its channel binding). Owner-only. The feed and its
+/// posts are untouched — only this consumer disappears; the database-first
+/// scheduler stops firing it on the next tick.
+pub async fn delete_poster<P, C>(
+    actor: TelegramId,
+    poster_id: PosterId,
+    users: &impl UserRepository,
+    posters: &P,
+    configs: &C,
+) -> HandlerResult<()>
+where
+    P: PosterRepository,
+    C: PublisherConfigRepository,
+{
+    require_role(users, actor, Role::Owner).await?;
+    posters
+        .find_by_id(poster_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+        .ok_or_else(|| HandlerError::InvalidState(format!("poster {poster_id} does not exist")))?;
+    // Binding first: publisher_configs holds the FK onto posters.
+    configs
+        .remove(poster_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    posters
+        .delete(poster_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::PosterDeleted, poster_id = %poster_id, "poster deleted");
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct SetChannel {
     pub actor: TelegramId,
@@ -247,6 +280,78 @@ mod tests {
 
         let config = fx.configs.find_by_poster(poster.id).await.unwrap().unwrap();
         assert_eq!(config.chat_id, -100123);
+    }
+
+    #[tokio::test]
+    async fn owner_deletes_poster_and_binding() {
+        let fx = fixture().await;
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+            .await
+            .unwrap();
+        set_channel(
+            SetChannel {
+                actor: TelegramId::from(1),
+                poster_id: poster.id,
+                chat_id: -100,
+                token_path: PathBuf::from("t"),
+            },
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+        )
+        .await
+        .unwrap();
+
+        delete_poster(
+            TelegramId::from(1),
+            poster.id,
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+        )
+        .await
+        .unwrap();
+        assert!(fx.posters.find_by_id(poster.id).await.unwrap().is_none());
+        assert!(
+            fx.configs
+                .find_by_poster(poster.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn moderator_cannot_delete_poster() {
+        let fx = fixture().await;
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+            .await
+            .unwrap();
+        let err = delete_poster(
+            TelegramId::from(2),
+            poster.id,
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::NotAuthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn deleting_unknown_poster_is_invalid_state() {
+        let fx = fixture().await;
+        let err = delete_poster(
+            TelegramId::from(1),
+            PosterId::from(99),
+            &fx.users,
+            &fx.posters,
+            &fx.configs,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::InvalidState(_)));
     }
 
     #[tokio::test]

@@ -65,6 +65,15 @@ impl PosterRepository for InMemoryPosterRepository {
         Ok(poster.clone())
     }
 
+    async fn delete(&self, id: PosterId) -> Result<(), Self::Err> {
+        self.posters
+            .write()
+            .await
+            .remove(id.as_ref())
+            .map(|_| ())
+            .ok_or(PosterRepositoryError::NotFound(id))
+    }
+
     async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err> {
         let mut posters = self.posters.write().await;
         let poster = posters
