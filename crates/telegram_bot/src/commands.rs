@@ -2310,14 +2310,35 @@ pub async fn handle_callback(
                                     ..session
                                 },
                             );
-                            format!("{sent} more — page {}.", session.next_page)
+                            // A fresh "More ➡" lands BELOW the new page —
+                            // the one that was clicked is buried above it.
+                            let summary = format!("{sent} more (page {}).", session.next_page);
+                            if let Err(e) = bot
+                                .send_message(chat, summary)
+                                .reply_markup(browse_more_keyboard())
+                                .await
+                            {
+                                tracing::warn!(
+                                    event = %Event::BrowseAlbumFailed, error = %e,
+                                    "browse page summary send failed"
+                                );
+                            }
+                            String::new()
                         }
                     }
                 }
             };
-            bot.answer_callback_query(query.id.clone())
-                .text(toast)
-                .await?;
+            // The clicked button is stale either way — remove it.
+            if let Some(message) = query.message.as_ref() {
+                let _ = bot
+                    .edit_message_reply_markup(message.chat().id, message.id())
+                    .await;
+            }
+            let mut answer = bot.answer_callback_query(query.id.clone());
+            if !toast.is_empty() {
+                answer = answer.text(toast);
+            }
+            answer.await?;
         }
         _ => {
             bot.answer_callback_query(query.id.clone()).await?;
