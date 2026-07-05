@@ -6,7 +6,6 @@
 //! across the whole process; otherwise per-consumer limiters multiply the
 //! budget.
 
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,12 +15,6 @@ use domain::elements::{
     post::Source,
     tag::Tag,
 };
-use governor::{
-    Quota, RateLimiter,
-    clock::DefaultClock,
-    middleware::NoOpMiddleware,
-    state::{InMemoryState, NotKeyed},
-};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use telemetry::{Event, Upstream};
@@ -29,11 +22,36 @@ use url::Url;
 
 const E621_BASE: &str = "https://e621.net";
 
-type Limiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
+/// Minimal request pacer: at most one permit per `min_interval`, waiters
+/// queue on the mutex in arrival order. Plain tokio time — no hardware
+/// clock calibration (replaced `governor`, whose quanta/TSC clock hung
+/// `until_ready()` on this host's kernel).
+struct Pacer {
+    min_interval: std::time::Duration,
+    next_slot: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl Pacer {
+    fn new(min_interval: std::time::Duration) -> Self {
+        Self {
+            min_interval,
+            next_slot: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn until_ready(&self) {
+        let mut next_slot = self.next_slot.lock().await;
+        let now = tokio::time::Instant::now();
+        let slot = next_slot.unwrap_or(now).max(now);
+        *next_slot = Some(slot + self.min_interval);
+        drop(next_slot);
+        tokio::time::sleep_until(slot).await;
+    }
+}
 
 pub struct RateLimitedE621Client {
     http: Client,
-    limiter: Arc<Limiter>,
+    limiter: Arc<Pacer>,
     user_agent: String,
 }
 
@@ -48,8 +66,8 @@ impl RateLimitedE621Client {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| FetchError::Network(e.to_string()))?;
-        let quota = Quota::per_second(NonZeroU32::new(2).expect("2 is nonzero"));
-        let limiter = Arc::new(RateLimiter::direct(quota));
+        // e621's published cap: 2 req/s.
+        let limiter = Arc::new(Pacer::new(std::time::Duration::from_millis(500)));
         Ok(Self {
             http,
             limiter,

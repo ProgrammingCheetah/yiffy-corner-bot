@@ -13,7 +13,6 @@
 //!
 //! Politeness: requests share a 1 req/s limiter — FA is scraped, not queried.
 
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,17 +20,36 @@ use domain::elements::{
     media::{MediaResolveError, MediaResolver, ResolvedMedia},
     post::Source,
 };
-use governor::{
-    Quota, RateLimiter,
-    clock::DefaultClock,
-    middleware::NoOpMiddleware,
-    state::{InMemoryState, NotKeyed},
-};
 use reqwest::Client;
 use telemetry::{Event, Upstream};
 use url::Url;
 
-type Limiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
+/// Minimal request pacer: at most one permit per `min_interval`, waiters
+/// queue on the mutex in arrival order. Plain tokio time — no hardware
+/// clock calibration (replaced `governor`, whose quanta/TSC clock hung
+/// `until_ready()` on this host's kernel).
+struct Pacer {
+    min_interval: std::time::Duration,
+    next_slot: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl Pacer {
+    fn new(min_interval: std::time::Duration) -> Self {
+        Self {
+            min_interval,
+            next_slot: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn until_ready(&self) {
+        let mut next_slot = self.next_slot.lock().await;
+        let now = tokio::time::Instant::now();
+        let slot = next_slot.unwrap_or(now).max(now);
+        *next_slot = Some(slot + self.min_interval);
+        drop(next_slot);
+        tokio::time::sleep_until(slot).await;
+    }
+}
 
 /// FA session cookie pair. Values of the `a` and `b` cookies of a logged-in
 /// session (the legacy bot's `cookie_a.txt` / `cookie_b.txt`).
@@ -43,7 +61,7 @@ pub struct FaCookies {
 
 pub struct FuraffinityResolver {
     http: Client,
-    limiter: Arc<Limiter>,
+    limiter: Arc<Pacer>,
     user_agent: String,
     cookies: Option<FaCookies>,
 }
@@ -59,10 +77,9 @@ impl FuraffinityResolver {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| MediaResolveError::Network(e.to_string()))?;
-        let quota = Quota::per_second(NonZeroU32::new(1).expect("1 is nonzero"));
         Ok(Self {
             http,
-            limiter: Arc::new(RateLimiter::direct(quota)),
+            limiter: Arc::new(Pacer::new(std::time::Duration::from_secs(1))),
             user_agent: user_agent.into(),
             cookies,
         })

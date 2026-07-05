@@ -7,12 +7,11 @@ edition = "2024"
 async-trait.workspace = true
 chrono.workspace = true
 domain = { version = "0.1.0", path = "../domain" }
-governor = "0.10.4"
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 telemetry = { version = "0.1.0", path = "../telemetry" }
 thiserror.workspace = true
-tokio = { version = "1.52.3", features = ["macros", "rt"] }
+tokio = { version = "1.52.3", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1.44"
 url.workspace = true
