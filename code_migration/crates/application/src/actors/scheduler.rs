@@ -81,12 +81,23 @@ where
         if !block.fires_for(&rt.poster.time_interval) {
             continue;
         }
-        let post = match rt.selector.find_post().await {
-            Ok(p) => p,
+        // Queue first (peeked user submissions), then the saved pool.
+        let due = match rt.selector.find_due_post().await {
+            Ok(due) => due,
             Err(e) => {
-                tracing::error!(poster_id = %rt.poster.id, error = %e, "selector failed");
+                tracing::error!(poster_id = %rt.poster.id, error = %e, "queue peek failed");
                 continue;
             }
+        };
+        let post = match due {
+            Some(p) => p,
+            None => match rt.selector.find_post().await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(poster_id = %rt.poster.id, error = %e, "selector failed");
+                    continue;
+                }
+            },
         };
         let media = match rt.resolver.resolve(&post.source).await {
             Ok(m) => m,
@@ -194,6 +205,21 @@ mod tests {
         }
         async fn find_post(&self) -> Result<Post, SelectorError> {
             Ok(self.0.clone())
+        }
+    }
+
+    /// Selector with a distinct queue (due) post and pool post.
+    struct TwoPoolSelector {
+        due: Option<Post>,
+        pool: Post,
+    }
+    #[async_trait]
+    impl PostSelectorStrategy for TwoPoolSelector {
+        async fn find_due_post(&self) -> Result<Option<Post>, SelectorError> {
+            Ok(self.due.clone())
+        }
+        async fn find_post(&self) -> Result<Post, SelectorError> {
+            Ok(self.pool.clone())
         }
     }
 
@@ -423,6 +449,48 @@ mod tests {
         assert_eq!(count_a.load(Ordering::SeqCst), 1);
         assert_eq!(count_b.load(Ordering::SeqCst), 1);
         assert_eq!(posts.marked.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn due_queue_post_is_preferred_over_pool() {
+        let (publisher, _, _) = counting_publisher();
+        let runtimes = vec![runtime_with(
+            make_poster(1, 5),
+            Box::new(TwoPoolSelector {
+                due: Some(make_post(1)),
+                pool: make_post(2),
+            }),
+            publisher,
+        )];
+        let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
+
+        run_tick(at_minute(5), &runtimes, &posts, &users)
+            .await
+            .unwrap();
+
+        assert_eq!(posts.marked.lock().unwrap()[0].0, PostId::from(1));
+    }
+
+    #[tokio::test]
+    async fn empty_queue_falls_back_to_pool() {
+        let (publisher, _, _) = counting_publisher();
+        let runtimes = vec![runtime_with(
+            make_poster(1, 5),
+            Box::new(TwoPoolSelector {
+                due: None,
+                pool: make_post(2),
+            }),
+            publisher,
+        )];
+        let posts = RecordingPostRepository::default();
+        let users = InMemoryUserRepository::new();
+
+        run_tick(at_minute(5), &runtimes, &posts, &users)
+            .await
+            .unwrap();
+
+        assert_eq!(posts.marked.lock().unwrap()[0].0, PostId::from(2));
     }
 
     #[tokio::test]

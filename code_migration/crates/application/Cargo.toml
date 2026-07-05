@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 domain.workspace = true
+rand = "0.10.2"
 thiserror.workspace = true
 tokio = { version = "1.52.2", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
 tracing = "0.1.44"
