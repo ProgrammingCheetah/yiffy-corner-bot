@@ -192,6 +192,7 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
         tags,
         file_url,
         preview_url,
+        artist_sources: raw.sources,
     })
 }
 
@@ -214,6 +215,8 @@ struct RawPost {
     preview: RawPreview,
     sample: Option<RawSample>,
     tags: RawTags,
+    #[serde(default)]
+    sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

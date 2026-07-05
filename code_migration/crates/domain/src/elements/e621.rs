@@ -21,6 +21,10 @@ pub struct E621PostMetadata {
     pub file_url: Url,
     /// A smaller URL suitable for moderation/browse previews.
     pub preview_url: Url,
+    /// The artist-declared off-site sources exactly as e621 reports them
+    /// (free-form strings, not always URLs). Feeds the browse "Check src"
+    /// button.
+    pub artist_sources: Vec<String>,
 }
 
 /// Sort order for [`E621Fetcher::search`] results.

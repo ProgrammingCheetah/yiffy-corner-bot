@@ -366,6 +366,50 @@ async fn resolve_target(
         .map_err(|e| e.to_string())
 }
 
+/// The artist's preferred off-site source, mirroring the legacy priority
+/// list; falls back to the first declared source.
+fn preferred_artist_source(sources: &[String]) -> Option<Url> {
+    const PREFERRED_HOSTS: [&str; 6] = [
+        "twitter.com",
+        "x.com",
+        "furaffinity.net",
+        "tumblr.com",
+        "deviantart.com",
+        "pixiv.net",
+    ];
+    let parsed: Vec<Url> = sources.iter().filter_map(|s| Url::parse(s).ok()).collect();
+    for host in PREFERRED_HOSTS {
+        if let Some(url) = parsed
+            .iter()
+            .find(|u| u.host_str().is_some_and(|h| h.ends_with(host)))
+        {
+            return Some(url.clone());
+        }
+    }
+    parsed.first().cloned()
+}
+
+/// The legacy 4-button browse keyboard: Send saves to the pool, the two URL
+/// buttons open e621 / the artist's source, Erase dismisses the preview.
+fn browse_keyboard(
+    e621_id: u64,
+    e621_url: &Url,
+    artist_sources: &[String],
+) -> InlineKeyboardMarkup {
+    let src = preferred_artist_source(artist_sources).unwrap_or_else(|| e621_url.clone());
+    InlineKeyboardMarkup::new([
+        vec![InlineKeyboardButton::callback(
+            "Send",
+            format!("browse:send:{e621_id}"),
+        )],
+        vec![
+            InlineKeyboardButton::url("Check e621 Src", e621_url.clone()),
+            InlineKeyboardButton::url("Check src", src),
+        ],
+        vec![InlineKeyboardButton::callback("Erase", "browse:erase")],
+    ])
+}
+
 async fn handle_browse(
     bot: &Bot,
     chat: ChatId,
@@ -373,7 +417,7 @@ async fn handle_browse(
     actor: TelegramId,
     arg: &str,
 ) -> String {
-    use teloxide::types::{InputFile, InputMedia, InputMediaPhoto};
+    use teloxide::types::InputFile;
 
     let tags: Vec<Tag> = arg.split_whitespace().map(Tag::from).collect();
     match browse::search(
@@ -391,31 +435,34 @@ async fn handle_browse(
     {
         Ok(results) if results.is_empty() => "No matching e621 posts.".to_string(),
         Ok(results) => {
-            // A set of images, like the legacy bot: one album, each photo
-            // captioned with its e621 URL (that's what /save takes).
-            let album: Vec<InputMedia> = results
-                .iter()
-                .take(5)
-                .map(|metadata| {
-                    InputMedia::Photo(
-                        InputMediaPhoto::new(InputFile::url(metadata.preview_url.clone()))
-                            .caption(metadata.source.as_ref().to_string()),
-                    )
-                })
-                .collect();
-            match bot.send_media_group(chat, album).await {
-                Ok(_) => "Save one with /save <url> — each photo's caption is its URL.".to_string(),
-                Err(e) => {
-                    tracing::warn!(
-                        event = %Event::BrowseAlbumFailed, error = %e,
-                        "browse album send failed; falling back to links"
-                    );
-                    let mut lines = vec![format!("Couldn't send previews ({e}); links instead:")];
-                    for metadata in results.iter().take(5) {
-                        lines.push(metadata.source.as_ref().to_string());
-                    }
-                    lines.join("\n")
+            // Like the legacy bot: each result is its own photo with the
+            // Send / sources / Erase keyboard.
+            let mut sent = 0usize;
+            for metadata in results.iter().take(5) {
+                let e621_url = metadata.source.as_ref();
+                let Some(e621_id) = e621_url
+                    .path_segments()
+                    .and_then(|mut s| s.nth(1))
+                    .and_then(|id| id.parse::<u64>().ok())
+                else {
+                    continue;
+                };
+                match bot
+                    .send_photo(chat, InputFile::url(metadata.preview_url.clone()))
+                    .reply_markup(browse_keyboard(e621_id, e621_url, &metadata.artist_sources))
+                    .await
+                {
+                    Ok(_) => sent += 1,
+                    Err(e) => tracing::warn!(
+                        event = %Event::BrowseAlbumFailed, source = %e621_url, error = %e,
+                        "browse preview send failed"
+                    ),
                 }
+            }
+            if sent == 0 {
+                "Couldn't send any previews — check the logs.".to_string()
+            } else {
+                format!("{sent} results — Send saves to the pool, Erase dismisses.")
             }
         }
         Err(e) => describe(e),
@@ -798,37 +845,72 @@ pub async fn handle_callback(
         bot.answer_callback_query(query.id).await?;
         return Ok(());
     };
-    let outcome = match data.split(':').collect::<Vec<_>>()[..] {
-        ["mod", verb @ ("approve" | "reject"), id] => match parse_post_id(id) {
-            Some(post_id) => {
-                let cmd = ModerateCommand { actor, post_id };
-                let result = if verb == "approve" {
-                    moderate::approve(cmd, &state.users, &state.posts).await
-                } else {
-                    moderate::reject(cmd, &state.users, &state.posts).await
-                };
-                match result {
-                    Ok(post) => format!("Post #{} → {:?}", post.id, post.status),
-                    Err(e) => describe(e),
+    match data.split(':').collect::<Vec<_>>()[..] {
+        ["mod", verb @ ("approve" | "reject"), id] => {
+            let outcome = match parse_post_id(id) {
+                Some(post_id) => {
+                    let cmd = ModerateCommand { actor, post_id };
+                    let result = if verb == "approve" {
+                        moderate::approve(cmd, &state.users, &state.posts).await
+                    } else {
+                        moderate::reject(cmd, &state.users, &state.posts).await
+                    };
+                    match result {
+                        Ok(post) => format!("Post #{} → {:?}", post.id, post.status),
+                        Err(e) => describe(e),
+                    }
                 }
+                None => "Malformed callback.".to_string(),
+            };
+            bot.answer_callback_query(query.id.clone()).await?;
+            // Reflect the decision on the DM itself so the buttons disappear.
+            if let Some(message) = query.message.as_ref() {
+                let text = format!(
+                    "{}\n\n{outcome}",
+                    message
+                        .regular_message()
+                        .and_then(|m| m.text())
+                        .unwrap_or("")
+                );
+                bot.edit_message_text(message.chat().id, message.id(), text)
+                    .await?;
             }
-            None => "Malformed callback.".to_string(),
-        },
-        _ => "Unknown action.".to_string(),
-    };
+        }
+        // Legacy browse buttons: any press dismisses the preview message;
+        // Send additionally saves the post into the pool.
+        ["browse", "erase"] => {
+            bot.answer_callback_query(query.id.clone()).await?;
+            if let Some(message) = query.message.as_ref() {
+                let _ = bot.delete_message(message.chat().id, message.id()).await;
+            }
+        }
+        ["browse", "send", id] => {
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
 
-    bot.answer_callback_query(query.id.clone()).await?;
-    // Reflect the decision on the DM itself so the buttons disappear.
-    if let Some(message) = query.message.as_ref() {
-        let text = format!(
-            "{}\n\n{outcome}",
-            message
-                .regular_message()
-                .and_then(|m| m.text())
-                .unwrap_or("")
-        );
-        bot.edit_message_text(message.chat().id, message.id(), text)
-            .await?;
+            let toast = match id
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| Url::parse(&format!("https://e621.net/posts/{id}")).ok())
+            {
+                Some(url) => {
+                    match browse::save(SaveCommand { actor, url }, &state.users, &state.posts).await
+                    {
+                        Ok(post) => format!("Saved to the pool as #{}.", post.id),
+                        Err(e) => describe(e),
+                    }
+                }
+                None => "Malformed callback.".to_string(),
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
+            if let Some(message) = query.message.as_ref() {
+                let _ = bot.delete_message(message.chat().id, message.id()).await;
+            }
+        }
+        _ => {
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
     }
     Ok(())
 }

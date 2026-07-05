@@ -160,6 +160,7 @@ mod tests {
             tags: tags.iter().map(|t| Tag::from(*t)).collect(),
             file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
             preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
+            artist_sources: vec![],
         }
     }
 
