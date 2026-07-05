@@ -72,6 +72,7 @@ vocabulary! {
         TagPolicyChanged => "tag_policy_changed",
         BrowseQueried => "browse_queried",
         BrowseResults => "browse_results",
+        BrowseAlbumFailed => "browse_album_failed",
         PoolSaved => "pool_saved",
 
         // Posters

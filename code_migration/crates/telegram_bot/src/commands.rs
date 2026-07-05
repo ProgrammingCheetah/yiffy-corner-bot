@@ -190,7 +190,7 @@ pub async fn handle_command(
         },
         Command::Ban(arg) => ban_reply(&bot, &state, actor, &arg, true).await,
         Command::Unban(arg) => ban_reply(&bot, &state, actor, &arg, false).await,
-        Command::Browse(arg) => handle_browse(&state, actor, &arg).await,
+        Command::Browse(arg) => handle_browse(&bot, msg.chat.id, &state, actor, &arg).await,
         Command::Save(arg) => match Url::parse(arg.trim()) {
             Ok(url) => {
                 match browse::save(SaveCommand { actor, url }, &state.users, &state.posts).await {
@@ -366,7 +366,15 @@ async fn resolve_target(
         .map_err(|e| e.to_string())
 }
 
-async fn handle_browse(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+async fn handle_browse(
+    bot: &Bot,
+    chat: ChatId,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+) -> String {
+    use teloxide::types::{InputFile, InputMedia, InputMediaPhoto};
+
     let tags: Vec<Tag> = arg.split_whitespace().map(Tag::from).collect();
     match browse::search(
         BrowseCommand {
@@ -383,11 +391,32 @@ async fn handle_browse(state: &SharedState, actor: TelegramId, arg: &str) -> Str
     {
         Ok(results) if results.is_empty() => "No matching e621 posts.".to_string(),
         Ok(results) => {
-            let mut lines = vec!["Save one with /save <url>:".to_string()];
-            for metadata in results.iter().take(5) {
-                lines.push(metadata.source.as_ref().to_string());
+            // A set of images, like the legacy bot: one album, each photo
+            // captioned with its e621 URL (that's what /save takes).
+            let album: Vec<InputMedia> = results
+                .iter()
+                .take(5)
+                .map(|metadata| {
+                    InputMedia::Photo(
+                        InputMediaPhoto::new(InputFile::url(metadata.preview_url.clone()))
+                            .caption(metadata.source.as_ref().to_string()),
+                    )
+                })
+                .collect();
+            match bot.send_media_group(chat, album).await {
+                Ok(_) => "Save one with /save <url> — each photo's caption is its URL.".to_string(),
+                Err(e) => {
+                    tracing::warn!(
+                        event = %Event::BrowseAlbumFailed, error = %e,
+                        "browse album send failed; falling back to links"
+                    );
+                    let mut lines = vec![format!("Couldn't send previews ({e}); links instead:")];
+                    for metadata in results.iter().take(5) {
+                        lines.push(metadata.source.as_ref().to_string());
+                    }
+                    lines.join("\n")
+                }
             }
-            lines.join("\n")
         }
         Err(e) => describe(e),
     }

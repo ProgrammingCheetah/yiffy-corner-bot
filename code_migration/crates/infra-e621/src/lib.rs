@@ -157,11 +157,13 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
         .file
         .url
         .ok_or_else(|| FetchError::Parse("post has no file.url".into()))?;
+    // Prefer the ~850px sample over the 150px thumbnail — this URL feeds
+    // browse albums and moderation previews, where a thumbnail is useless.
     let preview_url = raw
-        .preview
-        .url
-        .clone()
-        .or_else(|| raw.sample.as_ref().and_then(|s| s.url.clone()))
+        .sample
+        .as_ref()
+        .and_then(|s| s.url.clone())
+        .or_else(|| raw.preview.url.clone())
         .unwrap_or_else(|| file_url.clone());
 
     let source_url = Url::parse(&format!("{E621_BASE}/posts/{}", raw.id))
