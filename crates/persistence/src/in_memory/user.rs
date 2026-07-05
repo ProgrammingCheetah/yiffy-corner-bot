@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 #[derive(Default)]
 pub struct InMemoryUserRepository {
     users: RwLock<HashMap<u64, User>>,
+    tokens: RwLock<HashMap<String, UserId>>,
     next_id: AtomicU64,
 }
 
@@ -92,6 +93,27 @@ impl UserRepository for InMemoryUserRepository {
             .ok_or_else(|| UserRepositoryError::NotChanged("user not found".into()))?;
         user.is_banned = banned;
         Ok(())
+    }
+
+    async fn set_api_token(
+        &self,
+        id: UserId,
+        token: Option<String>,
+    ) -> Result<(), UserRepositoryError> {
+        let mut tokens = self.tokens.write().await;
+        tokens.retain(|_, owner| *owner != id);
+        if let Some(token) = token {
+            tokens.insert(token, id);
+        }
+        Ok(())
+    }
+
+    async fn find_by_api_token(&self, token: &str) -> Result<Option<User>, UserRepositoryError> {
+        let tokens = self.tokens.read().await;
+        let Some(owner) = tokens.get(token) else {
+            return Ok(None);
+        };
+        Ok(self.users.read().await.get(owner.as_ref()).cloned())
     }
 
     async fn list_by_role(&self, role: Role) -> Result<Vec<User>, UserRepositoryError> {

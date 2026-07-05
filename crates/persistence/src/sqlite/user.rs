@@ -116,6 +116,32 @@ impl UserRepository for SqliteUserRepository {
         Ok(())
     }
 
+    async fn set_api_token(
+        &self,
+        id: UserId,
+        token: Option<String>,
+    ) -> Result<(), UserRepositoryError> {
+        let result = sqlx::query("UPDATE users SET api_token = ? WHERE id = ?")
+            .bind(token)
+            .bind(*id.as_ref() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| UserRepositoryError::NotChanged(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(UserRepositoryError::NotChanged("user not found".into()));
+        }
+        Ok(())
+    }
+
+    async fn find_by_api_token(&self, token: &str) -> Result<Option<User>, UserRepositoryError> {
+        let row = sqlx::query("SELECT * FROM users WHERE api_token = ?")
+            .bind(token)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| UserRepositoryError::NotChanged(e.to_string()))?;
+        Ok(row.as_ref().map(row_to_user).transpose()?)
+    }
+
     async fn list_by_role(&self, role: Role) -> Result<Vec<User>, UserRepositoryError> {
         let rows = sqlx::query("SELECT * FROM users WHERE role = ? ORDER BY id")
             .bind(role.to_string())

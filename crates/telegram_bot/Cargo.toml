@@ -10,13 +10,19 @@ async-trait.workspace = true
 axum = "0.8.9"
 chrono.workspace = true
 domain.workspace = true
+hex = "0.4.3"
+hmac = "0.13.0"
 infra-e621 = { version = "0.1.0", path = "../infra-e621" }
 infra-fixup = { version = "0.1.0", path = "../infra-fixup" }
 infra-furaffinity = { version = "0.1.0", path = "../infra-furaffinity" }
 persistence = { version = "0.1.0", path = "../persistence" }
+serde = "1.0.228"
+serde_json = "1.0.150"
+sha2 = "0.11.0"
 telemetry = { version = "0.1.0", path = "../telemetry" }
 teloxide = { version = "0.17.0", default-features = false, features = ["macros", "ctrlc_handler", "rustls"] }
 tokio = { version = "1.52.2", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower-http = { version = "0.7.0", features = ["fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url.workspace = true

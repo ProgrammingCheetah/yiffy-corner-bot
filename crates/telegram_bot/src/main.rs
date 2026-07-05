@@ -3,6 +3,7 @@ mod commands;
 mod publishers;
 mod resolvers;
 mod state;
+mod web;
 
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use persistence::sqlite::{
     user::SqliteUserRepository,
 };
 use teloxide::{Bot, prelude::*, utils::command::BotCommands as _};
+use url::Url;
 
 use telemetry::Event;
 
@@ -192,10 +194,45 @@ async fn main() -> anyhow::Result<()> {
     // Announcement cycle (channel directory broadcasts).
     tokio::spawn(announcer::run(state.clone(), bot.clone()));
 
-    // Health endpoint for container checks.
+    // WebApp menu button (Mini App entry point) when a public URL is set.
+    if let Some(url) = &config.webapp_url {
+        use teloxide::types::{MenuButton, WebAppInfo};
+        match Url::parse(url) {
+            Ok(parsed) => {
+                let result = bot
+                    .set_chat_menu_button()
+                    .menu_button(MenuButton::WebApp {
+                        text: "Open App".to_string(),
+                        web_app: WebAppInfo { url: parsed },
+                    })
+                    .await;
+                if let Err(e) = result {
+                    tracing::warn!(error = %e, "set_chat_menu_button failed");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, url, "YCB_WEBAPP_URL is not a URL"),
+        }
+    }
+
+    // One HTTP server: health check, the Mini App API, and the static
+    // SvelteKit bundle (when built).
+    let web_state = Arc::new(web::WebState {
+        app: state.clone(),
+        bot: bot.clone(),
+        bot_token: main_token.clone(),
+    });
+    let webapp_dir = config.webapp_dir.clone().filter(|dir| {
+        let ok = dir.join("index.html").exists();
+        if !ok {
+            tracing::warn!(dir = %dir.display(), "webapp dir has no index.html — API only");
+        }
+        ok
+    });
     let health_addr = config.health_addr.clone();
     tokio::spawn(async move {
-        let app = Router::new().route("/health", get(health));
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(web::router(web_state, webapp_dir));
         match tokio::net::TcpListener::bind(&health_addr).await {
             Ok(listener) => {
                 tracing::info!(event = %Event::HealthServerUp, addr = %health_addr, "health endpoint listening");

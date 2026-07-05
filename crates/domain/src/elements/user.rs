@@ -131,6 +131,13 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<(), UserRepositoryError>;
     /// Ban/unban a User from submitting. Moderator+ capability.
     async fn set_banned(&self, id: UserId, banned: bool) -> Result<(), UserRepositoryError>;
+    /// Rotate (or clear) the user's personal API token.
+    async fn set_api_token(
+        &self,
+        id: UserId,
+        token: Option<String>,
+    ) -> Result<(), UserRepositoryError>;
+    async fn find_by_api_token(&self, token: &str) -> Result<Option<User>, UserRepositoryError>;
     /// All users with the given role. Used by `/suggest` to fan out the
     /// moderation DM to every Moderator + Owner.
     async fn list_by_role(&self, role: Role) -> Result<Vec<User>, UserRepositoryError>;

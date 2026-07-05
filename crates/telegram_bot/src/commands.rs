@@ -112,6 +112,8 @@ pub enum Command {
     Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
     Posters,
+    #[command(description = "personal token for the browser userscript (rotates on each use)")]
+    Apitoken,
     #[command(description = "channel directory broadcasts: /announcements <hours|now|off> (owner)")]
     Announcements(String),
     #[command(
@@ -160,6 +162,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Delrules(_) => "delrules",
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
+        Command::Apitoken => "apitoken",
         Command::Announcements(_) => "announcements",
         Command::Spotlight(_) => "spotlight",
         Command::Announcemute(_) => "announcemute",
@@ -243,7 +246,6 @@ async fn complete_moderation_dialogue(
     text: &str,
 ) -> String {
     use crate::state::ModerationDialogue;
-    use domain::elements::user::UserRepository as _;
 
     match dialogue {
         ModerationDialogue::RejectReason(post_id) => {
@@ -252,46 +254,7 @@ async fn complete_moderation_dialogue(
                 return "Empty reason — post left untouched. Press the button again to retry."
                     .to_string();
             }
-            match moderate::reject(
-                ModerateCommand { actor, post_id },
-                &state.users,
-                &state.posts,
-            )
-            .await
-            {
-                Err(e) => describe(e),
-                Ok(post) => {
-                    // Relay the reason to the submitter.
-                    let notified = match post.submitted_by {
-                        None => false,
-                        Some(user_id) => match state.users.find_by_id(user_id).await {
-                            Ok(Some(user)) => bot
-                                .send_message(
-                                    ChatId(*user.telegram_id.as_ref()),
-                                    format!(
-                                        "Your submission #{post_id} was rejected by the \
-                                         moderators.\nReason: {reason}"
-                                    ),
-                                )
-                                .await
-                                .is_ok(),
-                            _ => false,
-                        },
-                    };
-                    if notified {
-                        tracing::info!(
-                            event = %Event::SubmitterNotified, post_id = %post_id,
-                            "rejection reason relayed to submitter"
-                        );
-                        format!("Post #{post_id} rejected — the submitter was told why.")
-                    } else {
-                        format!(
-                            "Post #{post_id} rejected. (Couldn't DM the submitter — they may \
-                             not have a chat open with the bot.)"
-                        )
-                    }
-                }
-            }
+            reject_with_reason(bot, state, actor, post_id, reason).await
         }
         ModerationDialogue::ExtraTags(post_id) => {
             let extra: Vec<Tag> = text.split_whitespace().map(Tag::from).collect();
@@ -317,6 +280,58 @@ async fn complete_moderation_dialogue(
                         post.tags.len()
                     )
                 }
+            }
+        }
+    }
+}
+
+/// Reject + relay the reason to the submitter. Shared by the DM dialogue
+/// and the web app.
+pub(crate) async fn reject_with_reason(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    post_id: PostId,
+    reason: &str,
+) -> String {
+    use domain::elements::user::UserRepository as _;
+
+    match moderate::reject(
+        ModerateCommand { actor, post_id },
+        &state.users,
+        &state.posts,
+    )
+    .await
+    {
+        Err(e) => describe(e),
+        Ok(post) => {
+            let notified = match post.submitted_by {
+                None => false,
+                Some(user_id) => match state.users.find_by_id(user_id).await {
+                    Ok(Some(user)) => bot
+                        .send_message(
+                            ChatId(*user.telegram_id.as_ref()),
+                            format!(
+                                "Your submission #{post_id} was rejected by the \
+                                 moderators.\nReason: {reason}"
+                            ),
+                        )
+                        .await
+                        .is_ok(),
+                    _ => false,
+                },
+            };
+            if notified {
+                tracing::info!(
+                    event = %Event::SubmitterNotified, post_id = %post_id,
+                    "rejection reason relayed to submitter"
+                );
+                format!("Post #{post_id} rejected — the submitter was told why.")
+            } else {
+                format!(
+                    "Post #{post_id} rejected. (Couldn't DM the submitter — they may \
+                     not have a chat open with the bot.)"
+                )
             }
         }
     }
@@ -478,6 +493,7 @@ pub async fn handle_command(
         Command::Delrules(arg) => handle_delrules(&bot, &state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
+        Command::Apitoken => handle_apitoken(&state, &msg, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
         Command::Spotlight(arg) => handle_spotlight(&bot, &state, actor, &arg).await,
         Command::Announcemute(arg) => handle_announce_mute(&bot, &state, actor, &arg, true).await,
@@ -510,10 +526,10 @@ fn no_preview() -> LinkPreviewOptions {
 /// copies for forwards, text for links), tag prompting (pending state), and
 /// rejections. Returns the reply for the submitter.
 /// Who is submitting, as Telegram sees them at this moment.
-struct Submitter {
-    id: TelegramId,
-    display_name: Option<String>,
-    username: Option<String>,
+pub(crate) struct Submitter {
+    pub(crate) id: TelegramId,
+    pub(crate) display_name: Option<String>,
+    pub(crate) username: Option<String>,
 }
 
 impl From<&TgUser> for Submitter {
@@ -526,7 +542,7 @@ impl From<&TgUser> for Submitter {
     }
 }
 
-async fn submit(
+pub(crate) async fn submit(
     bot: &Bot,
     state: &SharedState,
     submitter: Submitter,
@@ -767,7 +783,7 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
     Ok(())
 }
 
-fn parse_post_id(arg: &str) -> Option<PostId> {
+pub(crate) fn parse_post_id(arg: &str) -> Option<PostId> {
     arg.trim()
         .trim_start_matches('#')
         .parse::<u64>()
@@ -791,7 +807,7 @@ fn describe_user(user: &Option<domain::elements::user::User>) -> String {
 /// The caption header code (`#7K3M9QZA`) is derived, not stored: recompute
 /// it for every (feed entry, poster) pair until one matches. Owner-command
 /// scale — a few thousand hashes at worst.
-async fn resolve_publish_code(state: &SharedState, raw: &str) -> Option<PostId> {
+pub(crate) async fn resolve_publish_code(state: &SharedState, raw: &str) -> Option<PostId> {
     use application::actors::scheduler::publish_code;
     use domain::elements::post::PostRepository as _;
     use domain::elements::poster::PosterRepository as _;
@@ -915,7 +931,7 @@ async fn handle_postinfo(state: &SharedState, actor: TelegramId, arg: &str) -> S
 /// or will be, or won't ever be — published there. Judged with the same
 /// `refusal_for` the live selector uses, against the entry's CURRENT
 /// effective tags.
-async fn poster_verdicts(
+pub(crate) async fn poster_verdicts(
     state: &SharedState,
     post: &domain::elements::post::Post,
     publications: &[domain::elements::publisher::Publication],
@@ -1076,7 +1092,7 @@ async fn ban_reply(
     }
 }
 
-async fn resolve_target(
+pub(crate) async fn resolve_target(
     resolver: &BotUserResolver,
     arg: &str,
 ) -> Result<Option<TelegramId>, String> {
@@ -1186,7 +1202,7 @@ async fn complete_direct_save(
 
 /// Good news travels: tell the submitter their post made it into the feed.
 /// (Rejections stay silent unless the moderator used Reject-with-reason.)
-async fn notify_submitter_approved(
+pub(crate) async fn notify_submitter_approved(
     bot: &Bot,
     state: &SharedState,
     post: &domain::elements::post::Post,
@@ -1494,7 +1510,7 @@ async fn handle_setrole(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
 /// Parse a subscription tag list: bare tags (all required), `(a b)` OR-groups
 /// (at least one hit per group), and top-level `-tag` (forbidden). A `-tag`
 /// inside a group stays part of that group's disjunction.
-fn parse_tag_lists<'a>(
+pub(crate) fn parse_tag_lists<'a>(
     parts: impl Iterator<Item = &'a str>,
 ) -> Result<(Vec<domain::elements::tag_rule::TagTerm>, Vec<Tag>), String> {
     use domain::elements::tag_rule::{TagLiteral, TagTerm};
@@ -1520,7 +1536,7 @@ fn parse_tag_lists<'a>(
 
 /// Resolve a poster reference: `#7`/`7` = poster id; `@channel` or a
 /// (negative) chat id = every poster bound to that chat.
-async fn resolve_posters(
+pub(crate) async fn resolve_posters(
     bot: &Bot,
     state: &SharedState,
     token: &str,
@@ -1558,7 +1574,7 @@ async fn resolve_posters(
 
 /// One readable block per poster — every management command answers with
 /// the poster's full picture instead of a one-line prose summary.
-async fn poster_summary(
+pub(crate) async fn poster_summary(
     state: &SharedState,
     poster: &domain::elements::poster::Poster,
     headline: &str,
@@ -2249,6 +2265,49 @@ async fn handle_announce_mute(
         Ok(_) => format!("Chat {chat_id} receives announcements again."),
         Err(e) => describe(e),
     }
+}
+
+/// Mint (rotating) the caller's personal API token for out-of-Telegram
+/// clients — the Tampermonkey userscript authenticates with it.
+async fn handle_apitoken(state: &SharedState, msg: &Message, actor: TelegramId) -> String {
+    use domain::elements::user::{Role, UserRepository as _};
+    use sha2::{Digest, Sha256};
+
+    if !msg.chat.is_private() {
+        return "Run /apitoken in a private chat — the token is a secret.".to_string();
+    }
+    let user = match state.users.find_by_telegram_id(actor).await {
+        Ok(Some(user)) => user,
+        Ok(None) => match state.users.create(actor, Role::User, None, None).await {
+            Ok(user) => user,
+            Err(e) => return e.to_string(),
+        },
+        Err(e) => return e.to_string(),
+    };
+    let bot_token = crate::state::read_secret(&state.config.token_path()).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(bot_token.as_bytes());
+    hasher.update(actor.as_ref().to_le_bytes());
+    hasher.update(
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .to_le_bytes(),
+    );
+    let token = format!("ycb_{}", hex::encode(&hasher.finalize()[..20]));
+    if let Err(e) = state
+        .users
+        .set_api_token(user.id, Some(token.clone()))
+        .await
+    {
+        return e.to_string();
+    }
+    tracing::info!(event = %Event::ApiTokenIssued, user_id = %user.id, "api token rotated");
+    format!(
+        "Your API token (any previous one is now dead):\n\n{token}\n\n\
+         Paste it into the userscript settings. Treat it like a password — \
+         it acts with your role."
+    )
 }
 
 async fn handle_posters(state: &SharedState, actor: TelegramId) -> String {

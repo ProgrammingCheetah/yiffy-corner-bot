@@ -42,6 +42,8 @@ vocabulary! {
         PosterUnbound => "poster_unbound",
         FaCookiesMissing => "fa_cookies_missing",
         HealthServerUp => "health_server_up",
+        ApiTokenIssued => "api_token_issued",
+        WebRequestDenied => "web_request_denied",
         HealthServerFailed => "health_server_failed",
 
         // Users & permissions

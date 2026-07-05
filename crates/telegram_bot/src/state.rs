@@ -35,6 +35,10 @@ pub struct AppConfig {
     pub database_url: String,
     pub owner_id: TelegramId,
     pub health_addr: String,
+    /// Public HTTPS URL of the Mini App (sets the bot's menu button).
+    pub webapp_url: Option<String>,
+    /// Directory with the built SvelteKit bundle to serve.
+    pub webapp_dir: Option<PathBuf>,
 }
 
 impl AppConfig {
@@ -54,11 +58,21 @@ impl AppConfig {
             .unwrap_or(1402476143);
         let health_addr =
             std::env::var("YCB_HEALTH_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+        let webapp_url = std::env::var("YCB_WEBAPP_URL")
+            .ok()
+            .filter(|v| !v.is_empty());
+        let webapp_dir = std::env::var("YCB_WEBAPP_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from("webapp/build")));
         Self {
             vault_env_dir: vault_root.join(env),
             database_url,
             owner_id: TelegramId::from(owner_id),
             health_addr,
+            webapp_url,
+            webapp_dir,
         }
     }
 
