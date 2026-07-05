@@ -503,21 +503,43 @@ async fn suggest_post(
 ) -> ApiResult {
     let authed = authenticate(&state, &headers).await?;
     let url = Url::parse(&body.url).map_err(bad_request)?;
+    let tags = parse_tags(&body.tags);
+
+    // Curators don't review themselves: Moderator+ submissions take the
+    // /save path — straight into the feed, no queue, no "Submitted by"
+    // (admin adds carry no submitter attribution).
+    if authed.user.role >= Role::Moderator {
+        return match browse::save(
+            browse::SaveCommand {
+                actor: authed.user.telegram_id,
+                url,
+                tags,
+            },
+            &state.app.users,
+            &state.app.posts,
+            &*state.app.e621,
+            &state.app.forbidden,
+        )
+        .await
+        .map_err(bad_request)?
+        {
+            browse::SaveOutcome::TagsNeeded => {
+                Err(err(StatusCode::UNPROCESSABLE_ENTITY, "tags_needed"))
+            }
+            browse::SaveOutcome::Added(post) => Ok(Json(json!({
+                "message": format!("Saved straight into the feed as post #{} — no review needed.", post.id),
+                "post_id": post.id.as_ref(),
+            }))),
+        };
+    }
+
     let submitter = Submitter {
         id: authed.user.telegram_id,
         display_name: authed.user.display_name.clone(),
         username: None,
     };
     // The shared pipeline handles review-DM fan-out to moderators.
-    let message = submit(
-        &state.bot,
-        &state.app,
-        submitter,
-        url,
-        parse_tags(&body.tags),
-        None,
-    )
-    .await;
+    let message = submit(&state.bot, &state.app, submitter, url, tags, None).await;
     Ok(Json(json!({ "message": message })))
 }
 
