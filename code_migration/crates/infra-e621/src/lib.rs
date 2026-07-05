@@ -152,6 +152,18 @@ fn extract_post_id(source: &Source) -> Option<u64> {
     segments.get(idx + 1)?.parse().ok()
 }
 
+/// Entries e621 keeps in the artist bucket that are NOT artists.
+const NON_ARTIST_TAGS: &[&str] = &[
+    "conditional_dnp",
+    "avoid_posting",
+    "unknown_artist",
+    "unknown_artist_signature",
+    "anonymous_artist",
+    "third-party_edit",
+    "sound_warning",
+    "epilepsy_warning",
+];
+
 fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
     let file_url = raw
         .file
@@ -170,6 +182,14 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
         .map_err(|e| FetchError::Parse(e.to_string()))?;
     let source = Source::try_from(source_url)
         .map_err(|e| FetchError::Parse(format!("source rejected: {e}")))?;
+
+    let artists: Vec<Tag> = raw
+        .tags
+        .artist
+        .iter()
+        .filter(|name| !NON_ARTIST_TAGS.contains(&name.to_ascii_lowercase().as_str()))
+        .map(|name| Tag::from(name.as_str()))
+        .collect();
 
     let mut tags: Vec<Tag> = Vec::new();
     for bucket in [
@@ -190,6 +210,7 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
     Ok(E621PostMetadata {
         source,
         tags,
+        artists,
         file_url,
         preview_url,
         artist_sources: raw.sources,
@@ -274,6 +295,21 @@ mod tests {
     fn extract_post_id_returns_none_for_non_post_url() {
         let s = Source::try_from(Url::parse("https://e621.net/").unwrap()).unwrap();
         assert_eq!(extract_post_id(&s), None);
+    }
+
+    #[test]
+    fn artist_bucket_markers_are_not_artists() {
+        let raw: RawPost = serde_json::from_str(
+            r#"{"id":1,"file":{"url":"https://static1.e621.net/data/a.png"},
+                "preview":{"url":null},"sample":null,
+                "tags":{"artist":["coolwolf","conditional_dnp","Unknown_Artist"],"general":["wolf"]},
+                "sources":[]}"#,
+        )
+        .unwrap();
+        let metadata = metadata_from_raw(raw).unwrap();
+        assert_eq!(metadata.artists, vec![Tag::from("coolwolf")]);
+        // The full tag list still carries everything (policy checks need it).
+        assert!(metadata.tags.contains(&Tag::from("conditional_dnp")));
     }
 
     #[test]

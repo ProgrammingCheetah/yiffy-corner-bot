@@ -32,6 +32,7 @@ impl PostRepository for InMemoryPostRepository {
         &self,
         source: Source,
         tags: Vec<Tag>,
+        artists: Vec<Tag>,
         submitted_by: Option<UserId>,
         submitted_at: DateTime<Utc>,
         status: PostStatus,
@@ -43,6 +44,7 @@ impl PostRepository for InMemoryPostRepository {
             source,
             status,
             tags,
+            artists,
             feed_position: None,
             last_posted: None,
             submitted_by,
@@ -161,6 +163,7 @@ mod tests {
         repo.create(
             source(1),
             vec![Tag::from("wolf")],
+            vec![],
             None,
             Utc::now(),
             PostStatus::AwaitingModeration,
@@ -184,7 +187,14 @@ mod tests {
         let repo = InMemoryPostRepository::new();
         let a = create_default(&repo).await;
         let b = repo
-            .create(source(2), vec![], None, Utc::now(), PostStatus::Accepted)
+            .create(
+                source(2),
+                vec![],
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
             .await
             .unwrap();
         assert_ne!(a.id, b.id);
@@ -241,6 +251,7 @@ mod tests {
             .create(
                 source(2),
                 vec![],
+                vec![],
                 None,
                 Utc::now(),
                 PostStatus::AwaitingModeration,
@@ -278,6 +289,7 @@ mod tests {
             let p = repo
                 .create(
                     source(i),
+                    vec![],
                     vec![],
                     None,
                     Utc::now(),

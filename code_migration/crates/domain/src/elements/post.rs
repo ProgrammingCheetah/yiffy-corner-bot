@@ -176,6 +176,9 @@ pub struct Post {
     pub status: PostStatus,
     /// Curated tags (e621: API tags at submission; other sources: submitter's).
     pub tags: Vec<Tag>,
+    /// The credited artists (e621 artist bucket, non-artist markers removed).
+    /// Empty for sources without artist metadata.
+    pub artists: Vec<Tag>,
     /// Position in the feed; `None` until accepted into it.
     pub feed_position: Option<u64>,
     /// When this Post was most recently published by a Poster. `None` if never.
@@ -208,6 +211,7 @@ pub trait PostRepository: Send + Sync {
         &self,
         source: Source,
         tags: Vec<Tag>,
+        artists: Vec<Tag>,
         submitted_by: Option<UserId>,
         submitted_at: DateTime<Utc>,
         status: PostStatus,

@@ -104,7 +104,7 @@ where
 
     // Every feed entry is tagged: e621 tags come from the API (merged with
     // any extras the submitter supplied); other sources need submitter tags.
-    let tags = match &source {
+    let (tags, artists) = match &source {
         Source::E621(_) => {
             let metadata = e621
                 .fetch(&source)
@@ -116,7 +116,7 @@ where
                     tags.push(extra);
                 }
             }
-            tags
+            (tags, metadata.artists)
         }
         _ if cmd.tags.is_empty() => {
             tracing::info!(
@@ -126,7 +126,7 @@ where
             );
             return Ok(SuggestOutcome::TagsNeeded);
         }
-        _ => cmd.tags,
+        _ => (cmd.tags, Vec::new()),
     };
 
     // Tag-check at the door: a globally forbidden tag auto-Bans (cached
@@ -149,7 +149,14 @@ where
     };
 
     let post = posts
-        .create(source, tags, Some(submitter.id), Utc::now(), status.clone())
+        .create(
+            source,
+            tags,
+            artists,
+            Some(submitter.id),
+            Utc::now(),
+            status.clone(),
+        )
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(
@@ -213,6 +220,7 @@ mod tests {
             Ok(E621PostMetadata {
                 source: source.clone(),
                 tags,
+                artists: vec![],
                 file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
                 preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
                 artist_sources: vec![],

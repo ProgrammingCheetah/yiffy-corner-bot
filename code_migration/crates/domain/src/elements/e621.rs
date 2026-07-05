@@ -17,6 +17,10 @@ use crate::elements::{post::Source, tag::Tag};
 pub struct E621PostMetadata {
     pub source: Source,
     pub tags: Vec<Tag>,
+    /// Actual artists only — e621's artist bucket also carries workflow
+    /// markers (conditional_dnp, avoid_posting, unknown_artist, …) which the
+    /// infra adapter filters out before they get here.
+    pub artists: Vec<Tag>,
     /// The original-resolution media URL (what `/suggest` would re-post).
     pub file_url: Url,
     /// A smaller URL suitable for moderation/browse previews.

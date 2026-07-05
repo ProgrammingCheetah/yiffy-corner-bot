@@ -270,6 +270,7 @@ mod tests {
             Ok(E621PostMetadata {
                 source: source.clone(),
                 tags,
+                artists: vec![],
                 file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
                 preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
                 artist_sources: vec![],
@@ -331,6 +332,7 @@ mod tests {
                 .create(
                     Source::try_from(url).unwrap(),
                     tags(curated),
+                    vec![],
                     Some(UserId::from(7)),
                     Utc::now(),
                     PostStatus::AwaitingModeration,

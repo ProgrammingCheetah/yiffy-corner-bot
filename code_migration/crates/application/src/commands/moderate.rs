@@ -151,6 +151,7 @@ mod tests {
                     Source::try_from(Url::parse(&format!("https://e621.net/posts/{id}")).unwrap())
                         .unwrap(),
                     vec![],
+                    vec![],
                     None,
                     Utc::now(),
                     PostStatus::AwaitingModeration,

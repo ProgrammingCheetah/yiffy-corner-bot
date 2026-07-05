@@ -104,8 +104,25 @@ pub async fn build_caption<U: UserRepository>(
     poster_id: domain::elements::poster::PosterId,
     users: &U,
     bot_username: &str,
+    media: &domain::elements::media::ResolvedMedia,
 ) -> String {
-    let mut lines = vec![format!("<code>#{}</code>", publish_code(post, poster_id))];
+    use domain::elements::media::ResolvedMedia;
+
+    let mut header = format!("<code>#{}</code>", publish_code(post, poster_id));
+    if matches!(media, ResolvedMedia::Video(_) | ResolvedMedia::Animation(_)) {
+        header.push_str(" #video");
+    }
+    let mut lines = vec![header];
+
+    if !post.artists.is_empty() {
+        let names = post
+            .artists
+            .iter()
+            .map(|a| escape_html(a.as_ref()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("By {names}"));
+    }
 
     if let Some(user_id) = post.submitted_by {
         let name = match users.find_by_id(user_id).await {
@@ -249,10 +266,11 @@ async fn fire_one<R, U, PR, PB>(
         }
     };
     tracing::debug!(event = %Event::MediaResolved, post_id = %post.id, media = ?media, "media resolved");
+    let caption = build_caption(&post, poster.id, &*deps.users, &deps.bot_username, &media).await;
     let item = PublishItem {
         post_id: post.id,
         media,
-        caption: Some(build_caption(&post, poster.id, &*deps.users, &deps.bot_username).await),
+        caption: Some(caption),
     };
     let receipt = match publisher.publish(&item).await {
         Ok(receipt) => receipt,
@@ -358,6 +376,7 @@ mod tests {
             source: Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
             status: PostStatus::Accepted,
             tags: vec![],
+            artists: vec![],
             feed_position: Some(position),
             last_posted: None,
             submitted_by: None,
@@ -440,6 +459,7 @@ mod tests {
             &self,
             _source: Source,
             _tags: Vec<domain::elements::tag::Tag>,
+            _artists: Vec<domain::elements::tag::Tag>,
             _submitted_by: Option<domain::elements::user::UserId>,
             _submitted_at: DateTime<Utc>,
             _status: PostStatus,
@@ -679,7 +699,14 @@ mod tests {
         post.source = Source::try_from(Url::parse("https://t.me/somechannel/42").unwrap()).unwrap();
         post.submitted_by = Some(submitter.id);
 
-        let caption = build_caption(&post, PosterId::from(1), &users, "testbot").await;
+        let caption = build_caption(
+            &post,
+            PosterId::from(1),
+            &users,
+            "testbot",
+            &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+        )
+        .await;
         let lines: Vec<&str> = caption.lines().collect();
         // Fixed-size code header.
         assert!(lines[0].starts_with("<code>#"), "caption: {caption}");
@@ -696,9 +723,49 @@ mod tests {
     async fn admin_added_post_has_no_attribution_line() {
         use domain::elements::poster::PosterId;
         let users = InMemoryUserRepository::new();
-        let caption = build_caption(&make_post(100, 1), PosterId::from(1), &users, "testbot").await;
+        let caption = build_caption(
+            &make_post(100, 1),
+            PosterId::from(1),
+            &users,
+            "testbot",
+            &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+        )
+        .await;
         assert!(!caption.contains("Submitted by"), "caption: {caption}");
         assert!(caption.contains("e621.net"), "caption: {caption}");
+    }
+
+    #[tokio::test]
+    async fn video_media_gets_the_video_hashtag_and_artists_are_credited() {
+        use domain::elements::poster::PosterId;
+        let users = InMemoryUserRepository::new();
+        let mut post = make_post(100, 1);
+        post.artists = vec![
+            domain::elements::tag::Tag::from("coolwolf"),
+            domain::elements::tag::Tag::from("otherfox"),
+        ];
+        let caption = build_caption(
+            &post,
+            PosterId::from(1),
+            &users,
+            "testbot",
+            &ResolvedMedia::Video(Url::parse("https://x/v.webm").unwrap()),
+        )
+        .await;
+        let lines: Vec<&str> = caption.lines().collect();
+        assert!(lines[0].ends_with(" #video"), "caption: {caption}");
+        assert_eq!(lines[1], "By coolwolf, otherfox");
+
+        // Photos don't get the hashtag.
+        let caption = build_caption(
+            &post,
+            PosterId::from(1),
+            &users,
+            "testbot",
+            &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+        )
+        .await;
+        assert!(!caption.contains("#video"), "caption: {caption}");
     }
 
     #[test]

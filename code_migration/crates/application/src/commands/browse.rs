@@ -123,6 +123,7 @@ where
         .create(
             source,
             metadata.tags,
+            metadata.artists,
             None,
             Utc::now(),
             PostStatus::Accepted,
@@ -179,6 +180,7 @@ mod tests {
             source: Source::try_from(Url::parse(&format!("https://e621.net/posts/{id}")).unwrap())
                 .unwrap(),
             tags: tags.iter().map(|t| Tag::from(*t)).collect(),
+            artists: vec![Tag::from("coolwolf")],
             file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
             preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
             artist_sources: vec![],

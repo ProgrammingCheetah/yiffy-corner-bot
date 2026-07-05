@@ -144,6 +144,7 @@ mod posts {
             .create(
                 e621_source(1),
                 vec![],
+                vec![],
                 Some(submitter.id),
                 when,
                 PostStatus::AwaitingModeration,
@@ -167,6 +168,7 @@ mod posts {
             .create(
                 e621_source(1),
                 vec![],
+                vec![],
                 None,
                 Utc::now(),
                 PostStatus::Accepted,
@@ -187,6 +189,7 @@ mod posts {
             repo.create(
                 e621_source(1),
                 vec![],
+                vec![],
                 None,
                 Utc::now(),
                 PostStatus::Accepted
@@ -203,6 +206,7 @@ mod posts {
         let post = repo
             .create(
                 e621_source(1),
+                vec![],
                 vec![],
                 None,
                 Utc::now(),
@@ -247,6 +251,7 @@ mod posts {
             .create(
                 e621_source(1),
                 vec![],
+                vec![],
                 None,
                 Utc::now(),
                 PostStatus::AwaitingModeration,
@@ -256,6 +261,7 @@ mod posts {
         let b = repo
             .create(
                 e621_source(2),
+                vec![],
                 vec![],
                 None,
                 Utc::now(),
@@ -285,6 +291,7 @@ mod posts {
                 .create(
                     e621_source(i),
                     vec![],
+                    vec![],
                     None,
                     Utc::now(),
                     PostStatus::AwaitingModeration,
@@ -310,6 +317,7 @@ mod posts {
             .create(
                 e621_source(1),
                 vec![Tag::from("wolf"), Tag::from("male")],
+                vec![Tag::from("coolwolf")],
                 None,
                 Utc::now(),
                 PostStatus::Accepted,
@@ -318,6 +326,7 @@ mod posts {
             .unwrap();
         let found = repo.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(found.tags, vec![Tag::from("wolf"), Tag::from("male")]);
+        assert_eq!(found.artists, vec![Tag::from("coolwolf")]);
     }
 
     #[tokio::test]
@@ -344,6 +353,7 @@ mod posts {
             .create(
                 e621_source(2),
                 vec![],
+                vec![],
                 None,
                 newer,
                 PostStatus::AwaitingModeration,
@@ -354,6 +364,7 @@ mod posts {
             .create(
                 e621_source(1),
                 vec![],
+                vec![],
                 None,
                 older,
                 PostStatus::AwaitingModeration,
@@ -362,6 +373,7 @@ mod posts {
             .unwrap();
         repo.create(
             e621_source(3),
+            vec![],
             vec![],
             None,
             Utc::now(),

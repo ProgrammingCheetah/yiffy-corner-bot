@@ -36,6 +36,31 @@ impl TelegramPublisher {
     pub fn new(bot: Bot, chat_id: ChatId) -> Self {
         Self { bot, chat_id }
     }
+
+    /// Link-embed send: HTML caption as the text, preview forced onto `url`.
+    /// The publish path for Link media AND the graceful fallback when
+    /// Telegram refuses to fetch a direct media URL (too big, webm, …).
+    async fn send_link(
+        &self,
+        caption: Option<&str>,
+        url: &url::Url,
+    ) -> Result<MessageId, teloxide::RequestError> {
+        let text = caption
+            .map(ToString::to_string)
+            .unwrap_or_else(|| url.to_string());
+        self.bot
+            .send_message(self.chat_id, text)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(LinkPreviewOptions {
+                is_disabled: false,
+                url: Some(url.to_string()),
+                prefer_small_media: false,
+                prefer_large_media: true,
+                show_above_text: false,
+            })
+            .await
+            .map(|message| message.id)
+    }
 }
 
 #[async_trait]
@@ -54,7 +79,21 @@ impl Publisher for TelegramPublisher {
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
-                request.await.map_err(send)?.id
+                match request.await {
+                    Ok(message) => message.id,
+                    Err(e) => {
+                        // Telegram refused the direct media URL (size cap,
+                        // unsupported container like webm, …) — degrade to a
+                        // link embed instead of blocking the feed forever.
+                        tracing::warn!(
+                            event = %Event::MediaLinkFallback, upstream = %Upstream::Telegram,
+                            url = %url, error = %e, "direct media send refused; falling back to link"
+                        );
+                        self.send_link(item.caption.as_deref(), url)
+                            .await
+                            .map_err(send)?
+                    }
+                }
             }
             ResolvedMedia::Video(url) => {
                 let mut request = self
@@ -63,7 +102,21 @@ impl Publisher for TelegramPublisher {
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
-                request.await.map_err(send)?.id
+                match request.await {
+                    Ok(message) => message.id,
+                    Err(e) => {
+                        // Telegram refused the direct media URL (size cap,
+                        // unsupported container like webm, …) — degrade to a
+                        // link embed instead of blocking the feed forever.
+                        tracing::warn!(
+                            event = %Event::MediaLinkFallback, upstream = %Upstream::Telegram,
+                            url = %url, error = %e, "direct media send refused; falling back to link"
+                        );
+                        self.send_link(item.caption.as_deref(), url)
+                            .await
+                            .map_err(send)?
+                    }
+                }
             }
             ResolvedMedia::Animation(url) => {
                 let mut request = self
@@ -72,7 +125,21 @@ impl Publisher for TelegramPublisher {
                 if let Some(caption) = &item.caption {
                     request = request.caption(caption.clone()).parse_mode(ParseMode::Html);
                 }
-                request.await.map_err(send)?.id
+                match request.await {
+                    Ok(message) => message.id,
+                    Err(e) => {
+                        // Telegram refused the direct media URL (size cap,
+                        // unsupported container like webm, …) — degrade to a
+                        // link embed instead of blocking the feed forever.
+                        tracing::warn!(
+                            event = %Event::MediaLinkFallback, upstream = %Upstream::Telegram,
+                            url = %url, error = %e, "direct media send refused; falling back to link"
+                        );
+                        self.send_link(item.caption.as_deref(), url)
+                            .await
+                            .map_err(send)?
+                    }
+                }
             }
             ResolvedMedia::TelegramCopy {
                 origin_chat_id,
@@ -94,20 +161,9 @@ impl Publisher for TelegramPublisher {
                 // Embed-URL publish: the caption's Source link points at the
                 // original page, so force the preview onto the embed URL
                 // (fixupx/fxbsky) — that's the whole point of the rewrite.
-                let text = item.caption.clone().unwrap_or_else(|| url.to_string());
-                self.bot
-                    .send_message(self.chat_id, text)
-                    .parse_mode(ParseMode::Html)
-                    .link_preview_options(LinkPreviewOptions {
-                        is_disabled: false,
-                        url: Some(url.to_string()),
-                        prefer_small_media: false,
-                        prefer_large_media: true,
-                        show_above_text: false,
-                    })
+                self.send_link(item.caption.as_deref(), url)
                     .await
                     .map_err(send)?
-                    .id
             }
         };
         Ok(PublishReceipt {

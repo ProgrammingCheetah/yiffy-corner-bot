@@ -38,6 +38,11 @@ fn row_to_post(row: &sqlx::sqlite::SqliteRow) -> Result<Post, PostRepositoryErro
             .split_whitespace()
             .map(Tag::from)
             .collect(),
+        artists: row
+            .get::<String, _>("artists")
+            .split_whitespace()
+            .map(Tag::from)
+            .collect(),
         feed_position: row.get::<Option<i64>, _>("feed_position").map(|p| p as u64),
         last_posted: row.get::<Option<DateTime<Utc>>, _>("last_posted"),
         submitted_by: row
@@ -55,22 +60,25 @@ impl PostRepository for SqlitePostRepository {
         &self,
         source: Source,
         tags: Vec<Tag>,
+        artists: Vec<Tag>,
         submitted_by: Option<UserId>,
         submitted_at: DateTime<Utc>,
         status: PostStatus,
     ) -> Result<Post, Self::Err> {
-        let joined_tags = tags
-            .iter()
-            .map(|t| t.as_ref())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let join = |tags: &[Tag]| {
+            tags.iter()
+                .map(|t| t.as_ref())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         let row = sqlx::query(
-            "INSERT INTO posts (source_url, status, tags, submitted_by, submitted_at)
-             VALUES (?, ?, ?, ?, ?) RETURNING *",
+            "INSERT INTO posts (source_url, status, tags, artists, submitted_by, submitted_at)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
         )
         .bind(source.as_ref().as_str())
         .bind(status.to_string())
-        .bind(joined_tags)
+        .bind(join(&tags))
+        .bind(join(&artists))
         .bind(submitted_by.map(|id| *id.as_ref() as i64))
         .bind(submitted_at)
         .fetch_one(&self.pool)

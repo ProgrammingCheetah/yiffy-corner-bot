@@ -71,6 +71,7 @@ mod tests {
             .create(
                 Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
                 vec![],
+                vec![],
                 None,
                 Utc::now(),
                 PostStatus::Accepted,
