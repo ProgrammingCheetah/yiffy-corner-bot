@@ -264,6 +264,36 @@ async fn complete_moderation_dialogue(
     }
 }
 
+/// Append the outcome to a review/report DM, media-aware: text messages
+/// get edit_message_text, media messages (photo/video reviews) get
+/// edit_message_caption. Never propagates — a cosmetic edit failing must
+/// not crash the callback handler.
+async fn reflect_outcome_on_dm(
+    bot: &Bot,
+    message: &teloxide::types::MaybeInaccessibleMessage,
+    outcome: &str,
+) {
+    use teloxide::payloads::EditMessageCaptionSetters as _;
+
+    let chat = message.chat().id;
+    let id = message.id();
+    let regular = message.regular_message();
+    let result = if let Some(text) = regular.and_then(|m| m.text()) {
+        bot.edit_message_text(chat, id, format!("{text}\n\n{outcome}"))
+            .await
+            .map(|_| ())
+    } else {
+        let caption = regular.and_then(|m| m.caption()).unwrap_or("");
+        bot.edit_message_caption(chat, id)
+            .caption(format!("{caption}\n\n{outcome}"))
+            .await
+            .map(|_| ())
+    };
+    if let Err(e) = result {
+        tracing::debug!(error = %e, "review DM outcome edit failed (cosmetic)");
+    }
+}
+
 /// The moderation inline keyboard attached to review DMs.
 fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new([
@@ -1387,15 +1417,7 @@ pub async fn handle_callback(
             bot.answer_callback_query(query.id.clone()).await?;
             // Reflect the decision on the DM itself so the buttons disappear.
             if let Some(message) = query.message.as_ref() {
-                let text = format!(
-                    "{}\n\n{outcome}",
-                    message
-                        .regular_message()
-                        .and_then(|m| m.text())
-                        .unwrap_or("")
-                );
-                bot.edit_message_text(message.chat().id, message.id(), text)
-                    .await?;
+                reflect_outcome_on_dm(&bot, message, &outcome).await;
             }
         }
         // Viewer report button on published posts (legacy messages; new
@@ -1463,15 +1485,7 @@ pub async fn handle_callback(
             };
             bot.answer_callback_query(query.id.clone()).await?;
             if let Some(message) = query.message.as_ref() {
-                let text = format!(
-                    "{}\n\n{outcome}",
-                    message
-                        .regular_message()
-                        .and_then(|m| m.text())
-                        .unwrap_or("")
-                );
-                bot.edit_message_text(message.chat().id, message.id(), text)
-                    .await?;
+                reflect_outcome_on_dm(&bot, message, &outcome).await;
             }
         }
         // Legacy browse buttons: any press dismisses the preview message;
