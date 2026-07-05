@@ -26,7 +26,7 @@ use teloxide::{
 use url::Url;
 
 use crate::resolvers::BotUserResolver;
-use crate::state::{PendingForward, PendingSubmission, SharedState};
+use crate::state::{BrowseSession, PendingForward, PendingSubmission, SharedState};
 use telemetry::{Event, RejectReason};
 
 #[derive(BotCommands, Clone)]
@@ -462,9 +462,11 @@ pub async fn handle_command(
         }
     };
 
-    bot.send_message(msg.chat.id, reply)
-        .link_preview_options(no_preview())
-        .await?;
+    if !reply.is_empty() {
+        bot.send_message(msg.chat.id, reply)
+            .link_preview_options(no_preview())
+            .await?;
+    }
     Ok(())
 }
 
@@ -949,22 +951,20 @@ fn browse_keyboard(
     ])
 }
 
-async fn handle_browse(
+/// Send one page of browse previews; returns how many were delivered.
+async fn send_browse_page(
     bot: &Bot,
     chat: ChatId,
     state: &SharedState,
     actor: TelegramId,
-    arg: &str,
-) -> String {
+    tags: Vec<Tag>,
+    page: u32,
+    count: usize,
+) -> Result<usize, String> {
     use teloxide::types::InputFile;
 
-    let tags: Vec<Tag> = arg.split_whitespace().map(Tag::from).collect();
-    match browse::search(
-        BrowseCommand {
-            actor,
-            tags,
-            page: 1,
-        },
+    let results = match browse::search(
+        BrowseCommand { actor, tags, page },
         &state.users,
         &*state.e621,
         &state.forbidden,
@@ -972,79 +972,124 @@ async fn handle_browse(
     )
     .await
     {
-        Ok(results) if results.is_empty() => "No matching e621 posts.".to_string(),
-        Ok(results) => {
-            // Like the legacy bot: each result is its own photo with the
-            // Send / sources / Erase keyboard.
-            let mut sent = 0usize;
-            for metadata in results.iter().take(5) {
-                use domain::elements::media::ResolvedMedia;
+        Ok(results) => results,
+        Err(e) => return Err(describe(e)),
+    };
+    if results.is_empty() {
+        return Ok(0);
+    }
+    // Like the legacy bot: each result is its own photo with the
+    // Send / sources / Erase keyboard.
+    let mut sent = 0usize;
+    for metadata in results.iter().take(count) {
+        use domain::elements::media::ResolvedMedia;
 
-                let e621_url = metadata.source.as_ref();
-                let Some(e621_id) = e621_url
-                    .path_segments()
-                    .and_then(|mut s| s.nth(1))
-                    .and_then(|id| id.parse::<u64>().ok())
-                else {
-                    continue;
-                };
-                let keyboard = browse_keyboard(e621_id, e621_url, &metadata.artist_sources);
+        let e621_url = metadata.source.as_ref();
+        let Some(e621_id) = e621_url
+            .path_segments()
+            .and_then(|mut s| s.nth(1))
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let keyboard = browse_keyboard(e621_id, e621_url, &metadata.artist_sources);
 
-                // Preview with the real media type: gifs animate, videos play
-                // (via e621's MP4 rendition — Telegram can't fetch webm).
-                let animated: Option<Result<(), teloxide::RequestError>> =
-                    match ResolvedMedia::classify(metadata.file_url.clone()) {
-                        ResolvedMedia::Animation(gif_url) => Some(
-                            bot.send_animation(chat, InputFile::url(gif_url))
-                                .reply_markup(keyboard.clone())
-                                .await
-                                .map(|_| ()),
-                        ),
-                        ResolvedMedia::Video(_) => match metadata.mp4_url.clone() {
-                            Some(mp4) => Some(
-                                bot.send_video(chat, InputFile::url(mp4))
-                                    .reply_markup(keyboard.clone())
-                                    .await
-                                    .map(|_| ()),
-                            ),
-                            None => None,
-                        },
-                        _ => None,
-                    };
-
-                let outcome = match animated {
-                    Some(Ok(())) => Ok(()),
-                    Some(Err(e)) => {
-                        tracing::debug!(
-                            event = %Event::MediaLinkFallback, source = %e621_url, error = %e,
-                            "animated preview refused; falling back to still"
-                        );
-                        bot.send_photo(chat, InputFile::url(metadata.preview_url.clone()))
-                            .reply_markup(keyboard)
-                            .await
-                            .map(|_| ())
-                    }
-                    None => bot
-                        .send_photo(chat, InputFile::url(metadata.preview_url.clone()))
-                        .reply_markup(keyboard)
+        // Preview with the real media type: gifs animate, videos play
+        // (via e621's MP4 rendition — Telegram can't fetch webm).
+        let animated: Option<Result<(), teloxide::RequestError>> =
+            match ResolvedMedia::classify(metadata.file_url.clone()) {
+                ResolvedMedia::Animation(gif_url) => Some(
+                    bot.send_animation(chat, InputFile::url(gif_url))
+                        .reply_markup(keyboard.clone())
                         .await
                         .map(|_| ()),
-                };
-                match outcome {
-                    Ok(()) => sent += 1,
-                    Err(e) => tracing::warn!(
-                        event = %Event::BrowseAlbumFailed, source = %e621_url, error = %e,
-                        "browse preview send failed"
+                ),
+                ResolvedMedia::Video(_) => match metadata.mp4_url.clone() {
+                    Some(mp4) => Some(
+                        bot.send_video(chat, InputFile::url(mp4))
+                            .reply_markup(keyboard.clone())
+                            .await
+                            .map(|_| ()),
                     ),
-                }
+                    None => None,
+                },
+                _ => None,
+            };
+
+        let outcome = match animated {
+            Some(Ok(())) => Ok(()),
+            Some(Err(e)) => {
+                tracing::debug!(
+                    event = %Event::MediaLinkFallback, source = %e621_url, error = %e,
+                    "animated preview refused; falling back to still"
+                );
+                bot.send_photo(chat, InputFile::url(metadata.preview_url.clone()))
+                    .reply_markup(keyboard)
+                    .await
+                    .map(|_| ())
             }
-            if sent == 0 {
-                "Couldn't send any previews — check the logs.".to_string()
-            } else {
-                format!("{sent} results — Send saves to the pool, Erase dismisses.")
-            }
+            None => bot
+                .send_photo(chat, InputFile::url(metadata.preview_url.clone()))
+                .reply_markup(keyboard)
+                .await
+                .map(|_| ()),
+        };
+        match outcome {
+            Ok(()) => sent += 1,
+            Err(e) => tracing::warn!(
+                event = %Event::BrowseAlbumFailed, source = %e621_url, error = %e,
+                "browse preview send failed"
+            ),
         }
-        Err(e) => describe(e),
+    }
+    Ok(sent)
+}
+
+/// The "More ➡" control under the page summary.
+fn browse_more_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new([[InlineKeyboardButton::callback("More ➡", "brmore")]])
+}
+
+async fn handle_browse(
+    bot: &Bot,
+    chat: ChatId,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+) -> String {
+    // Optional leading count: /browse 12 wolf male  (1..=20, default 5).
+    let mut parts = arg.split_whitespace().peekable();
+    let count = match parts.peek().and_then(|raw| raw.parse::<usize>().ok()) {
+        Some(n) if (1..=20).contains(&n) => {
+            parts.next();
+            n
+        }
+        _ => 5,
+    };
+    let tags: Vec<Tag> = parts.map(Tag::from).collect();
+
+    match send_browse_page(bot, chat, state, actor, tags.clone(), 1, count).await {
+        Err(reply) => reply,
+        Ok(0) => "No matching e621 posts.".to_string(),
+        Ok(sent) => {
+            state.browse_sessions.lock().await.insert(
+                *actor.as_ref(),
+                BrowseSession {
+                    tags,
+                    next_page: 2,
+                    count,
+                },
+            );
+            let summary = format!("{sent} results — Send saves to the pool, Erase dismisses.");
+            if let Err(e) = bot
+                .send_message(chat, summary)
+                .reply_markup(browse_more_keyboard())
+                .await
+            {
+                tracing::warn!(event = %Event::BrowseAlbumFailed, error = %e, "summary send failed");
+            }
+            String::new()
+        }
     }
 }
 
@@ -1825,6 +1870,57 @@ pub async fn handle_callback(
             if let Some(message) = query.message.as_ref() {
                 let _ = bot.delete_message(message.chat().id, message.id()).await;
             }
+        }
+        // Browse paging: next page of the moderator's last query.
+        ["brmore"] => {
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            let session = state
+                .browse_sessions
+                .lock()
+                .await
+                .get(actor.as_ref())
+                .cloned();
+            let toast = match session {
+                None => "No browse in progress — run /browse first.".to_string(),
+                Some(session) => {
+                    let chat = query
+                        .message
+                        .as_ref()
+                        .map(|m| m.chat().id)
+                        .unwrap_or(ChatId(*actor.as_ref()));
+                    match send_browse_page(
+                        &bot,
+                        chat,
+                        &state,
+                        actor,
+                        session.tags.clone(),
+                        session.next_page,
+                        session.count,
+                    )
+                    .await
+                    {
+                        Err(reply) => reply,
+                        Ok(0) => {
+                            state.browse_sessions.lock().await.remove(actor.as_ref());
+                            "No more results.".to_string()
+                        }
+                        Ok(sent) => {
+                            state.browse_sessions.lock().await.insert(
+                                *actor.as_ref(),
+                                BrowseSession {
+                                    next_page: session.next_page + 1,
+                                    ..session
+                                },
+                            );
+                            format!("{sent} more — page {}.", session.next_page)
+                        }
+                    }
+                }
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
         }
         _ => {
             bot.answer_callback_query(query.id.clone()).await?;

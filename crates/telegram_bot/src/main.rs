@@ -131,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         pending_moderation: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        browse_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Seed the singleton Owner (Zuri) so privileged commands work from boot.

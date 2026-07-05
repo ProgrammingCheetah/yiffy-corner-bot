@@ -113,6 +113,17 @@ pub struct AppState {
     /// In-flight moderation dialogues, keyed by moderator Telegram id:
     /// their next message completes the action.
     pub pending_moderation: tokio::sync::Mutex<std::collections::HashMap<i64, ModerationDialogue>>,
+    /// Last /browse query per moderator, for the "More ➡" paging button.
+    pub browse_sessions: tokio::sync::Mutex<std::collections::HashMap<i64, BrowseSession>>,
+}
+
+/// A moderator's paging position within their last /browse query.
+#[derive(Debug, Clone)]
+pub struct BrowseSession {
+    pub tags: Vec<domain::elements::tag::Tag>,
+    /// The NEXT e621 page to fetch.
+    pub next_page: u32,
+    pub count: usize,
 }
 
 /// What a moderator's next message means.
