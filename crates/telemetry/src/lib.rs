@@ -117,6 +117,11 @@ vocabulary! {
         MarkPostedFailed => "mark_posted_failed",
         TickFailed => "tick_failed",
 
+        // Housekeeping
+        SweepStarted => "sweep_started",
+        SweepCompleted => "sweep_completed",
+        DeadMediaFound => "dead_media_found",
+
         // Reports
         PostReported => "post_reported",
         ReportDuplicate => "report_duplicate",

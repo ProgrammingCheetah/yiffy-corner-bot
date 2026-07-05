@@ -1,5 +1,6 @@
 mod announcer;
 mod commands;
+mod housekeeper;
 mod publishers;
 mod resolvers;
 mod state;
@@ -194,6 +195,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Announcement cycle (channel directory broadcasts).
     tokio::spawn(announcer::run(state.clone(), bot.clone()));
+
+    // Dead-media sweep: report entries whose upstream vanished before a
+    // Poster hits them, and backfill missing perceptual hashes.
+    tokio::spawn(housekeeper::run(state.clone(), bot.clone()));
 
     // WebApp menu button (Mini App entry point) when a public URL is set.
     if let Some(url) = &config.webapp_url {
