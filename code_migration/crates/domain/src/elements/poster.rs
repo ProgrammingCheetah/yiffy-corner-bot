@@ -61,5 +61,12 @@ pub trait PosterRepository: Send + Sync {
         time_interval: PostInterval,
     ) -> Result<Poster, Self::Err>;
     async fn find_by_id(&self, id: PosterId) -> Result<Option<Poster>, Self::Err>;
+    /// Replace the tag subscription. Cadence and channel binding stay put.
+    async fn set_tags(
+        &self,
+        id: PosterId,
+        subscribed_tags: Vec<Tag>,
+        forbidden_tags: Vec<Tag>,
+    ) -> Result<Poster, Self::Err>;
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err>;
 }

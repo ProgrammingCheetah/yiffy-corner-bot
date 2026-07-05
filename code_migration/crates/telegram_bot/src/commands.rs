@@ -74,6 +74,10 @@ pub enum Command {
         description = "bind a poster to a chat: /setchannel <poster-id> <@channel|chat-id> (owner)"
     )]
     Setchannel(String),
+    #[command(
+        description = "replace a poster's tags: /settags <poster-id> [tags… -forbidden…] (owner)"
+    )]
+    Settags(String),
     #[command(description = "list posters and their bindings (owner)")]
     Posters,
 }
@@ -100,6 +104,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Setrole(_) => "setrole",
         Command::Newposter(_) => "newposter",
         Command::Setchannel(_) => "setchannel",
+        Command::Settags(_) => "settags",
         Command::Posters => "posters",
     }
 }
@@ -216,6 +221,7 @@ pub async fn handle_command(
         Command::Setrole(arg) => handle_setrole(&bot, &state, actor, &arg).await,
         Command::Newposter(arg) => handle_newposter(&state, actor, &arg).await,
         Command::Setchannel(arg) => handle_setchannel(&bot, &state, actor, &arg).await,
+        Command::Settags(arg) => handle_settags(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
     };
 
@@ -584,6 +590,67 @@ async fn handle_setrole(bot: &Bot, state: &SharedState, actor: TelegramId, arg: 
     }
 }
 
+/// Split "wolf male -gore" into (subscribed, forbidden) tag lists.
+fn parse_tag_lists<'a>(parts: impl Iterator<Item = &'a str>) -> (Vec<Tag>, Vec<Tag>) {
+    let mut subscribed = Vec::new();
+    let mut forbidden = Vec::new();
+    for raw in parts {
+        match raw.strip_prefix('-') {
+            Some(tag) => forbidden.push(Tag::from(tag)),
+            None => subscribed.push(Tag::from(raw)),
+        }
+    }
+    (subscribed, forbidden)
+}
+
+async fn handle_settags(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    let mut parts = arg.split_whitespace();
+    let Some(poster_id) = parts
+        .next()
+        .and_then(|v| v.trim_start_matches('#').parse::<u64>().ok())
+        .map(domain::elements::poster::PosterId::from)
+    else {
+        return "Usage: /settags <poster-id> [tags… -forbidden…]\n\
+                No tags = post anything (subscription filter removed)."
+            .to_string();
+    };
+    let (subscribed, forbidden) = parse_tag_lists(parts);
+    match manage_poster::set_tags(
+        manage_poster::SetTags {
+            actor,
+            poster_id,
+            subscribed_tags: subscribed,
+            forbidden_tags: forbidden,
+        },
+        &state.users,
+        &state.posters,
+    )
+    .await
+    {
+        Ok(poster) if poster.subscribed_tags.is_empty() => format!(
+            "Poster #{} now posts ANYTHING (no subscription filter). Restart the bot to apply.",
+            poster.id
+        ),
+        Ok(poster) => format!(
+            "Poster #{} now subscribes to [{}] minus [{}]. Restart the bot to apply.",
+            poster.id,
+            poster
+                .subscribed_tags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
+            poster
+                .forbidden_tags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        Err(e) => describe(e),
+    }
+}
+
 async fn handle_newposter(state: &SharedState, actor: TelegramId, arg: &str) -> String {
     let mut parts = arg.split_whitespace();
     let Some(interval) = parts.next().and_then(|v| v.parse::<u8>().ok()) else {
@@ -595,14 +662,7 @@ async fn handle_newposter(state: &SharedState, actor: TelegramId, arg: &str) -> 
         Ok(i) => i,
         Err(e) => return e.to_string(),
     };
-    let mut subscribed = Vec::new();
-    let mut forbidden = Vec::new();
-    for raw in parts {
-        match raw.strip_prefix('-') {
-            Some(tag) => forbidden.push(Tag::from(tag)),
-            None => subscribed.push(Tag::from(raw)),
-        }
-    }
+    let (subscribed, forbidden) = parse_tag_lists(parts);
     match manage_poster::new_poster(
         NewPoster {
             actor,

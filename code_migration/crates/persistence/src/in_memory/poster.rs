@@ -49,6 +49,21 @@ impl PosterRepository for InMemoryPosterRepository {
         Ok(self.posters.read().await.get(id.as_ref()).cloned())
     }
 
+    async fn set_tags(
+        &self,
+        id: PosterId,
+        subscribed_tags: Vec<Tag>,
+        forbidden_tags: Vec<Tag>,
+    ) -> Result<Poster, Self::Err> {
+        let mut posters = self.posters.write().await;
+        let poster = posters
+            .get_mut(id.as_ref())
+            .ok_or(PosterRepositoryError::NotFound(id))?;
+        poster.subscribed_tags = subscribed_tags;
+        poster.forbidden_tags = forbidden_tags;
+        Ok(poster.clone())
+    }
+
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err> {
         Ok(self.posters.read().await.values().cloned().collect())
     }
@@ -102,6 +117,28 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(repo.list_all().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn set_tags_replaces_subscription_only() {
+        let repo = InMemoryPosterRepository::new();
+        let poster = repo
+            .create(vec![Tag::from("fox")], vec![], fixture_interval())
+            .await
+            .unwrap();
+        let updated = repo
+            .set_tags(poster.id, vec![Tag::from("wolf")], vec![Tag::from("gore")])
+            .await
+            .unwrap();
+        assert_eq!(updated.subscribed_tags, vec![Tag::from("wolf")]);
+        assert_eq!(updated.forbidden_tags, vec![Tag::from("gore")]);
+        assert_eq!(updated.time_interval, fixture_interval());
+
+        let err = repo
+            .set_tags(PosterId::from(99), vec![], vec![])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PosterRepositoryError::NotFound(_)));
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ use persistence::sqlite::{
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
     user::SqliteUserRepository,
 };
-use teloxide::{Bot, prelude::*, types::ChatId};
+use teloxide::{Bot, prelude::*, types::ChatId, utils::command::BotCommands as _};
 
 use telemetry::Event;
 
@@ -181,6 +181,11 @@ async fn main() -> anyhow::Result<()> {
 
     let main_token = read_secret(&config.token_path())?;
     let bot = Bot::new(main_token.clone());
+
+    // Publish the command menu so Telegram clients autocomplete them.
+    if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
+        tracing::warn!(error = %e, "set_my_commands failed; menu may be stale");
+    }
 
     // Scheduler: one runtime per bound Poster.
     let resolver = build_resolver(&config, e621, telegram_copies)?;

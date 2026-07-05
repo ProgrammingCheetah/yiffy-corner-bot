@@ -77,6 +77,7 @@ vocabulary! {
 
         // Posters
         PosterCreated => "poster_created",
+        PosterTagsChanged => "poster_tags_changed",
         ChannelBound => "channel_bound",
 
         // Selection

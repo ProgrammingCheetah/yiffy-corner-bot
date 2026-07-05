@@ -52,6 +52,40 @@ where
 }
 
 #[derive(Debug)]
+pub struct SetTags {
+    pub actor: TelegramId,
+    pub poster_id: PosterId,
+    pub subscribed_tags: Vec<Tag>,
+    pub forbidden_tags: Vec<Tag>,
+}
+
+/// Replace a Poster's tag subscription. Owner-only.
+pub async fn set_tags<P>(
+    cmd: SetTags,
+    users: &impl UserRepository,
+    posters: &P,
+) -> HandlerResult<Poster>
+where
+    P: PosterRepository,
+{
+    require_role(users, cmd.actor, Role::Owner).await?;
+    let poster = posters
+        .set_tags(cmd.poster_id, cmd.subscribed_tags, cmd.forbidden_tags)
+        .await
+        .map_err(|_| {
+            HandlerError::InvalidState(format!("poster {} does not exist", cmd.poster_id))
+        })?;
+    tracing::info!(
+        event = %Event::PosterTagsChanged,
+        poster_id = %poster.id,
+        subscribed = ?poster.subscribed_tags,
+        forbidden = ?poster.forbidden_tags,
+        "poster tag subscription replaced"
+    );
+    Ok(poster)
+}
+
+#[derive(Debug)]
 pub struct SetChannel {
     pub actor: TelegramId,
     pub poster_id: PosterId,
@@ -146,6 +180,48 @@ mod tests {
         let err = new_poster(new_poster_cmd(2), &fx.users, &fx.posters)
             .await
             .unwrap_err();
+        assert!(matches!(err, HandlerError::NotAuthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn owner_replaces_poster_tags() {
+        let fx = fixture().await;
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+            .await
+            .unwrap();
+        let updated = set_tags(
+            SetTags {
+                actor: TelegramId::from(1),
+                poster_id: poster.id,
+                subscribed_tags: vec![Tag::from("dragon")],
+                forbidden_tags: vec![],
+            },
+            &fx.users,
+            &fx.posters,
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.subscribed_tags, vec![Tag::from("dragon")]);
+    }
+
+    #[tokio::test]
+    async fn moderator_cannot_replace_poster_tags() {
+        let fx = fixture().await;
+        let poster = new_poster(new_poster_cmd(1), &fx.users, &fx.posters)
+            .await
+            .unwrap();
+        let err = set_tags(
+            SetTags {
+                actor: TelegramId::from(2),
+                poster_id: poster.id,
+                subscribed_tags: vec![],
+                forbidden_tags: vec![],
+            },
+            &fx.users,
+            &fx.posters,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, HandlerError::NotAuthorized(_)));
     }
 

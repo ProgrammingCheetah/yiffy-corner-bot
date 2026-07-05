@@ -291,6 +291,25 @@ mod posters {
     }
 
     #[tokio::test]
+    async fn set_tags_updates_subscription() {
+        let repo = SqlitePosterRepository::new(test_pool().await);
+        let poster = repo
+            .create(
+                vec![Tag::from("fox")],
+                vec![],
+                PostInterval::new(5).unwrap(),
+            )
+            .await
+            .unwrap();
+        let updated = repo
+            .set_tags(poster.id, vec![Tag::from("wolf")], vec![Tag::from("gore")])
+            .await
+            .unwrap();
+        assert_eq!(updated.subscribed_tags, vec![Tag::from("wolf")]);
+        assert_eq!(updated.forbidden_tags, vec![Tag::from("gore")]);
+    }
+
+    #[tokio::test]
     async fn list_all_returns_every_poster() {
         let repo = SqlitePosterRepository::new(test_pool().await);
         repo.create(vec![], vec![], PostInterval::new(5).unwrap())

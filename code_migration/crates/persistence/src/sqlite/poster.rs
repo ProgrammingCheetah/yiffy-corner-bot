@@ -72,6 +72,25 @@ impl PosterRepository for SqlitePosterRepository {
         row.as_ref().map(row_to_poster).transpose()
     }
 
+    async fn set_tags(
+        &self,
+        id: PosterId,
+        subscribed_tags: Vec<Tag>,
+        forbidden_tags: Vec<Tag>,
+    ) -> Result<Poster, Self::Err> {
+        let row = sqlx::query(
+            "UPDATE posters SET subscribed_tags = ?, forbidden_tags = ? WHERE id = ? RETURNING *",
+        )
+        .bind(join_tags(&subscribed_tags))
+        .bind(join_tags(&forbidden_tags))
+        .bind(*id.as_ref() as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?
+        .ok_or(PosterRepositoryError::NotFound(id))?;
+        row_to_poster(&row)
+    }
+
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err> {
         let rows = sqlx::query("SELECT * FROM posters ORDER BY id")
             .fetch_all(&self.pool)
