@@ -18,6 +18,7 @@ use url::Url;
 
 use crate::commands::auth::require_role;
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 #[derive(Debug)]
 pub struct BrowseCommand {
@@ -53,6 +54,7 @@ where
         }
     }
 
+    tracing::debug!(event = %Event::BrowseQueried, query = ?query, page = cmd.page, "browse: querying e621");
     let results = e621
         .search(&query, E621Order::Random, cmd.page)
         .await
@@ -76,6 +78,7 @@ where
             clean.push(metadata);
         }
     }
+    tracing::info!(event = %Event::BrowseResults, results = clean.len(), "browse results (after forbidden filter)");
     Ok(clean)
 }
 
@@ -109,10 +112,12 @@ where
     {
         return Err(HandlerError::DuplicateSubmission(existing.id));
     }
-    posts
+    let post = posts
         .create(source, None, Utc::now(), PostStatus::Accepted)
         .await
-        .map_err(|_| HandlerError::RepositoryError)
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::PoolSaved, post_id = %post.id, source = %post.source.as_ref(), "browse: saved to pool (Accepted)");
+    Ok(post)
 }
 
 #[cfg(test)]

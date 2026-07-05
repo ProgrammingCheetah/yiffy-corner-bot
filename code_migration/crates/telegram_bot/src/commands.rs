@@ -27,6 +27,7 @@ use url::Url;
 
 use crate::resolvers::BotUserResolver;
 use crate::state::SharedState;
+use telemetry::{Event, RejectReason};
 
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "lowercase")]
@@ -77,6 +78,32 @@ pub enum Command {
     Posters,
 }
 
+/// Stable command label for the `command_received` event.
+fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Start => "start",
+        Command::Help => "help",
+        Command::Suggest(_) => "suggest",
+        Command::Queue => "queue",
+        Command::Approve(_) => "approve",
+        Command::Reject(_) => "reject",
+        Command::Delete(_) => "delete",
+        Command::Ban(_) => "ban",
+        Command::Unban(_) => "unban",
+        Command::Browse(_) => "browse",
+        Command::Save(_) => "save",
+        Command::Forbidtag(_) => "forbidtag",
+        Command::Unforbidtag(_) => "unforbidtag",
+        Command::Requiretag(_) => "requiretag",
+        Command::Unrequiretag(_) => "unrequiretag",
+        Command::Listtags => "listtags",
+        Command::Setrole(_) => "setrole",
+        Command::Newposter(_) => "newposter",
+        Command::Setchannel(_) => "setchannel",
+        Command::Posters => "posters",
+    }
+}
+
 fn sender(msg: &Message) -> Option<(&TgUser, TelegramId)> {
     let from = msg.from.as_ref()?;
     Some((from, TelegramId::from(from.id.0 as i64)))
@@ -109,6 +136,12 @@ pub async fn handle_command(
         return Ok(());
     };
     let display_name = Some(from.full_name());
+    tracing::debug!(
+        event = %Event::CommandReceived,
+        telegram_id = actor.as_ref(),
+        command = command_name(&cmd),
+        "command received"
+    );
 
     let reply = match cmd {
         Command::Start => {
@@ -237,12 +270,19 @@ async fn handle_suggest(
             );
             for reviewer in &reviewers {
                 let chat = ChatId(*reviewer.telegram_id.as_ref());
-                if let Err(e) = bot
+                match bot
                     .send_message(chat, text.clone())
                     .reply_markup(review_keyboard(post.id))
                     .await
                 {
-                    tracing::warn!(reviewer = %reviewer.id, error = %e, "review DM failed");
+                    Ok(_) => tracing::debug!(
+                        event = %Event::ReviewDmSent, post_id = %post.id,
+                        reviewer = %reviewer.id, "review DM sent"
+                    ),
+                    Err(e) => tracing::warn!(
+                        event = %Event::ReviewDmFailed, post_id = %post.id,
+                        reviewer = %reviewer.id, error = %e, "review DM failed"
+                    ),
                 }
             }
             format!(
@@ -377,6 +417,18 @@ async fn tag_policy_reply(
         return "Give exactly one tag.".to_string();
     }
     let tag = Tag::from(tag);
+    tracing::info!(
+        event = %Event::TagPolicyChanged,
+        telegram_id = actor.as_ref(),
+        action = match action {
+            TagPolicyAction::Forbid => "forbid",
+            TagPolicyAction::Unforbid => "unforbid",
+            TagPolicyAction::Require => "require",
+            TagPolicyAction::Unrequire => "unrequire",
+        },
+        tag = %tag,
+        "tag policy changed"
+    );
     let result = match action {
         TagPolicyAction::Forbid => state
             .forbidden
@@ -606,6 +658,10 @@ pub async fn handle_channel_forward(
         return Ok(());
     };
     let Some(channel) = chat.username() else {
+        tracing::info!(
+            event = %Event::ForwardRejected, reason = %RejectReason::PrivateChannel,
+            telegram_id = actor.as_ref(), "forward from channel without @username"
+        );
         bot.send_message(
             msg.chat.id,
             "I can only take submissions forwarded from public channels \
@@ -648,7 +704,13 @@ pub async fn handle_channel_forward(
                 })
                 .await
             {
-                tracing::error!(post = %post.id, error = %e, "copy-ref store failed");
+                tracing::error!(event = %Event::CopyRefStoreFailed, post_id = %post.id, error = %e, "copy-ref store failed");
+            } else {
+                tracing::info!(
+                    event = %Event::CopyRefStored, post_id = %post.id,
+                    channel = channel, origin_message_id = msg.id.0,
+                    "copy coordinates stored"
+                );
             }
 
             let caption = format!(
@@ -657,13 +719,20 @@ pub async fn handle_channel_forward(
             );
             for reviewer in &reviewers {
                 let reviewer_chat = ChatId(*reviewer.telegram_id.as_ref());
-                if let Err(e) = bot
+                match bot
                     .copy_message(reviewer_chat, msg.chat.id, msg.id)
                     .caption(caption.clone())
                     .reply_markup(review_keyboard(post.id))
                     .await
                 {
-                    tracing::warn!(reviewer = %reviewer.id, error = %e, "review copy failed");
+                    Ok(_) => tracing::debug!(
+                        event = %Event::ReviewDmSent, post_id = %post.id,
+                        reviewer = %reviewer.id, copied = true, "review copy sent"
+                    ),
+                    Err(e) => tracing::warn!(
+                        event = %Event::ReviewDmFailed, post_id = %post.id,
+                        reviewer = %reviewer.id, copied = true, error = %e, "review copy failed"
+                    ),
                 }
             }
             format!(
@@ -690,6 +759,12 @@ pub async fn handle_callback(
     state: SharedState,
 ) -> ResponseResult<()> {
     let actor = TelegramId::from(query.from.id.0 as i64);
+    tracing::debug!(
+        event = %Event::CallbackReceived,
+        telegram_id = actor.as_ref(),
+        data = query.data.as_deref().unwrap_or(""),
+        "callback received"
+    );
     let Some(data) = query.data.as_deref() else {
         bot.answer_callback_query(query.id).await?;
         return Ok(());

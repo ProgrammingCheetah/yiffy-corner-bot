@@ -24,6 +24,7 @@ use governor::{
 };
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use telemetry::{Event, Upstream};
 use url::Url;
 
 const E621_BASE: &str = "https://e621.net";
@@ -54,6 +55,7 @@ impl RateLimitedE621Client {
 
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: Url) -> Result<T, FetchError> {
         self.limiter.until_ready().await;
+        tracing::debug!(event = %Event::UpstreamRequest, upstream = %Upstream::E621, url = %url, "GET");
         let resp = self
             .http
             .get(url)
@@ -62,6 +64,7 @@ impl RateLimitedE621Client {
             .await
             .map_err(|e| FetchError::Network(e.to_string()))?;
 
+        tracing::debug!(event = %Event::UpstreamStatus, upstream = %Upstream::E621, status = resp.status().as_u16(), "response");
         match resp.status() {
             StatusCode::OK => resp
                 .json::<T>()

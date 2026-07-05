@@ -47,6 +47,25 @@ Environment (all optional):
 5. Anyone can `/suggest <url>`; Moderators approve via the DM buttons;
    `/browse wolf` + `/save <e621-url>` fills the tag-based pool.
 
+## Logging
+
+Logs are **JSON lines** on stdout (set `YCB_LOG_FORMAT=pretty` for the human
+format; level via `RUST_LOG`, default `info,teloxide=warn`). Every line
+carries an `event` field drawn from the closed vocabulary in
+`crates/telemetry` — filter with `jq`:
+
+```sh
+docker logs yiffy_corner_bot_rust | jq 'select(.event == "published")'
+docker logs yiffy_corner_bot_rust | jq 'select(.event == "submission_rejected") | {reason, user_id}'
+```
+
+Level convention: `error` = operation failed; `warn` = degraded/suspicious
+(auth denial, fallback, empty pool); `info` = domain event (submission,
+decision, publish, role change); `debug` = plumbing (upstream requests,
+selector candidate walk, DM fan-out). Secondary classifications are enums
+too: `reason` (`RejectReason`/`SkipReason`) and `upstream`
+(e621/fxtwitter/fxbsky/furaffinity/telegram).
+
 ## Tests
 
 ```sh

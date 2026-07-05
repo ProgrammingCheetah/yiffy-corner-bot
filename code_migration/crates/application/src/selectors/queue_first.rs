@@ -31,6 +31,7 @@ use domain::elements::{
     tag_policy::ForbiddenTagRepository,
 };
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
+use telemetry::{Event, SkipReason};
 
 pub struct QueueFirstSelector<P, E, F> {
     poster: Poster,
@@ -101,28 +102,58 @@ where
             .await
             .map_err(|e| SelectorError::Fetch(e.to_string()))?;
         let tags: HashSet<Tag> = metadata.tags.into_iter().collect();
+        tracing::debug!(event = %Event::TagsFetched, post_id = %post.id, tag_count = tags.len(), "fresh e621 tags fetched");
 
-        if tags.iter().any(|t| global_forbidden.contains(t)) {
+        if let Some(hit) = tags.iter().find(|t| global_forbidden.contains(*t)) {
             if post.status != PostStatus::Banned {
+                tracing::info!(event = %Event::StatusFlipped, post_id = %post.id, to = %PostStatus::Banned, tag = %hit, "globally forbidden tag → Banned");
                 self.posts
                     .set_status_to(post.id, PostStatus::Banned)
                     .await
                     .map_err(|e| SelectorError::Repository(e.to_string()))?;
+            } else {
+                tracing::debug!(event = %Event::CandidateSkipped, reason = %SkipReason::GlobalForbiddenTag, post_id = %post.id, tag = %hit, "still Banned (forbidden tag present)");
             }
             return Ok(false);
         }
         if post.status == PostStatus::Banned {
             // Fresh tags are clean again: the cached Banned verdict expires.
+            tracing::info!(event = %Event::StatusFlipped, post_id = %post.id, to = %PostStatus::Accepted, "fresh tags are clean → Banned lifted to Accepted");
             self.posts
                 .set_status_to(post.id, PostStatus::Accepted)
                 .await
                 .map_err(|e| SelectorError::Repository(e.to_string()))?;
         }
 
-        if self.poster.forbidden_tags.iter().any(|t| tags.contains(t)) {
+        if let Some(hit) = self
+            .poster
+            .forbidden_tags
+            .iter()
+            .find(|t| tags.contains(*t))
+        {
+            tracing::debug!(
+                event = %Event::CandidateSkipped, reason = %SkipReason::PosterForbiddenTag,
+                post_id = %post.id, poster_id = %self.poster.id, tag = %hit,
+                "skipped: poster-forbidden tag (no status change)"
+            );
             return Ok(false);
         }
-        Ok(self.poster.subscribed_tags.iter().all(|t| tags.contains(t)))
+        let missing: Vec<&Tag> = self
+            .poster
+            .subscribed_tags
+            .iter()
+            .filter(|t| !tags.contains(*t))
+            .collect();
+        if missing.is_empty() {
+            Ok(true)
+        } else {
+            tracing::debug!(
+                event = %Event::CandidateSkipped, reason = %SkipReason::MissingSubscribedTags,
+                post_id = %post.id, poster_id = %self.poster.id, missing = ?missing,
+                "skipped: subscription tags not all present"
+            );
+            Ok(false)
+        }
     }
 
     fn off_cooldown(&self, post: &Post) -> bool {
@@ -154,8 +185,14 @@ where
             .iter()
             .find(|p| p.submitted_by.is_some() && p.last_posted.is_none())
         else {
+            tracing::debug!(event = %Event::QueueEmpty, poster_id = %self.poster.id, "submission queue is empty");
             return Ok(None);
         };
+        tracing::debug!(
+            event = %Event::QueueHeadPeeked,
+            poster_id = %self.poster.id, post_id = %head.id, source = %head.source.as_ref(),
+            "peeking submission queue head"
+        );
 
         let matches = match &head.source {
             Source::E621(_) => {
@@ -166,6 +203,15 @@ where
             // Poster with no subscription filter.
             _ => self.poster.subscribed_tags.is_empty(),
         };
+        if matches {
+            tracing::info!(event = %Event::QueueHeadSelected, poster_id = %self.poster.id, post_id = %head.id, "queue head selected");
+        } else {
+            tracing::debug!(
+                event = %Event::QueueHeadMismatch,
+                poster_id = %self.poster.id, post_id = %head.id,
+                "queue head does not match this poster; falling back to pool"
+            );
+        }
         Ok(matches.then(|| head.clone()))
     }
 
@@ -181,20 +227,40 @@ where
         }
         // Saved pool: admin-added e621 only (design Q6 — submissions never
         // enter tag-based selection), and off repost cooldown.
+        let before_filters = pool.len();
         pool.retain(|p| {
             matches!(p.source, Source::E621(_)) && p.submitted_by.is_none() && self.off_cooldown(p)
         });
+        tracing::debug!(
+            event = %Event::PoolSelectionStarted,
+            poster_id = %self.poster.id,
+            candidates = pool.len(),
+            filtered_out = before_filters - pool.len(),
+            "saved-pool selection starting"
+        );
 
         let global = self.globally_forbidden().await?;
         // Random order without replacement: validate candidates until one
         // passes or the pool is exhausted.
+        let mut examined = 0usize;
         while !pool.is_empty() {
             let idx = self.rng.lock().unwrap().random_range(0..pool.len());
             let candidate = pool.swap_remove(idx);
+            examined += 1;
             if self.validate_e621(&candidate, &global).await? {
+                tracing::info!(
+                    event = %Event::PoolCandidateSelected,
+                    poster_id = %self.poster.id, post_id = %candidate.id, examined,
+                    "pool candidate selected"
+                );
                 return Ok(candidate);
             }
         }
+        tracing::warn!(
+            event = %Event::PoolExhausted,
+            poster_id = %self.poster.id, examined,
+            "no eligible post in the saved pool (NoMatch)"
+        );
         Err(SelectorError::NoMatch)
     }
 }

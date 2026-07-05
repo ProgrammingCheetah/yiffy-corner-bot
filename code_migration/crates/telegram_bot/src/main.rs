@@ -29,6 +29,8 @@ use persistence::sqlite::{
 };
 use teloxide::{Bot, prelude::*, types::ChatId};
 
+use telemetry::Event;
+
 use crate::commands::{Command, handle_callback, handle_channel_forward, handle_command};
 use crate::publishers::TelegramPublisher;
 use crate::resolvers::CompositeResolver;
@@ -52,8 +54,9 @@ fn build_resolver(
         (Ok(a), Ok(b)) => Some(FaCookies { a, b }),
         _ => {
             tracing::warn!(
-                "no FA cookies in {} — FurAffinity limited to General-rated content",
-                config.vault_env_dir.display()
+                event = %Event::FaCookiesMissing,
+                vault_env_dir = %config.vault_env_dir.display(),
+                "no FA cookies — FurAffinity limited to General-rated content"
             );
             None
         }
@@ -87,7 +90,7 @@ async fn build_runtimes(
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?
         else {
-            tracing::warn!(poster = %poster.id, "poster has no channel binding; skipping");
+            tracing::warn!(event = %Event::PosterUnbound, poster_id = %poster.id, "poster has no channel binding; skipping");
             continue;
         };
         // Posters may publish through their own bot token; the MVP flow binds
@@ -115,17 +118,32 @@ async fn build_runtimes(
     Ok(runtimes)
 }
 
+/// JSON lines by default (one object per line, event fields flattened to the
+/// top level for `jq`); `YCB_LOG_FORMAT=pretty` switches to the human format
+/// for local runs. Level via `RUST_LOG` (default `info,teloxide=warn`).
+fn init_logging() {
+    let filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "info,teloxide=warn".into())
+    };
+    match std::env::var("YCB_LOG_FORMAT").as_deref() {
+        Ok("pretty") => tracing_subscriber::fmt().with_env_filter(filter()).init(),
+        _ => tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(false)
+            .with_env_filter(filter())
+            .init(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,teloxide=warn".into()),
-        )
-        .init();
+    init_logging();
 
     let config = AppConfig::from_env();
-    tracing::info!(?config, "booting");
+    tracing::info!(event = %Event::Booting, ?config, "booting");
 
     let pool = sqlite::connect_and_migrate(&config.database_url).await?;
     let e621 = Arc::new(
@@ -158,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
             .create(config.owner_id, Role::Owner, None, None)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        tracing::info!(owner = ?config.owner_id, "seeded Owner");
+        tracing::info!(event = %Event::OwnerSeeded, owner = config.owner_id.as_ref(), "seeded Owner");
     }
 
     let main_token = read_secret(&config.token_path())?;
@@ -167,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
     // Scheduler: one runtime per bound Poster.
     let resolver = build_resolver(&config, e621, telegram_copies)?;
     let runtimes = build_runtimes(&state, resolver, &bot, &main_token).await?;
-    tracing::info!(count = runtimes.len(), "scheduler runtimes loaded");
+    tracing::info!(event = %Event::RuntimesLoaded, count = runtimes.len(), "scheduler runtimes loaded");
     tokio::spawn(start_scheduler(SchedulerDeps {
         runtimes,
         posts: Arc::new(state.posts.clone()),
@@ -180,11 +198,14 @@ async fn main() -> anyhow::Result<()> {
         let app = Router::new().route("/health", get(health));
         match tokio::net::TcpListener::bind(&health_addr).await {
             Ok(listener) => {
+                tracing::info!(event = %Event::HealthServerUp, addr = %health_addr, "health endpoint listening");
                 if let Err(e) = axum::serve(listener, app).await {
-                    tracing::error!(error = %e, "health server crashed");
+                    tracing::error!(event = %Event::HealthServerFailed, error = %e, "health server crashed");
                 }
             }
-            Err(e) => tracing::error!(error = %e, addr = %health_addr, "health bind failed"),
+            Err(e) => {
+                tracing::error!(event = %Event::HealthServerFailed, error = %e, addr = %health_addr, "health bind failed")
+            }
         }
     });
 

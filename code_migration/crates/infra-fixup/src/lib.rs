@@ -24,6 +24,7 @@ use domain::elements::{
 };
 use reqwest::Client;
 use serde::Deserialize;
+use telemetry::{Event, Upstream};
 use url::Url;
 
 const FXTWITTER_API: &str = "https://api.fxtwitter.com";
@@ -58,6 +59,7 @@ impl FixupResolver {
         let (user, id) = twitter_status_parts(url)
             .ok_or_else(|| MediaResolveError::Parse(format!("not a status URL: {url}")))?;
         let api_url = format!("{FXTWITTER_API}/{user}/status/{id}");
+        tracing::debug!(event = %Event::UpstreamRequest, upstream = %Upstream::FxTwitter, url = %api_url, "GET");
         let response = self
             .http
             .get(&api_url)
@@ -85,12 +87,18 @@ impl FixupResolver {
         let tweet = body
             .tweet
             .ok_or_else(|| MediaResolveError::Parse("fxtwitter 200 without tweet".into()))?;
-        Ok(pick_twitter_media(tweet.media.as_ref())
-            .unwrap_or_else(|| ResolvedMedia::Link(with_host(url, FIXUPX_HOST))))
+        Ok(pick_twitter_media(tweet.media.as_ref()).unwrap_or_else(|| {
+            tracing::debug!(
+                event = %Event::MediaLinkFallback, upstream = %Upstream::FxTwitter, url = %url,
+                "tweet has no direct media; publishing as fixupx link"
+            );
+            ResolvedMedia::Link(with_host(url, FIXUPX_HOST))
+        }))
     }
 
     async fn resolve_bsky(&self, url: &Url) -> Result<ResolvedMedia, MediaResolveError> {
         let embed_url = with_host(url, FXBSKY_HOST);
+        tracing::debug!(event = %Event::UpstreamRequest, upstream = %Upstream::Fxbsky, url = %embed_url, "GET");
         let html = self
             .http
             .get(embed_url.clone())
@@ -101,7 +109,13 @@ impl FixupResolver {
             .text()
             .await
             .map_err(|e| MediaResolveError::Network(e.to_string()))?;
-        Ok(pick_og_media(&html).unwrap_or(ResolvedMedia::Link(embed_url)))
+        Ok(pick_og_media(&html).unwrap_or_else(|| {
+            tracing::debug!(
+                event = %Event::MediaLinkFallback, upstream = %Upstream::Fxbsky, url = %embed_url,
+                "no og media on embed page; publishing as fxbsky link"
+            );
+            ResolvedMedia::Link(embed_url)
+        }))
     }
 }
 

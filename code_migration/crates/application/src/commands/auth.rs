@@ -3,6 +3,7 @@
 use domain::elements::user::{Role, TelegramId, User, UserRepository};
 
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 /// Look up the acting User and require at least `min` role.
 ///
@@ -17,10 +18,18 @@ pub async fn require_role(
         .find_by_telegram_id(actor)
         .await
         .map_err(|_| HandlerError::RepositoryError)?
-        .ok_or(HandlerError::UnknownActor)?;
+        .ok_or_else(|| {
+            tracing::warn!(event = %Event::AuthDenied, telegram_id = actor.as_ref(), required = %min, "denied: unknown actor");
+            HandlerError::UnknownActor
+        })?;
     if user.role >= min {
         Ok(user)
     } else {
+        tracing::warn!(
+            event = %Event::AuthDenied,
+            user_id = %user.id, role = %user.role, required = %min,
+            "denied: insufficient role"
+        );
         Err(HandlerError::NotAuthorized(user.id))
     }
 }

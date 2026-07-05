@@ -17,6 +17,7 @@ use domain::elements::{
 use url::Url;
 
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::{Event, RejectReason};
 
 #[derive(Debug)]
 pub struct SuggestCommand {
@@ -71,17 +72,25 @@ where
     };
 
     if submitter.is_banned {
+        tracing::warn!(event = %Event::SubmissionRejected, reason = %RejectReason::SubmitterBanned, user_id = %submitter.id, "submission rejected: user is banned");
         return Err(HandlerError::SubmitterBanned);
     }
 
-    let source =
-        Source::try_from(cmd.url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
+    let source = Source::try_from(cmd.url).map_err(|e| {
+        tracing::info!(event = %Event::SubmissionRejected, reason = %RejectReason::InvalidSource, user_id = %submitter.id, error = %e, "submission rejected: bad source URL");
+        HandlerError::InvalidSource(e.to_string())
+    })?;
 
     if let Some(existing) = posts
         .find_by_source(&source)
         .await
         .map_err(|_| HandlerError::RepositoryError)?
     {
+        tracing::info!(
+            event = %Event::SubmissionRejected, reason = %RejectReason::DuplicateSource,
+            user_id = %submitter.id, existing_post = %existing.id, source = %source.as_ref(),
+            "submission rejected: duplicate source"
+        );
         return Err(HandlerError::DuplicateSubmission(existing.id));
     }
 
@@ -118,9 +127,22 @@ where
         .create(source, Some(submitter.id), Utc::now(), status.clone())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::SubmissionCreated,
+        post_id = %post.id, user_id = %submitter.id,
+        source = %post.source.as_ref(), status = %post.status,
+        "submission created"
+    );
 
     match status {
-        PostStatus::Banned => Ok(SuggestOutcome::AutoBanned { post }),
+        PostStatus::Banned => {
+            tracing::warn!(
+                event = %Event::SubmissionAutoBanned,
+                post_id = %post.id, user_id = %submitter.id,
+                "submission owned a globally forbidden tag"
+            );
+            Ok(SuggestOutcome::AutoBanned { post })
+        }
         _ => {
             let mut reviewers = users
                 .list_by_role(Role::Moderator)

@@ -9,6 +9,7 @@ use domain::elements::user::{Role, TelegramId, UserRepository};
 
 use crate::commands::auth::require_role;
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 #[derive(Debug)]
 pub struct BanCommand {
@@ -25,8 +26,18 @@ pub async fn handle(cmd: BanCommand, users: &impl UserRepository) -> HandlerResu
         .map_err(|_| HandlerError::RepositoryError)?
         .ok_or(HandlerError::UnknownActor)?;
     if target.role >= actor.role {
+        tracing::warn!(
+            event = %Event::AuthDenied,
+            actor_id = %actor.id, target_id = %target.id, target_role = %target.role,
+            "ban denied: target does not outrank actor"
+        );
         return Err(HandlerError::NotAuthorized(actor.id));
     }
+    tracing::info!(
+        event = %Event::BanChanged,
+        actor_id = %actor.id, target_id = %target.id, banned = cmd.banned,
+        "submission ban changed"
+    );
     users
         .set_banned(target.id, cmd.banned)
         .await

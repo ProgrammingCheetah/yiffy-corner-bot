@@ -13,6 +13,7 @@ use domain::elements::{
 
 use crate::commands::auth::require_role;
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 #[derive(Debug)]
 pub struct SetUserRole {
@@ -59,8 +60,15 @@ pub async fn handle(
         ));
     }
     if target.role == cmd.new_role {
+        tracing::debug!(event = %Event::RoleChanged, target_id = %target.id, role = %target.role, changed = false, "role unchanged");
         return Ok(target);
     }
+    tracing::info!(
+        event = %Event::RoleChanged,
+        actor_id = %actor.id, target_id = %target.id,
+        from = %target.role, to = %cmd.new_role,
+        "role changed"
+    );
     users
         .change_role(target.id, cmd.new_role)
         .await

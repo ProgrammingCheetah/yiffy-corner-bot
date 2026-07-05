@@ -17,6 +17,7 @@ use domain::elements::{
 
 use crate::commands::auth::require_role;
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 #[derive(Debug)]
 pub struct NewPoster {
@@ -35,10 +36,19 @@ where
     P: PosterRepository,
 {
     require_role(users, cmd.actor, Role::Owner).await?;
-    posters
+    let poster = posters
         .create(cmd.subscribed_tags, cmd.forbidden_tags, cmd.interval)
         .await
-        .map_err(|_| HandlerError::RepositoryError)
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::PosterCreated,
+        poster_id = %poster.id,
+        interval_min = poster.time_interval.as_ref(),
+        subscribed = ?poster.subscribed_tags,
+        forbidden = ?poster.forbidden_tags,
+        "poster created"
+    );
+    Ok(poster)
 }
 
 #[derive(Debug)]
@@ -67,6 +77,7 @@ where
         .ok_or_else(|| {
             HandlerError::InvalidState(format!("poster {} does not exist", cmd.poster_id))
         })?;
+    tracing::info!(event = %Event::ChannelBound, poster_id = %cmd.poster_id, chat_id = cmd.chat_id, "poster channel binding upserted");
     configs
         .upsert(PublisherConfig {
             poster_id: cmd.poster_id,

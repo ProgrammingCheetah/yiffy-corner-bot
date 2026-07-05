@@ -9,7 +9,9 @@ use domain::elements::{
     publisher::{PublishItem, Publisher},
     user::UserRepository,
 };
+use telemetry::Event;
 use tokio::time::{MissedTickBehavior, interval};
+use tracing::Instrument;
 
 /// One unit of scheduler work: a [`Poster`] (config) paired with the per-Poster
 /// [`PostSelectorStrategy`] that picks its next [`Post`], the [`MediaResolver`]
@@ -89,45 +91,72 @@ where
         if !block.fires_for(&rt.poster.time_interval) {
             continue;
         }
-        // Queue first (peeked user submissions), then the saved pool.
-        let due = match rt.selector.find_due_post().await {
-            Ok(due) => due,
-            Err(e) => {
-                tracing::error!(poster_id = %rt.poster.id, error = %e, "queue peek failed");
-                continue;
-            }
-        };
-        let post = match due {
-            Some(p) => p,
-            None => match rt.selector.find_post().await {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!(poster_id = %rt.poster.id, error = %e, "selector failed");
-                    continue;
-                }
-            },
-        };
-        let media = match rt.resolver.resolve(&post.source).await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!(poster_id = %rt.poster.id, post_id = %post.id, error = %e, "media resolution failed");
-                continue;
-            }
-        };
-        let item = PublishItem {
-            media,
-            caption: Some(build_caption(&post, users).await),
-        };
-        if let Err(e) = rt.publisher.publish(&item).await {
-            tracing::error!(poster_id = %rt.poster.id, post_id = %post.id, error = %e, "publish failed");
-            continue;
-        }
-        if let Err(e) = posts.mark_posted(post.id, now).await {
-            tracing::error!(poster_id = %rt.poster.id, error = %e, "mark_posted failed");
-            continue;
-        }
+        let span = tracing::info_span!(
+            "poster_fire",
+            poster_id = %rt.poster.id,
+            minute = now.minute_of_hour(),
+        );
+        fire_one(rt, posts, users, now).instrument(span).await;
     }
     Ok(())
+}
+
+/// One Poster's full fire pipeline: select → resolve → caption → publish →
+/// mark. Every exit path logs; failures never propagate (the tick moves on).
+async fn fire_one<R, U>(rt: &PosterRuntime, posts: &R, users: &U, now: DateTime<Utc>)
+where
+    R: PostRepository + Send + Sync,
+    R::Err: std::fmt::Display,
+    U: UserRepository,
+{
+    tracing::debug!(event = %Event::PosterFired, interval_min = rt.poster.time_interval.as_ref(), "poster fires this tick");
+    // Queue first (peeked user submissions), then the saved pool.
+    let due = match rt.selector.find_due_post().await {
+        Ok(due) => due,
+        Err(e) => {
+            tracing::error!(event = %Event::QueuePeekFailed, error = %e, "queue peek failed");
+            return;
+        }
+    };
+    let (post, from_queue) = match due {
+        Some(p) => (p, true),
+        None => match rt.selector.find_post().await {
+            Ok(p) => (p, false),
+            Err(e) => {
+                tracing::error!(event = %Event::SelectorFailed, error = %e, "selector failed");
+                return;
+            }
+        },
+    };
+    tracing::info!(
+        event = %Event::PostSelected,
+        post_id = %post.id,
+        source = %post.source.as_ref(),
+        from_queue,
+        "post selected"
+    );
+    let media = match rt.resolver.resolve(&post.source).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(event = %Event::MediaResolveFailed, post_id = %post.id, source = %post.source.as_ref(), error = %e, "media resolution failed");
+            return;
+        }
+    };
+    tracing::debug!(event = %Event::MediaResolved, post_id = %post.id, media = ?media, "media resolved");
+    let item = PublishItem {
+        media,
+        caption: Some(build_caption(&post, users).await),
+    };
+    if let Err(e) = rt.publisher.publish(&item).await {
+        tracing::error!(event = %Event::PublishFailed, post_id = %post.id, error = %e, "publish failed");
+        return;
+    }
+    if let Err(e) = posts.mark_posted(post.id, now).await {
+        // Publish succeeded but the bookkeeping didn't: the post may repeat.
+        tracing::error!(event = %Event::MarkPostedFailed, post_id = %post.id, error = %e, "mark_posted failed AFTER publish — post may repeat");
+        return;
+    }
+    tracing::info!(event = %Event::Published, post_id = %post.id, "published and marked");
 }
 
 /// Loop forever, waking every minute to call [`run_tick`].
@@ -144,7 +173,7 @@ where
         ticker.tick().await;
         let now = Utc::now();
         if let Err(e) = run_tick(now, &deps.runtimes, &*deps.posts, &*deps.users).await {
-            tracing::error!(error = %e, "scheduler tick failed");
+            tracing::error!(event = %Event::TickFailed, error = %e, "scheduler tick failed");
         }
     }
 }

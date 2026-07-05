@@ -12,6 +12,7 @@ use domain::elements::{
 
 use crate::commands::auth::require_role;
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 #[derive(Debug)]
 pub struct ModerateCommand {
@@ -25,13 +26,19 @@ async fn transition<P: PostRepository>(
     posts: &P,
     to: PostStatus,
 ) -> HandlerResult<Post> {
-    require_role(users, cmd.actor, Role::Moderator).await?;
+    let moderator = require_role(users, cmd.actor, Role::Moderator).await?;
+    tracing::debug!(event = %Event::ModerationRequested, moderator_id = %moderator.id, post_id = %cmd.post_id, "moderation requested");
     let post = posts
         .find_by_id(cmd.post_id)
         .await
         .map_err(|_| HandlerError::RepositoryError)?
         .ok_or(HandlerError::PostNotFound(cmd.post_id))?;
     if post.status != PostStatus::AwaitingModeration {
+        tracing::warn!(
+            event = %Event::ModerationInvalidState,
+            post_id = %post.id, status = %post.status,
+            "moderation rejected: post not awaiting moderation"
+        );
         return Err(HandlerError::InvalidState(format!(
             "post {} is {:?}, not awaiting moderation",
             post.id, post.status
@@ -41,6 +48,7 @@ async fn transition<P: PostRepository>(
         .set_status_to(post.id, to.clone())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::ModerationApplied, post_id = %post.id, decision = %to, "moderation decision applied");
     Ok(Post { status: to, ..post })
 }
 
@@ -72,6 +80,7 @@ pub async fn delete<P: PostRepository>(
         .await
         .map_err(|_| HandlerError::RepositoryError)?
         .ok_or(HandlerError::PostNotFound(cmd.post_id))?;
+    tracing::info!(event = %Event::PostDeleted, post_id = %cmd.post_id, "post soft-deleted");
     posts
         .remove(cmd.post_id)
         .await

@@ -3,6 +3,7 @@ use domain::elements::{
     media::ResolvedMedia,
     publisher::{PublishItem, Publisher, PublisherError},
 };
+use telemetry::{Event, Upstream};
 use teloxide::{
     Bot,
     payloads::{CopyMessageSetters, SendAnimationSetters, SendPhotoSetters, SendVideoSetters},
@@ -28,6 +29,10 @@ impl TelegramPublisher {
 #[async_trait]
 impl Publisher for TelegramPublisher {
     async fn publish(&self, item: &PublishItem) -> Result<(), PublisherError> {
+        tracing::debug!(
+            event = %Event::UpstreamRequest, upstream = %Upstream::Telegram,
+            chat = self.chat_id.0, media = ?item.media, "sending publish message"
+        );
         let send = |e: teloxide::RequestError| PublisherError::Send(e.to_string());
         match &item.media {
             ResolvedMedia::Photo(url) => {

@@ -1,6 +1,7 @@
 use domain::elements::user::{Role, TelegramId, UserRepository};
 
 use crate::traits::handler_response::{HandlerError, HandlerResult};
+use telemetry::Event;
 
 #[derive(Debug)]
 pub struct StartCommand {
@@ -20,6 +21,7 @@ pub async fn handle(cmd: StartCommand, user_repository: &impl UserRepository) ->
         .map_err(|_| HandlerError::RepositoryError)?
     {
         if existing.display_name != cmd.display_name {
+            tracing::info!(event = %Event::DisplayNameRefreshed, user_id = %existing.id, "display name refreshed on /start");
             user_repository
                 .set_display_name(existing.id, cmd.display_name)
                 .await
@@ -28,10 +30,11 @@ pub async fn handle(cmd: StartCommand, user_repository: &impl UserRepository) ->
         return Ok(());
     }
 
-    user_repository
+    let user = user_repository
         .create(cmd.id, Role::User, None, cmd.display_name)
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::UserRegistered, user_id = %user.id, telegram_id = cmd.id.as_ref(), "new user registered via /start");
 
     Ok(())
 }

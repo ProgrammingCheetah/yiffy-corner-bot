@@ -28,6 +28,7 @@ use governor::{
     state::{InMemoryState, NotKeyed},
 };
 use reqwest::Client;
+use telemetry::{Event, Upstream};
 use url::Url;
 
 type Limiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
@@ -73,6 +74,10 @@ impl MediaResolver for FuraffinityResolver {
             return Err(MediaResolveError::Unsupported(source.clone()));
         };
         self.limiter.until_ready().await;
+        tracing::debug!(
+            event = %Event::UpstreamRequest, upstream = %Upstream::FurAffinity,
+            url = %url, authenticated = self.cookies.is_some(), "GET"
+        );
 
         let mut request = self
             .http
@@ -99,13 +104,24 @@ impl MediaResolver for FuraffinityResolver {
         match extract_media_url(&html) {
             Some(media_url) => Ok(ResolvedMedia::classify(media_url)),
             None if page_is_login_walled(&html) && self.cookies.is_none() => {
+                tracing::warn!(
+                    event = %Event::FaLoginWall, url = %url, authenticated = false,
+                    "rating-gated FA submission and no cookies configured"
+                );
                 Err(MediaResolveError::Auth(
                     "submission requires an FA login (Mature/Adult rating) and no cookies are configured".into(),
                 ))
             }
-            None if page_is_login_walled(&html) => Err(MediaResolveError::Auth(
-                "submission requires an FA login and the configured cookies were rejected".into(),
-            )),
+            None if page_is_login_walled(&html) => {
+                tracing::warn!(
+                    event = %Event::FaLoginWall, url = %url, authenticated = true,
+                    "rating-gated FA submission; configured cookies were rejected"
+                );
+                Err(MediaResolveError::Auth(
+                    "submission requires an FA login and the configured cookies were rejected"
+                        .into(),
+                ))
+            }
             None => Err(MediaResolveError::Parse(
                 "no download link or og:image found on FA page".into(),
             )),
