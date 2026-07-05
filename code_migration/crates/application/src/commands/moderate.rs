@@ -147,7 +147,9 @@ mod tests {
     async fn moderator_can_approve() {
         let fx = Fixture::new().await;
         let post = fx.awaiting_post(1).await;
-        let approved = approve(cmd(1, post.id), &fx.users, &fx.posts).await.unwrap();
+        let approved = approve(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap();
         assert_eq!(approved.status, PostStatus::Accepted);
         let stored = fx.posts.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(stored.status, PostStatus::Accepted);
@@ -186,7 +188,9 @@ mod tests {
     async fn double_moderation_is_invalid_state() {
         let fx = Fixture::new().await;
         let post = fx.awaiting_post(1).await;
-        approve(cmd(1, post.id), &fx.users, &fx.posts).await.unwrap();
+        approve(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap();
         let err = reject(cmd(1, post.id), &fx.users, &fx.posts)
             .await
             .unwrap_err();
@@ -197,7 +201,9 @@ mod tests {
     async fn delete_soft_deletes_from_any_status() {
         let fx = Fixture::new().await;
         let post = fx.awaiting_post(1).await;
-        approve(cmd(1, post.id), &fx.users, &fx.posts).await.unwrap();
+        approve(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap();
         delete(cmd(1, post.id), &fx.users, &fx.posts).await.unwrap();
         let stored = fx.posts.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(stored.status, PostStatus::Deleted);

@@ -22,7 +22,8 @@ impl SqlitePostRepository {
 
 fn row_to_post(row: &sqlx::sqlite::SqliteRow) -> Result<Post, PostRepositoryError> {
     let source_url: String = row.get("source_url");
-    let url = Url::parse(&source_url).map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+    let url =
+        Url::parse(&source_url).map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
     let source =
         Source::try_from(url).map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
     let status: String = row.get("status");
@@ -113,13 +114,11 @@ impl PostRepository for SqlitePostRepository {
     }
 
     async fn list_by_status(&self, status: PostStatus) -> Result<Vec<Post>, Self::Err> {
-        let rows = sqlx::query(
-            "SELECT * FROM posts WHERE status = ? ORDER BY submitted_at, id",
-        )
-        .bind(status.to_string())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        let rows = sqlx::query("SELECT * FROM posts WHERE status = ? ORDER BY submitted_at, id")
+            .bind(status.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
         rows.iter().map(row_to_post).collect()
     }
 }

@@ -122,9 +122,13 @@ mod tests {
     #[tokio::test]
     async fn owner_promotes_known_user_to_moderator() {
         let fx = fixture().await;
-        let updated = handle(cmd(1, "knownuser", Role::Moderator), &fx.users, &fx.resolver)
-            .await
-            .unwrap();
+        let updated = handle(
+            cmd(1, "knownuser", Role::Moderator),
+            &fx.users,
+            &fx.resolver,
+        )
+        .await
+        .unwrap();
         assert_eq!(updated.role, Role::Moderator);
     }
 
@@ -143,9 +147,13 @@ mod tests {
     #[tokio::test]
     async fn non_owner_cannot_set_roles() {
         let fx = fixture().await;
-        let err = handle(cmd(2, "knownuser", Role::Moderator), &fx.users, &fx.resolver)
-            .await
-            .unwrap_err();
+        let err = handle(
+            cmd(2, "knownuser", Role::Moderator),
+            &fx.users,
+            &fx.resolver,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, HandlerError::NotAuthorized(_)));
     }
 

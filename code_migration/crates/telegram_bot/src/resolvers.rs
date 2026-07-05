@@ -28,7 +28,9 @@ impl MediaResolver for CompositeResolver {
         match source {
             Source::E621(_) => self.e621.resolve(source).await,
             Source::FurAffinity(_) => self.furaffinity.resolve(source).await,
-            Source::Twitter(_) | Source::BlueSky(_) | Source::DeviantArt(_)
+            Source::Twitter(_)
+            | Source::BlueSky(_)
+            | Source::DeviantArt(_)
             | Source::Telegram(_) => self.fixup.resolve(source).await,
         }
     }

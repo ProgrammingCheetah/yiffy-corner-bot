@@ -7,7 +7,8 @@ use std::sync::Arc;
 use domain::elements::user::TelegramId;
 use infra_e621::RateLimitedE621Client;
 use persistence::sqlite::{
-    post::SqlitePostRepository, poster::SqlitePosterRepository,
+    post::SqlitePostRepository,
+    poster::SqlitePosterRepository,
     publisher_config::SqlitePublisherConfigRepository,
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
     user::SqliteUserRepository,

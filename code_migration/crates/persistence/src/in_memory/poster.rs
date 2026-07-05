@@ -65,7 +65,10 @@ mod tests {
     #[tokio::test]
     async fn create_then_find_by_id_roundtrip() {
         let repo = InMemoryPosterRepository::new();
-        let poster = repo.create(vec![], vec![], fixture_interval()).await.unwrap();
+        let poster = repo
+            .create(vec![], vec![], fixture_interval())
+            .await
+            .unwrap();
         let found = repo.find_by_id(poster.id).await.unwrap();
         assert_eq!(found.map(|p| p.id), Some(poster.id));
     }
@@ -73,8 +76,14 @@ mod tests {
     #[tokio::test]
     async fn create_assigns_unique_ids() {
         let repo = InMemoryPosterRepository::new();
-        let a = repo.create(vec![], vec![], fixture_interval()).await.unwrap();
-        let b = repo.create(vec![], vec![], fixture_interval()).await.unwrap();
+        let a = repo
+            .create(vec![], vec![], fixture_interval())
+            .await
+            .unwrap();
+        let b = repo
+            .create(vec![], vec![], fixture_interval())
+            .await
+            .unwrap();
         assert_ne!(a.id, b.id);
     }
 
@@ -88,7 +97,9 @@ mod tests {
     async fn list_all_returns_every_created_poster() {
         let repo = InMemoryPosterRepository::new();
         for _ in 0..3 {
-            repo.create(vec![], vec![], fixture_interval()).await.unwrap();
+            repo.create(vec![], vec![], fixture_interval())
+                .await
+                .unwrap();
         }
         assert_eq!(repo.list_all().await.unwrap().len(), 3);
     }

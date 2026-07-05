@@ -48,15 +48,11 @@ macro_rules! sqlite_tag_repository {
             }
 
             async fn contains(&self, tag: &Tag) -> Result<bool, Self::Err> {
-                let row = sqlx::query(concat!(
-                    "SELECT 1 FROM ",
-                    $table,
-                    " WHERE tag = ? LIMIT 1"
-                ))
-                .bind(tag.as_ref())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| $error::Storage(e.to_string()))?;
+                let row = sqlx::query(concat!("SELECT 1 FROM ", $table, " WHERE tag = ? LIMIT 1"))
+                    .bind(tag.as_ref())
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| $error::Storage(e.to_string()))?;
                 Ok(row.is_some())
             }
 

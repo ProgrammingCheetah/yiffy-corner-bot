@@ -1,12 +1,27 @@
 services:
+  # Legacy TypeScript bot. Superseded by bot-rust; kept until cutover.
   bot:
     build:
       context: .
       dockerfile: ./Dockerfile
     container_name: yiffy_corner_bot
     restart: always
+    profiles: [legacy]
     volumes:
       - ..:/yc-data:cached
+
+  bot-rust:
+    build:
+      context: ./code_migration
+      dockerfile: ./Dockerfile
+    container_name: yiffy_corner_bot_rust
+    restart: always
+    environment:
+      YCB_ENV: ${YCB_ENV:-production}
+      RUST_LOG: ${RUST_LOG:-info,teloxide=warn}
+    volumes:
+      # Secrets (token.txt, optional cookie_a/b.txt) + sqlite storage.
+      - ./config/vault:/app/config/vault
 
 volumes:
   yc-data:

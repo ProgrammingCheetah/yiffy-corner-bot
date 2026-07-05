@@ -74,7 +74,8 @@ where
         return Err(HandlerError::SubmitterBanned);
     }
 
-    let source = Source::try_from(cmd.url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
+    let source =
+        Source::try_from(cmd.url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
 
     if let Some(existing) = posts
         .find_by_source(&source)
@@ -277,7 +278,10 @@ mod tests {
             .unwrap();
         fx.users.set_banned(user.id, true).await.unwrap();
 
-        let err = fx.suggest(42, "https://e621.net/posts/1").await.unwrap_err();
+        let err = fx
+            .suggest(42, "https://e621.net/posts/1")
+            .await
+            .unwrap_err();
         assert!(matches!(err, HandlerError::SubmitterBanned));
     }
 
@@ -285,14 +289,20 @@ mod tests {
     async fn duplicate_source_is_rejected() {
         let fx = Fixture::new().with_e621_post("https://e621.net/posts/1", &["wolf"]);
         fx.suggest(42, "https://e621.net/posts/1").await.unwrap();
-        let err = fx.suggest(43, "https://e621.net/posts/1").await.unwrap_err();
+        let err = fx
+            .suggest(43, "https://e621.net/posts/1")
+            .await
+            .unwrap_err();
         assert!(matches!(err, HandlerError::DuplicateSubmission(_)));
     }
 
     #[tokio::test]
     async fn unknown_host_is_rejected() {
         let fx = Fixture::new();
-        let err = fx.suggest(42, "https://example.com/a.png").await.unwrap_err();
+        let err = fx
+            .suggest(42, "https://example.com/a.png")
+            .await
+            .unwrap_err();
         assert!(matches!(err, HandlerError::InvalidSource(_)));
     }
 

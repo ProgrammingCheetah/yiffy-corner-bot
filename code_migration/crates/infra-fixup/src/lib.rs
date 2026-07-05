@@ -353,7 +353,10 @@ mod tests {
 
         let tg = Source::try_from(url("https://t.me/somechannel/42")).unwrap();
         let media = rt.block_on(resolver.resolve(&tg)).unwrap();
-        assert_eq!(media, ResolvedMedia::Link(url("https://t.me/somechannel/42")));
+        assert_eq!(
+            media,
+            ResolvedMedia::Link(url("https://t.me/somechannel/42"))
+        );
 
         let da = Source::try_from(url("https://www.deviantart.com/x/art/y-1")).unwrap();
         let media = rt.block_on(resolver.resolve(&da)).unwrap();
@@ -401,10 +404,8 @@ mod live_tests {
     #[ignore = "hits live FixUp services"]
     async fn live_bsky_photo_resolves() {
         let resolver = FixupResolver::new("yiffy-corner-bot/0.1 test").unwrap();
-        let source = Source::try_from(url(
-            "https://bsky.app/profile/bsky.app/post/3mpok7nkjtc2o",
-        ))
-        .unwrap();
+        let source =
+            Source::try_from(url("https://bsky.app/profile/bsky.app/post/3mpok7nkjtc2o")).unwrap();
         let media = resolver.resolve(&source).await.unwrap();
         assert!(
             matches!(media, ResolvedMedia::Photo(_)),

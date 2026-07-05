@@ -119,19 +119,10 @@ where
                 .map_err(|e| SelectorError::Repository(e.to_string()))?;
         }
 
-        if self
-            .poster
-            .forbidden_tags
-            .iter()
-            .any(|t| tags.contains(t))
-        {
+        if self.poster.forbidden_tags.iter().any(|t| tags.contains(t)) {
             return Ok(false);
         }
-        Ok(self
-            .poster
-            .subscribed_tags
-            .iter()
-            .all(|t| tags.contains(t)))
+        Ok(self.poster.subscribed_tags.iter().all(|t| tags.contains(t)))
     }
 
     fn off_cooldown(&self, post: &Post) -> bool {
@@ -191,9 +182,7 @@ where
         // Saved pool: admin-added e621 only (design Q6 — submissions never
         // enter tag-based selection), and off repost cooldown.
         pool.retain(|p| {
-            matches!(p.source, Source::E621(_))
-                && p.submitted_by.is_none()
-                && self.off_cooldown(p)
+            matches!(p.source, Source::E621(_)) && p.submitted_by.is_none() && self.off_cooldown(p)
         });
 
         let global = self.globally_forbidden().await?;
@@ -307,11 +296,8 @@ mod tests {
         fn selector(
             &self,
             poster: Poster,
-        ) -> QueueFirstSelector<
-            InMemoryPostRepository,
-            StubFetcher,
-            InMemoryForbiddenTagRepository,
-        > {
+        ) -> QueueFirstSelector<InMemoryPostRepository, StubFetcher, InMemoryForbiddenTagRepository>
+        {
             QueueFirstSelector::new(
                 poster,
                 self.posts.clone(),
@@ -327,7 +313,12 @@ mod tests {
     async fn due_post_returns_matching_queue_head() {
         let mut fx = Fixture::new();
         let head = fx
-            .add_post(e621_url(1), &["wolf", "male"], Some(42), PostStatus::Accepted)
+            .add_post(
+                e621_url(1),
+                &["wolf", "male"],
+                Some(42),
+                PostStatus::Accepted,
+            )
             .await;
         let selector = fx.selector(poster(&["wolf"], &[]));
         let found = selector.find_due_post().await.unwrap();

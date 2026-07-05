@@ -18,8 +18,5 @@ pub enum ResolveError {
 /// doesn't exist). Returns `Err` only for transport/API failures.
 #[async_trait::async_trait]
 pub trait TelegramUserResolver: Send + Sync {
-    async fn resolve_username(
-        &self,
-        username: &str,
-    ) -> Result<Option<TelegramId>, ResolveError>;
+    async fn resolve_username(&self, username: &str) -> Result<Option<TelegramId>, ResolveError>;
 }

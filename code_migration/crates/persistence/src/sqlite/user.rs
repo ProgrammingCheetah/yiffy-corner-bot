@@ -1,9 +1,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use domain::elements::user::{
-    Role, TelegramId, User, UserId, UserRepository, UserRepositoryError,
-};
+use domain::elements::user::{Role, TelegramId, User, UserId, UserRepository, UserRepositoryError};
 use sqlx::{Row, sqlite::SqlitePool};
 
 #[derive(Clone)]

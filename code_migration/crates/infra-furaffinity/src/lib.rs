@@ -115,8 +115,8 @@ impl MediaResolver for FuraffinityResolver {
 
 /// Prefer the Download anchor (full resolution), then `og:image`.
 fn extract_media_url(html: &str) -> Option<Url> {
-    let download = regex::Regex::new(r#"href="(//d\.furaffinity\.net/art/[^"]+)""#)
-        .expect("static pattern");
+    let download =
+        regex::Regex::new(r#"href="(//d\.furaffinity\.net/art/[^"]+)""#).expect("static pattern");
     if let Some(captures) = download.captures(html) {
         return Url::parse(&format!("https:{}", &captures[1])).ok();
     }
@@ -158,7 +158,8 @@ mod tests {
 
     #[test]
     fn og_image_fallback_requires_fa_art_host() {
-        let html = r#"<meta property="og:image" content="https://d.furaffinity.net/art/a/1/1.png"/>"#;
+        let html =
+            r#"<meta property="og:image" content="https://d.furaffinity.net/art/a/1/1.png"/>"#;
         assert!(extract_media_url(html).is_some());
 
         let banner = r#"<meta property="og:image" content="https://www.furaffinity.net/themes/beta/img/banners/fender.jpg"/>"#;
@@ -186,8 +187,7 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let source =
-            Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap();
+        let source = Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap();
         let err = rt.block_on(resolver.resolve(&source)).unwrap_err();
         assert!(matches!(err, MediaResolveError::Unsupported(_)));
     }

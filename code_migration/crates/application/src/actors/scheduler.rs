@@ -166,9 +166,7 @@ mod tests {
     use domain::elements::{
         cadence::PostInterval,
         media::{MediaResolveError, ResolvedMedia},
-        post::{
-            Post, PostId, PostRepositoryError, PostStatus, SelectorError, Source,
-        },
+        post::{Post, PostId, PostRepositoryError, PostStatus, SelectorError, Source},
         poster::PosterId,
         publisher::PublisherError,
         user::UserId,
@@ -296,11 +294,7 @@ mod tests {
         async fn remove(&self, _id: PostId) -> Result<(), Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
-        async fn set_status_to(
-            &self,
-            _id: PostId,
-            _status: PostStatus,
-        ) -> Result<(), Self::Err> {
+        async fn set_status_to(&self, _id: PostId, _status: PostStatus) -> Result<(), Self::Err> {
             unimplemented!("not needed by scheduler tests")
         }
         async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
@@ -329,7 +323,11 @@ mod tests {
         }
     }
 
-    fn counting_publisher() -> (CountingPublisher, Arc<AtomicUsize>, Arc<Mutex<Option<PublishItem>>>) {
+    fn counting_publisher() -> (
+        CountingPublisher,
+        Arc<AtomicUsize>,
+        Arc<Mutex<Option<PublishItem>>>,
+    ) {
         let publisher = CountingPublisher::default();
         (
             CountingPublisher {

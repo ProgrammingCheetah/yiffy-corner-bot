@@ -71,7 +71,11 @@ mod tests {
         let repo = InMemoryPublisherConfigRepository::new();
         repo.upsert(fixture(1, 100)).await.unwrap();
         repo.upsert(fixture(1, 200)).await.unwrap();
-        let found = repo.find_by_poster(PosterId::from(1)).await.unwrap().unwrap();
+        let found = repo
+            .find_by_poster(PosterId::from(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found.chat_id, 200);
         assert_eq!(repo.list_all().await.unwrap().len(), 1);
     }

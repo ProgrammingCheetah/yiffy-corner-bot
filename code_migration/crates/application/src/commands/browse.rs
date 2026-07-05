@@ -150,10 +150,8 @@ mod tests {
 
     fn metadata(id: u64, tags: &[&str]) -> E621PostMetadata {
         E621PostMetadata {
-            source: Source::try_from(
-                Url::parse(&format!("https://e621.net/posts/{id}")).unwrap(),
-            )
-            .unwrap(),
+            source: Source::try_from(Url::parse(&format!("https://e621.net/posts/{id}")).unwrap())
+                .unwrap(),
             tags: tags.iter().map(|t| Tag::from(*t)).collect(),
             file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
             preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),

@@ -66,11 +66,7 @@ impl PostRepository for InMemoryPostRepository {
         self.set_status_to(id, PostStatus::Deleted).await
     }
 
-    async fn set_status_to(
-        &self,
-        post_id: PostId,
-        status: PostStatus,
-    ) -> Result<(), Self::Err> {
+    async fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err> {
         let mut posts = self.posts.write().await;
         let post = posts
             .get_mut(post_id.as_ref())

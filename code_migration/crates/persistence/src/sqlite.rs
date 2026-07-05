@@ -15,7 +15,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 /// Open (creating the file if needed) and migrate a SQLite database.
 pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
-    let options: SqliteConnectOptions = database_url.parse::<SqliteConnectOptions>()?
+    let options: SqliteConnectOptions = database_url
+        .parse::<SqliteConnectOptions>()?
         .create_if_missing(true)
         .foreign_keys(true);
     let pool = SqlitePoolOptions::new().connect_with(options).await?;

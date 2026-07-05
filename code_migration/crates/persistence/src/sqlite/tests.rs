@@ -15,10 +15,12 @@ use domain::elements::{
 use url::Url;
 
 use super::{
-    post::SqlitePostRepository, poster::SqlitePosterRepository,
+    post::SqlitePostRepository,
+    poster::SqlitePosterRepository,
     publisher_config::SqlitePublisherConfigRepository,
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
-    test_pool, user::SqliteUserRepository,
+    test_pool,
+    user::SqliteUserRepository,
 };
 
 fn e621_source(id: u64) -> Source {
@@ -118,7 +120,11 @@ mod users {
         let repo = SqliteUserRepository::new(test_pool().await);
         assert!(repo.set_banned(UserId::from(99), true).await.is_err());
         assert!(repo.set_display_name(UserId::from(99), None).await.is_err());
-        assert!(repo.change_role(UserId::from(99), Role::User).await.is_err());
+        assert!(
+            repo.change_role(UserId::from(99), Role::User)
+                .await
+                .is_err()
+        );
     }
 }
 
@@ -162,7 +168,12 @@ mod posts {
             .unwrap();
         let found = repo.find_by_source(&e621_source(1)).await.unwrap();
         assert_eq!(found.map(|p| p.id), Some(post.id));
-        assert!(repo.find_by_source(&e621_source(2)).await.unwrap().is_none());
+        assert!(
+            repo.find_by_source(&e621_source(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // UNIQUE(source_url) also guards duplicates at the DB layer.
         assert!(matches!(
@@ -177,7 +188,12 @@ mod posts {
     async fn status_transitions_and_mark_posted() {
         let repo = SqlitePostRepository::new(test_pool().await);
         let post = repo
-            .create(e621_source(1), None, Utc::now(), PostStatus::AwaitingModeration)
+            .create(
+                e621_source(1),
+                None,
+                Utc::now(),
+                PostStatus::AwaitingModeration,
+            )
             .await
             .unwrap();
 

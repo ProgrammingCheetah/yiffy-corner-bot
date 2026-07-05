@@ -191,11 +191,7 @@ pub trait PostRepository: Send + Sync {
     /// Soft-delete: sets status to [`PostStatus::Deleted`]. The row is retained
     /// for audit; selection skips Deleted posts.
     async fn remove(&self, id: PostId) -> Result<(), Self::Err>;
-    async fn set_status_to(
-        &self,
-        post_id: PostId,
-        status: PostStatus,
-    ) -> Result<(), Self::Err>;
+    async fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err>;
     /// Record that `id` was just published at `at`. Updates `last_posted`.
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
     /// All Posts currently in `status`, ordered oldest-submitted first.

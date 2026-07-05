@@ -12,14 +12,17 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use domain::elements::{
-    poster::PosterRepository as _, publisher_config::PublisherConfigRepository as _,
+    poster::PosterRepository as _,
+    publisher_config::PublisherConfigRepository as _,
     user::{Role, UserRepository as _},
 };
 use infra_e621::RateLimitedE621Client;
 use infra_fixup::FixupResolver;
 use infra_furaffinity::{FaCookies, FuraffinityResolver};
 use persistence::sqlite::{
-    self, post::SqlitePostRepository, poster::SqlitePosterRepository,
+    self,
+    post::SqlitePostRepository,
+    poster::SqlitePosterRepository,
     publisher_config::SqlitePublisherConfigRepository,
     tag_policy::{SqliteForbiddenTagRepository, SqliteRequiredTagRepository},
     user::SqliteUserRepository,

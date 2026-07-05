@@ -65,9 +65,13 @@ pub enum Command {
     Listtags,
     #[command(description = "set a user's role: /setrole <@user|id> <moderator|user> (owner)")]
     Setrole(String),
-    #[command(description = "create a poster: /newposter <interval-min> <tags… -forbidden…> (owner)")]
+    #[command(
+        description = "create a poster: /newposter <interval-min> <tags… -forbidden…> (owner)"
+    )]
     Newposter(String),
-    #[command(description = "bind a poster to a chat: /setchannel <poster-id> <@channel|chat-id> (owner)")]
+    #[command(
+        description = "bind a poster to a chat: /setchannel <poster-id> <@channel|chat-id> (owner)"
+    )]
     Setchannel(String),
     #[command(description = "list posters and their bindings (owner)")]
     Posters,
@@ -117,8 +121,9 @@ pub async fn handle_command(
             )
             .await
             {
-                Ok(()) => "Welcome to Yiffy Corner! Submit art with /suggest <source-url>."
-                    .to_string(),
+                Ok(()) => {
+                    "Welcome to Yiffy Corner! Submit art with /suggest <source-url>.".to_string()
+                }
                 Err(e) => describe(e),
             }
         }
@@ -154,12 +159,12 @@ pub async fn handle_command(
         Command::Unban(arg) => ban_reply(&bot, &state, actor, &arg, false).await,
         Command::Browse(arg) => handle_browse(&state, actor, &arg).await,
         Command::Save(arg) => match Url::parse(arg.trim()) {
-            Ok(url) => match browse::save(SaveCommand { actor, url }, &state.users, &state.posts)
-                .await
-            {
-                Ok(post) => format!("Saved to the pool as #{} (Accepted).", post.id),
-                Err(e) => describe(e),
-            },
+            Ok(url) => {
+                match browse::save(SaveCommand { actor, url }, &state.users, &state.posts).await {
+                    Ok(post) => format!("Saved to the pool as #{} (Accepted).", post.id),
+                    Err(e) => describe(e),
+                }
+            }
             Err(_) => "Usage: /save <e621-url>".to_string(),
         },
         Command::Forbidtag(arg) => {
@@ -373,18 +378,22 @@ async fn tag_policy_reply(
     }
     let tag = Tag::from(tag);
     let result = match action {
-        TagPolicyAction::Forbid => state.forbidden.add(tag.clone()).await.map_err(|e| e.to_string()),
+        TagPolicyAction::Forbid => state
+            .forbidden
+            .add(tag.clone())
+            .await
+            .map_err(|e| e.to_string()),
         TagPolicyAction::Unforbid => state
             .forbidden
             .remove(&tag)
             .await
             .map_err(|e| e.to_string()),
-        TagPolicyAction::Require => state.required.add(tag.clone()).await.map_err(|e| e.to_string()),
-        TagPolicyAction::Unrequire => state
+        TagPolicyAction::Require => state
             .required
-            .remove(&tag)
+            .add(tag.clone())
             .await
             .map_err(|e| e.to_string()),
+        TagPolicyAction::Unrequire => state.required.remove(&tag).await.map_err(|e| e.to_string()),
     };
     match result {
         Ok(()) => format!("Tag policy updated: {tag}."),
@@ -486,12 +495,7 @@ async fn handle_newposter(state: &SharedState, actor: TelegramId, arg: &str) -> 
     }
 }
 
-async fn handle_setchannel(
-    bot: &Bot,
-    state: &SharedState,
-    actor: TelegramId,
-    arg: &str,
-) -> String {
+async fn handle_setchannel(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
     let mut parts = arg.split_whitespace();
     let (Some(poster_raw), Some(chat_raw)) = (parts.next(), parts.next()) else {
         return "Usage: /setchannel <poster-id> <@channel|chat-id>".to_string();
@@ -528,9 +532,9 @@ async fn handle_setchannel(
     )
     .await
     {
-        Ok(()) => format!(
-            "Poster #{poster_id} now publishes to {chat_id}. Restart the bot to activate."
-        ),
+        Ok(()) => {
+            format!("Poster #{poster_id} now publishes to {chat_id}. Restart the bot to activate.")
+        }
         Err(e) => describe(e),
     }
 }
@@ -613,7 +617,10 @@ pub async fn handle_callback(
     if let Some(message) = query.message.as_ref() {
         let text = format!(
             "{}\n\n{outcome}",
-            message.regular_message().and_then(|m| m.text()).unwrap_or("")
+            message
+                .regular_message()
+                .and_then(|m| m.text())
+                .unwrap_or("")
         );
         bot.edit_message_text(message.chat().id, message.id(), text)
             .await?;

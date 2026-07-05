@@ -67,7 +67,10 @@ impl RateLimitedE621Client {
                 .json::<T>()
                 .await
                 .map_err(|e| FetchError::Parse(e.to_string())),
-            StatusCode::NOT_FOUND => Err(FetchError::Network(format!("HTTP {}", StatusCode::NOT_FOUND))),
+            StatusCode::NOT_FOUND => Err(FetchError::Network(format!(
+                "HTTP {}",
+                StatusCode::NOT_FOUND
+            ))),
             StatusCode::TOO_MANY_REQUESTS => Err(FetchError::RateLimit),
             other => Err(FetchError::Network(format!("HTTP {other}"))),
         }
@@ -255,8 +258,7 @@ mod tests {
 
     #[test]
     fn extract_post_id_from_show_url() {
-        let s =
-            Source::try_from(Url::parse("https://e621.net/posts/12345/show").unwrap()).unwrap();
+        let s = Source::try_from(Url::parse("https://e621.net/posts/12345/show").unwrap()).unwrap();
         assert_eq!(extract_post_id(&s), Some(12345));
     }
 
@@ -289,8 +291,7 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let source =
-            Source::try_from(Url::parse("https://x.com/a/status/1").unwrap()).unwrap();
+        let source = Source::try_from(Url::parse("https://x.com/a/status/1").unwrap()).unwrap();
         let err = rt.block_on(client.resolve(&source)).unwrap_err();
         assert!(matches!(err, MediaResolveError::Unsupported(_)));
     }
