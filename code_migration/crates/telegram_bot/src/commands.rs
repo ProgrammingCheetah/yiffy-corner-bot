@@ -84,6 +84,12 @@ pub enum Command {
     Delposter(String),
     #[command(description = "list posters and their bindings (owner)")]
     Posters,
+    #[command(description = "channel directory broadcasts: /announcements <hours|now|off> (owner)")]
+    Announcements(String),
+    #[command(
+        description = "pin a channel atop the directory: /spotlight <@channel|id|off> (owner)"
+    )]
+    Spotlight(String),
 }
 
 /// Stable command label for the `command_received` event.
@@ -112,6 +118,8 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Settags(_) => "settags",
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
+        Command::Announcements(_) => "announcements",
+        Command::Spotlight(_) => "spotlight",
     }
 }
 
@@ -420,6 +428,8 @@ pub async fn handle_command(
         Command::Settags(arg) => handle_settags(&state, actor, &arg).await,
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
+        Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
+        Command::Spotlight(arg) => handle_spotlight(&bot, &state, actor, &arg).await,
     };
 
     bot.send_message(msg.chat.id, reply)
@@ -1321,6 +1331,102 @@ async fn handle_delposter(state: &SharedState, actor: TelegramId, arg: &str) -> 
              The feed and its posts are untouched."
         ),
         Err(e) => describe(e),
+    }
+}
+
+async fn handle_announcements(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    arg: &str,
+) -> String {
+    use application::commands::auth::require_role;
+    use domain::elements::announcement::AnnouncementRepository as _;
+
+    if let Err(e) = require_role(&state.users, actor, Role::Owner).await {
+        return describe(e);
+    }
+    match arg.trim().to_lowercase().as_str() {
+        "now" => match crate::announcer::announce_round(state, bot).await {
+            Ok((sent, 0)) => format!("Announced to {sent} channel(s)."),
+            Ok((sent, failed)) => {
+                format!("Announced to {sent} channel(s); {failed} delivery(ies) failed — see logs.")
+            }
+            Err(reason) => format!("Nothing announced: {reason}."),
+        },
+        "off" | "0" => match state.announcements.set_interval_hours(0).await {
+            Ok(()) => {
+                tracing::info!(event = %Event::AnnouncementConfigChanged, interval_hours = 0u32, "announcements disabled");
+                "Recurring announcements disabled.".to_string()
+            }
+            Err(e) => e.to_string(),
+        },
+        raw => match raw.parse::<u32>() {
+            Ok(hours) if hours > 0 => match state.announcements.set_interval_hours(hours).await {
+                Ok(()) => {
+                    tracing::info!(event = %Event::AnnouncementConfigChanged, interval_hours = hours, "announcement cadence set");
+                    format!(
+                        "Announcements every {hours}h. Next round fires within a minute of \
+                         becoming due (first one immediately if none was ever sent)."
+                    )
+                }
+                Err(e) => e.to_string(),
+            },
+            _ => "Usage: /announcements <hours|now|off>".to_string(),
+        },
+    }
+}
+
+async fn handle_spotlight(bot: &Bot, state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use application::commands::auth::require_role;
+    use domain::elements::announcement::AnnouncementRepository as _;
+    use domain::elements::publisher_config::PublisherConfigRepository as _;
+
+    if let Err(e) = require_role(&state.users, actor, Role::Owner).await {
+        return describe(e);
+    }
+    let raw = arg.trim();
+    if raw.is_empty() {
+        return "Usage: /spotlight <@channel|chat-id|off>".to_string();
+    }
+    if raw.eq_ignore_ascii_case("off") {
+        return match state.announcements.set_spotlight(None).await {
+            Ok(()) => {
+                tracing::info!(event = %Event::AnnouncementConfigChanged, "spotlight cleared");
+                "Spotlight cleared.".to_string()
+            }
+            Err(e) => e.to_string(),
+        };
+    }
+    let chat_id = if let Ok(id) = raw.parse::<i64>() {
+        id
+    } else {
+        let resolver = BotUserResolver { bot: bot.clone() };
+        match resolve_target(&resolver, raw).await {
+            Ok(Some(id)) => *id.as_ref(),
+            Ok(None) => return format!("Can't resolve {raw}."),
+            Err(e) => return e,
+        }
+    };
+    let bound = state
+        .publisher_configs
+        .list_all()
+        .await
+        .map(|configs| configs.iter().any(|c| c.chat_id == chat_id))
+        .unwrap_or(false);
+    match state.announcements.set_spotlight(Some(chat_id)).await {
+        Ok(()) => {
+            tracing::info!(event = %Event::AnnouncementConfigChanged, spotlight = chat_id, "spotlight set");
+            if bound {
+                format!("Spotlight set: chat {chat_id} tops the next directory.")
+            } else {
+                format!(
+                    "Spotlight set to chat {chat_id} — note it is not currently a consuming \
+                     channel, so it won't appear in the directory until a poster is bound to it."
+                )
+            }
+        }
+        Err(e) => e.to_string(),
     }
 }
 

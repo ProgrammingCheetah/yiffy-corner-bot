@@ -3,6 +3,7 @@
 //! Queries are runtime-checked (no `DATABASE_URL` needed at build time); the
 //! schema lives in `migrations/` and is embedded via [`sqlx::migrate!`].
 
+pub mod announcement;
 pub mod post;
 pub mod poster;
 pub mod publication;

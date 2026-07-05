@@ -115,6 +115,11 @@ vocabulary! {
         PostTakenDown => "post_taken_down",
         ReportsDismissed => "reports_dismissed",
 
+        // Announcements
+        AnnouncementConfigChanged => "announcement_config_changed",
+        AnnouncementSent => "announcement_sent",
+        AnnouncementFailed => "announcement_failed",
+
         // Bot surface
         CommandReceived => "command_received",
 

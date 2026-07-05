@@ -7,6 +7,7 @@ use std::sync::Arc;
 use domain::elements::user::TelegramId;
 use infra_e621::RateLimitedE621Client;
 use persistence::sqlite::{
+    announcement::SqliteAnnouncementRepository,
     post::SqlitePostRepository,
     poster::SqlitePosterRepository,
     publication::SqlitePublicationRepository,
@@ -99,6 +100,7 @@ pub struct AppState {
     pub telegram_copies: SqliteTelegramCopyRepository,
     pub reports: SqliteReportRepository,
     pub publications: SqlitePublicationRepository,
+    pub announcements: SqliteAnnouncementRepository,
     pub e621: Arc<RateLimitedE621Client>,
     /// The same composite media resolver the scheduler publishes with —
     /// review DMs resolve real media through it too.

@@ -1,3 +1,4 @@
+mod announcer;
 mod commands;
 mod publishers;
 mod resolvers;
@@ -119,6 +120,9 @@ async fn main() -> anyhow::Result<()> {
         telegram_copies: telegram_copies.clone(),
         reports: SqliteReportRepository::new(pool.clone()),
         publications: SqlitePublicationRepository::new(pool.clone()),
+        announcements: persistence::sqlite::announcement::SqliteAnnouncementRepository::new(
+            pool.clone(),
+        ),
         e621: e621.clone(),
         resolver: resolver.clone(),
         config: config.clone(),
@@ -179,6 +183,9 @@ async fn main() -> anyhow::Result<()> {
         resolver,
         bot_username,
     }));
+
+    // Announcement cycle (channel directory broadcasts).
+    tokio::spawn(announcer::run(state.clone(), bot.clone()));
 
     // Health endpoint for container checks.
     let health_addr = config.health_addr.clone();
