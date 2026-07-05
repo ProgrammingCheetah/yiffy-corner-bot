@@ -179,12 +179,103 @@ async fn file_report(
     }
 }
 
+/// Finish a moderation dialogue with the moderator's reply text.
+async fn complete_moderation_dialogue(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    dialogue: crate::state::ModerationDialogue,
+    text: &str,
+) -> String {
+    use crate::state::ModerationDialogue;
+    use domain::elements::user::UserRepository as _;
+
+    match dialogue {
+        ModerationDialogue::RejectReason(post_id) => {
+            let reason = text.trim();
+            if reason.is_empty() {
+                return "Empty reason — post left untouched. Press the button again to retry."
+                    .to_string();
+            }
+            match moderate::reject(
+                ModerateCommand { actor, post_id },
+                &state.users,
+                &state.posts,
+            )
+            .await
+            {
+                Err(e) => describe(e),
+                Ok(post) => {
+                    // Relay the reason to the submitter.
+                    let notified = match post.submitted_by {
+                        None => false,
+                        Some(user_id) => match state.users.find_by_id(user_id).await {
+                            Ok(Some(user)) => bot
+                                .send_message(
+                                    ChatId(*user.telegram_id.as_ref()),
+                                    format!(
+                                        "Your submission #{post_id} was rejected by the \
+                                         moderators.\nReason: {reason}"
+                                    ),
+                                )
+                                .await
+                                .is_ok(),
+                            _ => false,
+                        },
+                    };
+                    if notified {
+                        tracing::info!(
+                            event = %Event::SubmitterNotified, post_id = %post_id,
+                            "rejection reason relayed to submitter"
+                        );
+                        format!("Post #{post_id} rejected — the submitter was told why.")
+                    } else {
+                        format!(
+                            "Post #{post_id} rejected. (Couldn't DM the submitter — they may \
+                             not have a chat open with the bot.)"
+                        )
+                    }
+                }
+            }
+        }
+        ModerationDialogue::ExtraTags(post_id) => {
+            let extra: Vec<Tag> = text.split_whitespace().map(Tag::from).collect();
+            if extra.is_empty() {
+                return "No tags given — post left untouched. Press the button again to retry."
+                    .to_string();
+            }
+            let requested = extra.len();
+            match moderate::approve_with_extra_tags(
+                ModerateCommand { actor, post_id },
+                extra,
+                &state.users,
+                &state.posts,
+            )
+            .await
+            {
+                Err(e) => describe(e),
+                Ok(post) => format!(
+                    "Post #{post_id} accepted into the feed with {} tags \
+                     ({requested} supplied, duplicates ignored).",
+                    post.tags.len()
+                ),
+            }
+        }
+    }
+}
+
 /// The moderation inline keyboard attached to review DMs.
 fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new([[
-        InlineKeyboardButton::callback("✅ Approve", format!("mod:approve:{post_id}")),
-        InlineKeyboardButton::callback("❌ Reject", format!("mod:reject:{post_id}")),
-    ]])
+    InlineKeyboardMarkup::new([
+        vec![
+            InlineKeyboardButton::callback("✅ Approve", format!("mod:approve:{post_id}")),
+            InlineKeyboardButton::callback("❌ Reject", format!("mod:reject:{post_id}")),
+        ],
+        vec![InlineKeyboardButton::callback(
+            "📝 Reject with reason",
+            format!("mod:reason:{post_id}"),
+        )],
+    ])
 }
 
 pub async fn handle_command(
@@ -231,7 +322,7 @@ pub async fn handle_command(
         }
         Command::Help => Command::descriptions().to_string(),
         Command::Suggest(arg) => {
-            handle_suggest(&bot, &state, actor, display_name, arg.trim()).await
+            handle_suggest(&bot, &state, Submitter::from(from), arg.trim()).await
         }
         Command::Queue => match moderate::queue(actor, &state.users, &state.posts).await {
             Ok(queue) if queue.is_empty() => "The moderation queue is empty.".to_string(),
@@ -318,11 +409,27 @@ fn no_preview() -> LinkPreviewOptions {
 /// channel forwards. Handles all outcomes: queueing (with review fan-out —
 /// copies for forwards, text for links), tag prompting (pending state), and
 /// rejections. Returns the reply for the submitter.
+/// Who is submitting, as Telegram sees them at this moment.
+struct Submitter {
+    id: TelegramId,
+    display_name: Option<String>,
+    username: Option<String>,
+}
+
+impl From<&TgUser> for Submitter {
+    fn from(from: &TgUser) -> Self {
+        Self {
+            id: TelegramId::from(from.id.0 as i64),
+            display_name: Some(from.full_name()),
+            username: from.username.clone(),
+        }
+    }
+}
+
 async fn submit(
     bot: &Bot,
     state: &SharedState,
-    actor: TelegramId,
-    display_name: Option<String>,
+    submitter: Submitter,
     url: Url,
     tags: Vec<Tag>,
     forward: Option<PendingForward>,
@@ -331,11 +438,21 @@ async fn submit(
     use teloxide::payloads::CopyMessageSetters as _;
     use teloxide::types::MessageId;
 
-    let submitter_name = display_name.clone().unwrap_or_else(|| "a user".to_string());
+    let submitter_name = submitter
+        .display_name
+        .clone()
+        .unwrap_or_else(|| "a user".to_string());
+    // Moderators see who to talk to (or /ban): @username, or the raw id
+    // when the account has no public handle. Channel captions stay
+    // name-only — this handle is moderation-facing.
+    let submitter_contact = match &submitter.username {
+        Some(handle) => format!("{submitter_name} (@{handle})"),
+        None => format!("{submitter_name} (id {})", submitter.id.as_ref()),
+    };
     let outcome = suggest::handle(
         SuggestCommand {
-            submitter: actor,
-            display_name,
+            submitter: submitter.id,
+            display_name: submitter.display_name,
             url: url.clone(),
             tags,
         },
@@ -351,7 +468,7 @@ async fn submit(
                 .pending
                 .lock()
                 .await
-                .insert(*actor.as_ref(), PendingSubmission { url, forward });
+                .insert(*submitter.id.as_ref(), PendingSubmission { url, forward });
             "Almost there! Reply with the tags that describe this post, separated by \
              spaces — species, character, artist, anything relevant.\n\
              Example: `wolf male solo digital_art`"
@@ -391,13 +508,34 @@ async fn submit(
                 None => post.source.as_ref().to_string(),
             };
             let text = format!(
-                "New submission #{}\n{origin_line}\nTags: {tag_line}\nSubmitted by {submitter_name}",
+                "New submission #{}\n{origin_line}\nTags: {tag_line}\nSubmitted by {submitter_contact}",
                 post.id
             );
+            // Reviewers should see the actual media, not just a link:
+            // resolve through the same pipeline the publisher uses.
+            let review_media = match &forward {
+                Some(_) => None, // forwards are re-copied below, media included
+                None => {
+                    use domain::elements::media::MediaResolver as _;
+                    match state.resolver.resolve(&post.source).await {
+                        Ok(media) => Some(media),
+                        Err(e) => {
+                            tracing::debug!(
+                                event = %Event::MediaLinkFallback, post_id = %post.id,
+                                error = %e, "review media resolution failed; sending text"
+                            );
+                            None
+                        }
+                    }
+                }
+            };
             for reviewer in &reviewers {
+                use domain::elements::media::ResolvedMedia;
+                use teloxide::types::InputFile;
+
                 let reviewer_chat = ChatId(*reviewer.telegram_id.as_ref());
-                let sent = match &forward {
-                    Some(fwd) => bot
+                let sent = match (&forward, &review_media) {
+                    (Some(fwd), _) => bot
                         .copy_message(
                             reviewer_chat,
                             ChatId(fwd.origin_chat_id),
@@ -407,7 +545,27 @@ async fn submit(
                         .reply_markup(review_keyboard(post.id))
                         .await
                         .map(|_| ()),
-                    None => bot
+                    (None, Some(ResolvedMedia::Photo(media_url))) => bot
+                        .send_photo(reviewer_chat, InputFile::url(media_url.clone()))
+                        .caption(text.clone())
+                        .reply_markup(review_keyboard(post.id))
+                        .await
+                        .map(|_| ()),
+                    (None, Some(ResolvedMedia::Video(media_url))) => bot
+                        .send_video(reviewer_chat, InputFile::url(media_url.clone()))
+                        .caption(text.clone())
+                        .reply_markup(review_keyboard(post.id))
+                        .await
+                        .map(|_| ()),
+                    (None, Some(ResolvedMedia::Animation(media_url))) => bot
+                        .send_animation(reviewer_chat, InputFile::url(media_url.clone()))
+                        .caption(text.clone())
+                        .reply_markup(review_keyboard(post.id))
+                        .await
+                        .map(|_| ()),
+                    // Link media / no resolution: text with the default
+                    // link preview doing its best.
+                    _ => bot
                         .send_message(reviewer_chat, text.clone())
                         .reply_markup(review_keyboard(post.id))
                         .await
@@ -443,13 +601,7 @@ async fn submit(
     }
 }
 
-async fn handle_suggest(
-    bot: &Bot,
-    state: &SharedState,
-    actor: TelegramId,
-    display_name: Option<String>,
-    arg: &str,
-) -> String {
+async fn handle_suggest(bot: &Bot, state: &SharedState, submitter: Submitter, arg: &str) -> String {
     let mut parts = arg.split_whitespace();
     let Some(url) = parts.next().and_then(|raw| Url::parse(raw).ok()) else {
         return "Usage: /suggest <source-url> [tags…] — e621, FurAffinity, Twitter/X, BlueSky, \
@@ -458,11 +610,11 @@ async fn handle_suggest(
             .to_string();
     };
     let tags: Vec<Tag> = parts.map(Tag::from).collect();
-    submit(bot, state, actor, display_name, url, tags, None).await
+    submit(bot, state, submitter, url, tags, None).await
 }
 
-/// Completes a pending submission: the submitter's next plain-text message
-/// after a tag prompt carries the tags.
+/// Completes in-flight dialogues: moderation follow-ups (rejection reason,
+/// extra tags) take priority, then pending submissions awaiting tags.
 pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> ResponseResult<()> {
     let Some((from, actor)) = sender(&msg) else {
         return Ok(());
@@ -470,6 +622,16 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
     let Some(text) = msg.text() else {
         return Ok(());
     };
+
+    // Moderation dialogues first.
+    if let Some(dialogue) = state.pending_moderation.lock().await.remove(actor.as_ref()) {
+        let reply = complete_moderation_dialogue(&bot, &state, actor, dialogue, text).await;
+        bot.send_message(msg.chat.id, reply)
+            .link_preview_options(no_preview())
+            .await?;
+        return Ok(());
+    }
+
     let Some(pending) = state.pending.lock().await.remove(actor.as_ref()) else {
         return Ok(()); // no dialogue in flight — stay silent
     };
@@ -486,8 +648,7 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
     let reply = submit(
         &bot,
         &state,
-        actor,
-        Some(from.full_name()),
+        Submitter::from(from),
         pending.url,
         tags,
         pending.forward,
@@ -1114,8 +1275,7 @@ pub async fn handle_channel_forward(
     let reply = submit(
         &bot,
         &state,
-        actor,
-        Some(from.full_name()),
+        Submitter::from(from),
         url,
         Vec::new(),
         Some(PendingForward {
@@ -1149,6 +1309,65 @@ pub async fn handle_callback(
         return Ok(());
     };
     match data.split(':').collect::<Vec<_>>()[..] {
+        // Dialogue buttons: the moderator's next message completes the
+        // action (rejection reason / extra tags).
+        ["mod", verb @ ("reason" | "addtags"), id] => {
+            use crate::state::ModerationDialogue;
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            let toast = match parse_post_id(id) {
+                None => "Malformed callback.".to_string(),
+                Some(post_id) => {
+                    match application::commands::auth::require_role(
+                        &state.users,
+                        actor,
+                        Role::Moderator,
+                    )
+                    .await
+                    {
+                        Err(e) => describe(e),
+                        Ok(_) => {
+                            let (dialogue, event, prompt) = if verb == "reason" {
+                                (
+                                    ModerationDialogue::RejectReason(post_id),
+                                    Event::RejectionReasonRequested,
+                                    format!(
+                                        "Reply with the reason for rejecting post #{post_id} — \
+                                         it will be sent to the submitter."
+                                    ),
+                                )
+                            } else {
+                                (
+                                    ModerationDialogue::ExtraTags(post_id),
+                                    Event::ExtraTagsRequested,
+                                    format!(
+                                        "Reply with the extra tags for post #{post_id} \
+                                         (space-separated) — duplicates are ignored and the \
+                                         post is accepted with the merged set."
+                                    ),
+                                )
+                            };
+                            state
+                                .pending_moderation
+                                .lock()
+                                .await
+                                .insert(*actor.as_ref(), dialogue);
+                            tracing::info!(
+                                event = %event, post_id = %post_id,
+                                telegram_id = actor.as_ref(), "moderation dialogue opened"
+                            );
+                            if let Some(message) = query.message.as_ref() {
+                                let _ = bot.send_message(message.chat().id, prompt).await;
+                            }
+                            format!("Waiting for your reply for post #{post_id}.")
+                        }
+                    }
+                }
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
+        }
         ["mod", verb @ ("approve" | "reject"), id] => {
             let outcome = match parse_post_id(id) {
                 Some(post_id) => {

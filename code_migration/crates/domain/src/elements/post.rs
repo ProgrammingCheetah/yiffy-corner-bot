@@ -226,6 +226,8 @@ pub trait PostRepository: Send + Sync {
     /// for audit; selection skips Deleted posts.
     async fn remove(&self, id: PostId) -> Result<(), Self::Err>;
     async fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err>;
+    /// Replace the curated tag set (moderator "accept with more tags").
+    async fn set_tags(&self, id: PostId, tags: Vec<Tag>) -> Result<Post, Self::Err>;
     /// Record that `id` was just published at `at`. Updates `last_posted`.
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err>;
     /// All Posts currently in `status`, ordered oldest-submitted first.

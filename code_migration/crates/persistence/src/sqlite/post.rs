@@ -122,6 +122,22 @@ impl PostRepository for SqlitePostRepository {
         Ok(())
     }
 
+    async fn set_tags(&self, id: PostId, tags: Vec<Tag>) -> Result<Post, Self::Err> {
+        let joined = tags
+            .iter()
+            .map(|t| t.as_ref())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let row = sqlx::query("UPDATE posts SET tags = ? WHERE id = ? RETURNING *")
+            .bind(joined)
+            .bind(*id.as_ref() as i64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?
+            .ok_or(PostRepositoryError::NotFound(id))?;
+        row_to_post(&row)
+    }
+
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
         let result = sqlx::query("UPDATE posts SET last_posted = ? WHERE id = ?")
             .bind(at)

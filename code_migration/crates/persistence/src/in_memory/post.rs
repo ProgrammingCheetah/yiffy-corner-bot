@@ -81,6 +81,15 @@ impl PostRepository for InMemoryPostRepository {
         Ok(())
     }
 
+    async fn set_tags(&self, id: PostId, tags: Vec<Tag>) -> Result<Post, Self::Err> {
+        let mut posts = self.posts.write().await;
+        let post = posts
+            .get_mut(id.as_ref())
+            .ok_or(PostRepositoryError::NotFound(id))?;
+        post.tags = tags;
+        Ok(post.clone())
+    }
+
     async fn mark_posted(&self, id: PostId, at: DateTime<Utc>) -> Result<(), Self::Err> {
         let mut posts = self.posts.write().await;
         let post = posts

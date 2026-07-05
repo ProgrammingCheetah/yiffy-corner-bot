@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
     let e621 = Arc::new(e621_client);
     let telegram_copies =
         persistence::sqlite::telegram_copy::SqliteTelegramCopyRepository::new(pool.clone());
+    let resolver = build_resolver(&config, e621.clone(), telegram_copies.clone())?;
     let state = Arc::new(AppState {
         users: SqliteUserRepository::new(pool.clone()),
         posts: SqlitePostRepository::new(pool.clone()),
@@ -119,8 +120,10 @@ async fn main() -> anyhow::Result<()> {
         reports: SqliteReportRepository::new(pool.clone()),
         publications: SqlitePublicationRepository::new(pool.clone()),
         e621: e621.clone(),
+        resolver: resolver.clone(),
         config: config.clone(),
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        pending_moderation: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Seed the singleton Owner (Zuri) so privileged commands work from boot.
@@ -157,7 +160,6 @@ async fn main() -> anyhow::Result<()> {
     // Scheduler, database-first: posters, tags, cursors and channel bindings
     // are read fresh every tick — /newposter, /settags and /setchannel are
     // live within a minute, no restarts.
-    let resolver = build_resolver(&config, e621.clone(), telegram_copies)?;
     tracing::info!(event = %Event::RuntimesLoaded, "scheduler running database-first");
     tokio::spawn(start_scheduler(SchedulerDeps {
         posts: Arc::new(state.posts.clone()),

@@ -65,6 +65,41 @@ pub async fn approve<P: PostRepository>(
     Ok(post)
 }
 
+/// Approve with additional curated tags: merges `extra` into the post's
+/// tags (duplicates dropped), then accepts into the feed.
+pub async fn approve_with_extra_tags<P: PostRepository>(
+    cmd: ModerateCommand,
+    extra: Vec<domain::elements::tag::Tag>,
+    users: &impl UserRepository,
+    posts: &P,
+) -> HandlerResult<Post> {
+    let post = awaiting_post(&cmd, users, posts).await?;
+    let mut merged = post.tags.clone();
+    let mut added = 0usize;
+    for tag in extra {
+        if !merged.contains(&tag) {
+            merged.push(tag);
+            added += 1;
+        }
+    }
+    if added > 0 {
+        posts
+            .set_tags(post.id, merged)
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?;
+    }
+    let post = posts
+        .accept_into_feed(post.id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::AcceptedIntoFeed, post_id = %post.id,
+        position = post.feed_position, tags_added = added,
+        "approved into the feed with extra tags"
+    );
+    Ok(post)
+}
+
 pub async fn reject<P: PostRepository>(
     cmd: ModerateCommand,
     users: &impl UserRepository,
@@ -178,6 +213,32 @@ mod tests {
         assert_eq!(approved.status, PostStatus::Accepted);
         let stored = fx.posts.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(stored.status, PostStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn approve_with_extra_tags_merges_without_duplicates() {
+        use domain::elements::tag::Tag;
+        let fx = Fixture::new().await;
+        let post = fx.awaiting_post(1).await;
+        fx.posts
+            .set_tags(post.id, vec![Tag::from("wolf"), Tag::from("male")])
+            .await
+            .unwrap();
+
+        let approved = approve_with_extra_tags(
+            cmd(1, post.id),
+            vec![Tag::from("male"), Tag::from("solo")], // one dup, one new
+            &fx.users,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            approved.tags,
+            vec![Tag::from("wolf"), Tag::from("male"), Tag::from("solo")]
+        );
+        assert_eq!(approved.status, PostStatus::Accepted);
+        assert!(approved.feed_position.is_some());
     }
 
     #[tokio::test]

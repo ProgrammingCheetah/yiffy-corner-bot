@@ -478,6 +478,13 @@ mod tests {
         async fn set_status_to(&self, _id: PostId, _status: PostStatus) -> Result<(), Self::Err> {
             unimplemented!()
         }
+        async fn set_tags(
+            &self,
+            _id: PostId,
+            _tags: Vec<domain::elements::tag::Tag>,
+        ) -> Result<Post, Self::Err> {
+            unimplemented!()
+        }
         async fn mark_posted(&self, id: PostId, _at: DateTime<Utc>) -> Result<(), Self::Err> {
             self.marked.lock().unwrap().push(id);
             Ok(())

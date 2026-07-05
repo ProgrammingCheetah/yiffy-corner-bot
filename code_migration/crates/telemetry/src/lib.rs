@@ -63,6 +63,9 @@ vocabulary! {
         // Moderation
         ModerationRequested => "moderation_requested",
         ModerationApplied => "moderation_applied",
+        RejectionReasonRequested => "rejection_reason_requested",
+        ExtraTagsRequested => "extra_tags_requested",
+        SubmitterNotified => "submitter_notified",
         ModerationInvalidState => "moderation_invalid_state",
         PostDeleted => "post_deleted",
         ReviewDmSent => "review_dm_sent",

@@ -100,8 +100,23 @@ pub struct AppState {
     pub reports: SqliteReportRepository,
     pub publications: SqlitePublicationRepository,
     pub e621: Arc<RateLimitedE621Client>,
+    /// The same composite media resolver the scheduler publishes with —
+    /// review DMs resolve real media through it too.
+    pub resolver: Arc<crate::resolvers::CompositeResolver>,
     /// Submissions awaiting tags, keyed by submitter Telegram id.
     pub pending: tokio::sync::Mutex<std::collections::HashMap<i64, PendingSubmission>>,
+    /// In-flight moderation dialogues, keyed by moderator Telegram id:
+    /// their next message completes the action.
+    pub pending_moderation: tokio::sync::Mutex<std::collections::HashMap<i64, ModerationDialogue>>,
+}
+
+/// What a moderator's next message means.
+#[derive(Debug, Clone, Copy)]
+pub enum ModerationDialogue {
+    /// Next message = the rejection reason (relayed to the submitter).
+    RejectReason(domain::elements::post::PostId),
+    /// Next message = extra tags to merge before accepting into the feed.
+    ExtraTags(domain::elements::post::PostId),
 }
 
 pub type SharedState = Arc<AppState>;
