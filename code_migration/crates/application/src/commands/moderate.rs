@@ -20,11 +20,10 @@ pub struct ModerateCommand {
     pub post_id: PostId,
 }
 
-async fn transition<P: PostRepository>(
-    cmd: ModerateCommand,
+async fn awaiting_post<P: PostRepository>(
+    cmd: &ModerateCommand,
     users: &impl UserRepository,
     posts: &P,
-    to: PostStatus,
 ) -> HandlerResult<Post> {
     let moderator = require_role(users, cmd.actor, Role::Moderator).await?;
     tracing::debug!(event = %Event::ModerationRequested, moderator_id = %moderator.id, post_id = %cmd.post_id, "moderation requested");
@@ -44,20 +43,26 @@ async fn transition<P: PostRepository>(
             post.id, post.status
         )));
     }
-    posts
-        .set_status_to(post.id, to.clone())
-        .await
-        .map_err(|_| HandlerError::RepositoryError)?;
-    tracing::info!(event = %Event::ModerationApplied, post_id = %post.id, decision = %to, "moderation decision applied");
-    Ok(Post { status: to, ..post })
+    Ok(post)
 }
 
+/// Approval accepts the Post INTO THE FEED: status → Accepted and the next
+/// feed position is assigned, making it visible to every consumer's scan.
 pub async fn approve<P: PostRepository>(
     cmd: ModerateCommand,
     users: &impl UserRepository,
     posts: &P,
 ) -> HandlerResult<Post> {
-    transition(cmd, users, posts, PostStatus::Accepted).await
+    let post = awaiting_post(&cmd, users, posts).await?;
+    let post = posts
+        .accept_into_feed(post.id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::AcceptedIntoFeed, post_id = %post.id,
+        position = post.feed_position, "approved into the feed"
+    );
+    Ok(post)
 }
 
 pub async fn reject<P: PostRepository>(
@@ -65,7 +70,16 @@ pub async fn reject<P: PostRepository>(
     users: &impl UserRepository,
     posts: &P,
 ) -> HandlerResult<Post> {
-    transition(cmd, users, posts, PostStatus::Rejected).await
+    let post = awaiting_post(&cmd, users, posts).await?;
+    posts
+        .set_status_to(post.id, PostStatus::Rejected)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::ModerationApplied, post_id = %post.id, decision = %PostStatus::Rejected, "moderation decision applied");
+    Ok(Post {
+        status: PostStatus::Rejected,
+        ..post
+    })
 }
 
 /// Soft-delete from any status (takedowns, queue cleanup). Moderator+.
@@ -136,6 +150,7 @@ mod tests {
                 .create(
                     Source::try_from(Url::parse(&format!("https://e621.net/posts/{id}")).unwrap())
                         .unwrap(),
+                    vec![],
                     None,
                     Utc::now(),
                     PostStatus::AwaitingModeration,

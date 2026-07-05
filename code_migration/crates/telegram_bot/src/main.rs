@@ -6,7 +6,7 @@ mod state;
 use std::sync::Arc;
 
 use application::actors::scheduler::{PosterRuntime, SchedulerDeps, start_scheduler};
-use application::selectors::queue_first::QueueFirstSelector;
+use application::selectors::feed::FeedSelector;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -101,12 +101,11 @@ async fn build_runtimes(
         } else {
             Bot::new(token)
         };
-        let selector = QueueFirstSelector::new(
+        let selector = FeedSelector::new(
             poster.clone(),
             Arc::new(state.posts.clone()),
             state.e621.clone(),
             Arc::new(state.forbidden.clone()),
-            state.config.repost_cooldown,
         );
         runtimes.push(PosterRuntime {
             poster,
@@ -161,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         telegram_copies: telegram_copies.clone(),
         e621: e621.clone(),
         config: config.clone(),
+        pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Seed the singleton Owner (Zuri) so privileged commands work from boot.
@@ -195,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
         runtimes,
         posts: Arc::new(state.posts.clone()),
         users: Arc::new(state.users.clone()),
+        posters: Arc::new(state.posters.clone()),
     }));
 
     // Health endpoint for container checks.
@@ -232,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .endpoint(handle_channel_forward),
         )
+        .branch(Update::filter_message().endpoint(commands::handle_pending_tags))
         .branch(Update::filter_callback_query().endpoint(handle_callback));
 
     Dispatcher::builder(bot, handler)

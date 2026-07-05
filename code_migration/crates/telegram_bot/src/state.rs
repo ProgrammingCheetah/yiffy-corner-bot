@@ -24,14 +24,12 @@ pub const USER_AGENT: &str = "yiffy-corner-bot/0.2 (by ZielAnima)";
 /// - `YCB_DATABASE_URL`: sqlite URL (default `<vault>/storage/rust-bot.sqlite`).
 /// - `YCB_OWNER_ID`: seed Owner Telegram ID (default Zuri).
 /// - `YCB_HEALTH_ADDR`: health endpoint bind (default `0.0.0.0:3000`).
-/// - `YCB_REPOST_COOLDOWN_DAYS`: selector repost cooldown (default 7).
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub vault_env_dir: PathBuf,
     pub database_url: String,
     pub owner_id: TelegramId,
     pub health_addr: String,
-    pub repost_cooldown: chrono::Duration,
 }
 
 impl AppConfig {
@@ -51,16 +49,11 @@ impl AppConfig {
             .unwrap_or(1402476143);
         let health_addr =
             std::env::var("YCB_HEALTH_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
-        let cooldown_days = std::env::var("YCB_REPOST_COOLDOWN_DAYS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(7);
         Self {
             vault_env_dir: vault_root.join(env),
             database_url,
             owner_id: TelegramId::from(owner_id),
             health_addr,
-            repost_cooldown: chrono::Duration::days(cooldown_days),
         }
     }
 
@@ -74,6 +67,24 @@ pub fn read_secret(path: &Path) -> std::io::Result<String> {
     Ok(std::fs::read_to_string(path)?.trim().to_string())
 }
 
+/// A submission waiting for its tags (feed model: every entry is tagged).
+/// Keyed by the submitter's Telegram id; their next plain-text message
+/// completes it. In-memory: a restart just means re-submitting.
+#[derive(Debug, Clone)]
+pub struct PendingSubmission {
+    pub url: url::Url,
+    /// Present when the submission arrived as a channel forward — carries
+    /// what the copy-ref store needs once tags arrive.
+    pub forward: Option<PendingForward>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingForward {
+    pub origin_chat_id: i64,
+    pub origin_message_id: i32,
+    pub channel_username: String,
+}
+
 /// Everything the command handlers need. One `Arc` in dptree deps.
 pub struct AppState {
     pub config: AppConfig,
@@ -85,6 +96,8 @@ pub struct AppState {
     pub required: SqliteRequiredTagRepository,
     pub telegram_copies: SqliteTelegramCopyRepository,
     pub e621: Arc<RateLimitedE621Client>,
+    /// Submissions awaiting tags, keyed by submitter Telegram id.
+    pub pending: tokio::sync::Mutex<std::collections::HashMap<i64, PendingSubmission>>,
 }
 
 pub type SharedState = Arc<AppState>;

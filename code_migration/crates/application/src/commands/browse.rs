@@ -88,21 +88,24 @@ pub struct SaveCommand {
     pub url: Url,
 }
 
-/// Save a browsed e621 post into the pool: auto-Accepted, admin-added.
-pub async fn save<P>(
+/// Save a browsed e621 post straight into the feed: admin-added, tags from
+/// the e621 API, no moderation step.
+pub async fn save<P, E>(
     cmd: SaveCommand,
     users: &impl UserRepository,
     posts: &P,
+    e621: &E,
 ) -> HandlerResult<Post>
 where
     P: PostRepository,
+    E: E621Fetcher,
 {
     require_role(users, cmd.actor, Role::Moderator).await?;
     let source =
         Source::try_from(cmd.url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
     if !matches!(source, Source::E621(_)) {
         return Err(HandlerError::InvalidSource(
-            "only e621 posts can be saved to the pool (tag lookup is e621-only)".to_string(),
+            "only e621 posts can be saved via /browse (use /suggest for other sources)".to_string(),
         ));
     }
     if let Some(existing) = posts
@@ -112,11 +115,29 @@ where
     {
         return Err(HandlerError::DuplicateSubmission(existing.id));
     }
+    let metadata = e621
+        .fetch(&source)
+        .await
+        .map_err(|e| HandlerError::Fetch(e.to_string()))?;
     let post = posts
-        .create(source, None, Utc::now(), PostStatus::Accepted)
+        .create(
+            source,
+            metadata.tags,
+            None,
+            Utc::now(),
+            PostStatus::Accepted,
+        )
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
-    tracing::info!(event = %Event::PoolSaved, post_id = %post.id, source = %post.source.as_ref(), "browse: saved to pool (Accepted)");
+    let post = posts
+        .accept_into_feed(post.id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::AcceptedIntoFeed, post_id = %post.id,
+        source = %post.source.as_ref(), position = post.feed_position,
+        "browse: saved into the feed"
+    );
     Ok(post)
 }
 
@@ -139,8 +160,8 @@ mod tests {
     }
     #[async_trait]
     impl E621Fetcher for RecordingFetcher {
-        async fn fetch(&self, source: &Source) -> Result<E621PostMetadata, FetchError> {
-            Err(FetchError::NotFound(source.clone()))
+        async fn fetch(&self, _source: &Source) -> Result<E621PostMetadata, FetchError> {
+            Ok(self.results.first().cloned().expect("stub has one result"))
         }
         async fn search(
             &self,
@@ -247,8 +268,15 @@ mod tests {
         assert!(matches!(err, HandlerError::NotAuthorized(_)));
     }
 
+    fn stub_fetcher() -> RecordingFetcher {
+        RecordingFetcher {
+            results: vec![metadata(1, &["wolf", "male"])],
+            seen_query: std::sync::Mutex::new(vec![]),
+        }
+    }
+
     #[tokio::test]
-    async fn save_creates_accepted_admin_post() {
+    async fn save_enters_feed_with_e621_tags() {
         let fx = fixture().await;
         let post = save(
             SaveCommand {
@@ -257,11 +285,14 @@ mod tests {
             },
             &fx.users,
             &fx.posts,
+            &stub_fetcher(),
         )
         .await
         .unwrap();
         assert_eq!(post.status, PostStatus::Accepted);
         assert!(post.submitted_by.is_none());
+        assert_eq!(post.feed_position, Some(1));
+        assert_eq!(post.tags, vec![Tag::from("wolf"), Tag::from("male")]);
     }
 
     #[tokio::test]
@@ -274,6 +305,7 @@ mod tests {
             },
             &fx.users,
             &fx.posts,
+            &stub_fetcher(),
         )
         .await
         .unwrap_err();
@@ -287,8 +319,12 @@ mod tests {
             actor: TelegramId::from(1),
             url: Url::parse("https://e621.net/posts/1").unwrap(),
         };
-        save(cmd(), &fx.users, &fx.posts).await.unwrap();
-        let err = save(cmd(), &fx.users, &fx.posts).await.unwrap_err();
+        save(cmd(), &fx.users, &fx.posts, &stub_fetcher())
+            .await
+            .unwrap();
+        let err = save(cmd(), &fx.users, &fx.posts, &stub_fetcher())
+            .await
+            .unwrap_err();
         assert!(matches!(err, HandlerError::DuplicateSubmission(_)));
     }
 }

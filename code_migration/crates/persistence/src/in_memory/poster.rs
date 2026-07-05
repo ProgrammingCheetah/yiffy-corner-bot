@@ -40,6 +40,7 @@ impl PosterRepository for InMemoryPosterRepository {
             subscribed_tags,
             forbidden_tags,
             time_interval,
+            cursor: 0,
         };
         posters.insert(raw_id, poster.clone());
         Ok(poster)
@@ -62,6 +63,15 @@ impl PosterRepository for InMemoryPosterRepository {
         poster.subscribed_tags = subscribed_tags;
         poster.forbidden_tags = forbidden_tags;
         Ok(poster.clone())
+    }
+
+    async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err> {
+        let mut posters = self.posters.write().await;
+        let poster = posters
+            .get_mut(id.as_ref())
+            .ok_or(PosterRepositoryError::NotFound(id))?;
+        poster.cursor = cursor;
+        Ok(())
     }
 
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err> {
@@ -139,6 +149,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PosterRepositoryError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn set_cursor_persists() {
+        let repo = InMemoryPosterRepository::new();
+        let poster = repo
+            .create(vec![], vec![], fixture_interval())
+            .await
+            .unwrap();
+        assert_eq!(poster.cursor, 0);
+        repo.set_cursor(poster.id, 17).await.unwrap();
+        assert_eq!(
+            repo.find_by_id(poster.id).await.unwrap().unwrap().cursor,
+            17
+        );
+        assert!(matches!(
+            repo.set_cursor(PosterId::from(99), 1).await.unwrap_err(),
+            PosterRepositoryError::NotFound(_)
+        ));
     }
 
     #[tokio::test]

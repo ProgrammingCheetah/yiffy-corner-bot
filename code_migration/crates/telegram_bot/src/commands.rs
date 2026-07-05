@@ -26,7 +26,7 @@ use teloxide::{
 use url::Url;
 
 use crate::resolvers::BotUserResolver;
-use crate::state::SharedState;
+use crate::state::{PendingForward, PendingSubmission, SharedState};
 use telemetry::{Event, RejectReason};
 
 #[derive(BotCommands, Clone)]
@@ -198,7 +198,14 @@ pub async fn handle_command(
         Command::Browse(arg) => handle_browse(&bot, msg.chat.id, &state, actor, &arg).await,
         Command::Save(arg) => match Url::parse(arg.trim()) {
             Ok(url) => {
-                match browse::save(SaveCommand { actor, url }, &state.users, &state.posts).await {
+                match browse::save(
+                    SaveCommand { actor, url },
+                    &state.users,
+                    &state.posts,
+                    &*state.e621,
+                )
+                .await
+                {
                     Ok(post) => format!("Saved to the pool as #{} (Accepted).", post.id),
                     Err(e) => describe(e),
                 }
@@ -242,24 +249,30 @@ fn no_preview() -> LinkPreviewOptions {
     }
 }
 
-async fn handle_suggest(
+/// The shared submission pipeline behind /suggest, the tag dialogue, and
+/// channel forwards. Handles all outcomes: queueing (with review fan-out —
+/// copies for forwards, text for links), tag prompting (pending state), and
+/// rejections. Returns the reply for the submitter.
+async fn submit(
     bot: &Bot,
     state: &SharedState,
     actor: TelegramId,
     display_name: Option<String>,
-    arg: &str,
+    url: Url,
+    tags: Vec<Tag>,
+    forward: Option<PendingForward>,
 ) -> String {
-    let Ok(url) = Url::parse(arg) else {
-        return "Usage: /suggest <source-url> — e621, FurAffinity, Twitter/X, BlueSky, \
-                DeviantArt and t.me links are accepted."
-            .to_string();
-    };
+    use domain::elements::telegram::{TelegramCopyRef, TelegramCopyRepository as _};
+    use teloxide::payloads::CopyMessageSetters as _;
+    use teloxide::types::MessageId;
+
     let submitter_name = display_name.clone().unwrap_or_else(|| "a user".to_string());
     let outcome = suggest::handle(
         SuggestCommand {
             submitter: actor,
             display_name,
-            url,
+            url: url.clone(),
+            tags,
         },
         &state.users,
         &state.posts,
@@ -268,22 +281,77 @@ async fn handle_suggest(
     )
     .await;
     match outcome {
+        Ok(SuggestOutcome::TagsNeeded) => {
+            state
+                .pending
+                .lock()
+                .await
+                .insert(*actor.as_ref(), PendingSubmission { url, forward });
+            "Almost there! Reply with the tags that describe this post, separated by \
+             spaces — species, character, artist, anything relevant.\n\
+             Example: `wolf male solo digital_art`"
+                .to_string()
+        }
         Ok(SuggestOutcome::Queued { post, reviewers }) => {
-            let text = format!(
-                "New submission #{}\n{}\nSubmitted by {submitter_name}",
-                post.id,
-                post.source.as_ref(),
-            );
-            for reviewer in &reviewers {
-                let chat = ChatId(*reviewer.telegram_id.as_ref());
-                match bot
-                    .send_message(chat, text.clone())
-                    .reply_markup(review_keyboard(post.id))
+            if let Some(fwd) = &forward {
+                if let Err(e) = state
+                    .telegram_copies
+                    .upsert(TelegramCopyRef {
+                        source_url: post.source.as_ref().as_str().to_string(),
+                        origin_chat_id: fwd.origin_chat_id,
+                        origin_message_id: fwd.origin_message_id,
+                        channel_username: fwd.channel_username.clone(),
+                    })
                     .await
                 {
-                    Ok(_) => tracing::debug!(
+                    tracing::error!(event = %Event::CopyRefStoreFailed, post_id = %post.id, error = %e, "copy-ref store failed");
+                } else {
+                    tracing::info!(
+                        event = %Event::CopyRefStored, post_id = %post.id,
+                        channel = fwd.channel_username, origin_message_id = fwd.origin_message_id,
+                        "copy coordinates stored"
+                    );
+                }
+            }
+
+            let tag_line = post
+                .tags
+                .iter()
+                .take(12)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let origin_line = match &forward {
+                Some(fwd) => format!("Forwarded from channel: @{}", fwd.channel_username),
+                None => post.source.as_ref().to_string(),
+            };
+            let text = format!(
+                "New submission #{}\n{origin_line}\nTags: {tag_line}\nSubmitted by {submitter_name}",
+                post.id
+            );
+            for reviewer in &reviewers {
+                let reviewer_chat = ChatId(*reviewer.telegram_id.as_ref());
+                let sent = match &forward {
+                    Some(fwd) => bot
+                        .copy_message(
+                            reviewer_chat,
+                            ChatId(fwd.origin_chat_id),
+                            MessageId(fwd.origin_message_id),
+                        )
+                        .caption(text.clone())
+                        .reply_markup(review_keyboard(post.id))
+                        .await
+                        .map(|_| ()),
+                    None => bot
+                        .send_message(reviewer_chat, text.clone())
+                        .reply_markup(review_keyboard(post.id))
+                        .await
+                        .map(|_| ()),
+                };
+                match sent {
+                    Ok(()) => tracing::debug!(
                         event = %Event::ReviewDmSent, post_id = %post.id,
-                        reviewer = %reviewer.id, "review DM sent"
+                        reviewer = %reviewer.id, copied = forward.is_some(), "review DM sent"
                     ),
                     Err(e) => tracing::warn!(
                         event = %Event::ReviewDmFailed, post_id = %post.id,
@@ -291,16 +359,79 @@ async fn handle_suggest(
                     ),
                 }
             }
-            format!(
-                "Submission #{} is in the moderation queue — you'll see it posted once approved!",
-                post.id
-            )
+            match &forward {
+                Some(fwd) => format!(
+                    "Submission #{} is in the moderation queue — it will be posted as a copy \
+                     credited to @{} once approved!",
+                    post.id, fwd.channel_username
+                ),
+                None => format!(
+                    "Submission #{} is in the moderation queue — you'll see it posted once approved!",
+                    post.id
+                ),
+            }
         }
         Ok(SuggestOutcome::AutoBanned { .. }) => {
             "This post contains content that is not allowed here.".to_string()
         }
         Err(e) => describe(e),
     }
+}
+
+async fn handle_suggest(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    display_name: Option<String>,
+    arg: &str,
+) -> String {
+    let mut parts = arg.split_whitespace();
+    let Some(url) = parts.next().and_then(|raw| Url::parse(raw).ok()) else {
+        return "Usage: /suggest <source-url> [tags…] — e621, FurAffinity, Twitter/X, BlueSky, \
+                DeviantArt and t.me links are accepted. Non-e621 sources need tags \
+                (I'll ask if you leave them off)."
+            .to_string();
+    };
+    let tags: Vec<Tag> = parts.map(Tag::from).collect();
+    submit(bot, state, actor, display_name, url, tags, None).await
+}
+
+/// Completes a pending submission: the submitter's next plain-text message
+/// after a tag prompt carries the tags.
+pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> ResponseResult<()> {
+    let Some((from, actor)) = sender(&msg) else {
+        return Ok(());
+    };
+    let Some(text) = msg.text() else {
+        return Ok(());
+    };
+    let Some(pending) = state.pending.lock().await.remove(actor.as_ref()) else {
+        return Ok(()); // no dialogue in flight — stay silent
+    };
+    let tags: Vec<Tag> = text.split_whitespace().map(Tag::from).collect();
+    if tags.is_empty() {
+        state.pending.lock().await.insert(*actor.as_ref(), pending);
+        bot.send_message(
+            msg.chat.id,
+            "I need at least one tag — try `wolf male solo`.",
+        )
+        .await?;
+        return Ok(());
+    }
+    let reply = submit(
+        &bot,
+        &state,
+        actor,
+        Some(from.full_name()),
+        pending.url,
+        tags,
+        pending.forward,
+    )
+    .await;
+    bot.send_message(msg.chat.id, reply)
+        .link_preview_options(no_preview())
+        .await?;
+    Ok(())
 }
 
 fn parse_post_id(arg: &str) -> Option<PostId> {
@@ -779,14 +910,11 @@ pub async fn handle_channel_forward(
     msg: Message,
     state: SharedState,
 ) -> ResponseResult<()> {
-    use domain::elements::telegram::{TelegramCopyRef, TelegramCopyRepository as _};
-    use teloxide::payloads::CopyMessageSetters as _;
     use teloxide::types::MessageOrigin;
 
     let Some((from, actor)) = sender(&msg) else {
         return Ok(());
     };
-    let display_name = Some(from.full_name());
     let Some(MessageOrigin::Channel {
         chat, message_id, ..
     }) = msg.forward_origin()
@@ -806,82 +934,28 @@ pub async fn handle_channel_forward(
         .await?;
         return Ok(());
     };
-
     let Ok(url) = Url::parse(&format!("https://t.me/{channel}/{}", message_id.0)) else {
         bot.send_message(msg.chat.id, "That forward has no usable origin link.")
             .await?;
         return Ok(());
     };
-    let submitter_name = display_name.clone().unwrap_or_else(|| "a user".to_string());
 
-    let outcome = suggest::handle(
-        SuggestCommand {
-            submitter: actor,
-            display_name,
-            url,
-        },
-        &state.users,
-        &state.posts,
-        &*state.e621,
-        &state.forbidden,
+    // t.me sources always need tags, so this lands in the tag dialogue
+    // (after the duplicate/ban checks inside the submission pipeline).
+    let reply = submit(
+        &bot,
+        &state,
+        actor,
+        Some(from.full_name()),
+        url,
+        Vec::new(),
+        Some(PendingForward {
+            origin_chat_id: msg.chat.id.0,
+            origin_message_id: msg.id.0,
+            channel_username: channel.to_string(),
+        }),
     )
     .await;
-
-    let reply = match outcome {
-        Ok(SuggestOutcome::Queued { post, reviewers }) => {
-            // Remember how to re-copy this content at publish time.
-            if let Err(e) = state
-                .telegram_copies
-                .upsert(TelegramCopyRef {
-                    source_url: post.source.as_ref().as_str().to_string(),
-                    origin_chat_id: msg.chat.id.0,
-                    origin_message_id: msg.id.0,
-                    channel_username: channel.to_string(),
-                })
-                .await
-            {
-                tracing::error!(event = %Event::CopyRefStoreFailed, post_id = %post.id, error = %e, "copy-ref store failed");
-            } else {
-                tracing::info!(
-                    event = %Event::CopyRefStored, post_id = %post.id,
-                    channel = channel, origin_message_id = msg.id.0,
-                    "copy coordinates stored"
-                );
-            }
-
-            let caption = format!(
-                "New submission #{}\nSubmitted by {submitter_name}\nForwarded from channel: @{channel}",
-                post.id
-            );
-            for reviewer in &reviewers {
-                let reviewer_chat = ChatId(*reviewer.telegram_id.as_ref());
-                match bot
-                    .copy_message(reviewer_chat, msg.chat.id, msg.id)
-                    .caption(caption.clone())
-                    .reply_markup(review_keyboard(post.id))
-                    .await
-                {
-                    Ok(_) => tracing::debug!(
-                        event = %Event::ReviewDmSent, post_id = %post.id,
-                        reviewer = %reviewer.id, copied = true, "review copy sent"
-                    ),
-                    Err(e) => tracing::warn!(
-                        event = %Event::ReviewDmFailed, post_id = %post.id,
-                        reviewer = %reviewer.id, copied = true, error = %e, "review copy failed"
-                    ),
-                }
-            }
-            format!(
-                "Submission #{} is in the moderation queue — it will be posted as a copy \
-                 credited to @{channel} once approved!",
-                post.id
-            )
-        }
-        Ok(SuggestOutcome::AutoBanned { .. }) => {
-            "This post contains content that is not allowed here.".to_string()
-        }
-        Err(e) => describe(e),
-    };
     bot.send_message(msg.chat.id, reply)
         .link_preview_options(no_preview())
         .await?;
@@ -953,7 +1027,13 @@ pub async fn handle_callback(
                 .and_then(|id| Url::parse(&format!("https://e621.net/posts/{id}")).ok())
             {
                 Some(url) => {
-                    match browse::save(SaveCommand { actor, url }, &state.users, &state.posts).await
+                    match browse::save(
+                        SaveCommand { actor, url },
+                        &state.users,
+                        &state.posts,
+                        &*state.e621,
+                    )
+                    .await
                     {
                         Ok(post) => format!("Saved to the pool as #{}.", post.id),
                         Err(e) => describe(e),

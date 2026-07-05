@@ -143,6 +143,7 @@ mod posts {
         let post = repo
             .create(
                 e621_source(1),
+                vec![],
                 Some(submitter.id),
                 when,
                 PostStatus::AwaitingModeration,
@@ -163,7 +164,13 @@ mod posts {
     async fn find_by_source_and_duplicate_rejection() {
         let repo = SqlitePostRepository::new(test_pool().await);
         let post = repo
-            .create(e621_source(1), None, Utc::now(), PostStatus::Accepted)
+            .create(
+                e621_source(1),
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
             .await
             .unwrap();
         let found = repo.find_by_source(&e621_source(1)).await.unwrap();
@@ -177,9 +184,15 @@ mod posts {
 
         // UNIQUE(source_url) also guards duplicates at the DB layer.
         assert!(matches!(
-            repo.create(e621_source(1), None, Utc::now(), PostStatus::Accepted)
-                .await
-                .unwrap_err(),
+            repo.create(
+                e621_source(1),
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted
+            )
+            .await
+            .unwrap_err(),
             PostRepositoryError::NotCreated(_)
         ));
     }
@@ -190,6 +203,7 @@ mod posts {
         let post = repo
             .create(
                 e621_source(1),
+                vec![],
                 None,
                 Utc::now(),
                 PostStatus::AwaitingModeration,
@@ -227,21 +241,134 @@ mod posts {
     }
 
     #[tokio::test]
+    async fn accept_into_feed_assigns_monotonic_idempotent_positions() {
+        let repo = SqlitePostRepository::new(test_pool().await);
+        let a = repo
+            .create(
+                e621_source(1),
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::AwaitingModeration,
+            )
+            .await
+            .unwrap();
+        let b = repo
+            .create(
+                e621_source(2),
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::AwaitingModeration,
+            )
+            .await
+            .unwrap();
+        let a = repo.accept_into_feed(a.id).await.unwrap();
+        let b = repo.accept_into_feed(b.id).await.unwrap();
+        assert_eq!(a.feed_position, Some(1));
+        assert_eq!(b.feed_position, Some(2));
+        assert_eq!(repo.feed_end().await.unwrap(), 2);
+
+        // Re-accepting a Banned entry keeps its slot.
+        repo.set_status_to(a.id, PostStatus::Banned).await.unwrap();
+        let again = repo.accept_into_feed(a.id).await.unwrap();
+        assert_eq!(again.feed_position, Some(1));
+        assert_eq!(again.status, PostStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn feed_after_windows_orders_and_filters_status() {
+        let repo = SqlitePostRepository::new(test_pool().await);
+        let mut entries = Vec::new();
+        for i in 1..=4u64 {
+            let p = repo
+                .create(
+                    e621_source(i),
+                    vec![],
+                    None,
+                    Utc::now(),
+                    PostStatus::AwaitingModeration,
+                )
+                .await
+                .unwrap();
+            entries.push(repo.accept_into_feed(p.id).await.unwrap());
+        }
+        repo.set_status_to(entries[2].id, PostStatus::Banned)
+            .await
+            .unwrap();
+        repo.remove(entries[3].id).await.unwrap();
+
+        let window = repo.feed_after(1, 4).await.unwrap();
+        let positions: Vec<u64> = window.iter().filter_map(|p| p.feed_position).collect();
+        assert_eq!(positions, vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn tags_roundtrip_space_joined() {
+        let repo = SqlitePostRepository::new(test_pool().await);
+        let post = repo
+            .create(
+                e621_source(1),
+                vec![Tag::from("wolf"), Tag::from("male")],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
+            .await
+            .unwrap();
+        let found = repo.find_by_id(post.id).await.unwrap().unwrap();
+        assert_eq!(found.tags, vec![Tag::from("wolf"), Tag::from("male")]);
+    }
+
+    #[tokio::test]
+    async fn poster_cursor_roundtrip() {
+        let repo = SqlitePosterRepository::new(test_pool().await);
+        let poster = repo
+            .create(vec![], vec![], PostInterval::new(5).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(poster.cursor, 0);
+        repo.set_cursor(poster.id, 42).await.unwrap();
+        assert_eq!(
+            repo.find_by_id(poster.id).await.unwrap().unwrap().cursor,
+            42
+        );
+    }
+
+    #[tokio::test]
     async fn list_by_status_orders_oldest_first() {
         let repo = SqlitePostRepository::new(test_pool().await);
         let older = Utc::now() - Duration::hours(2);
         let newer = Utc::now() - Duration::hours(1);
         let b = repo
-            .create(e621_source(2), None, newer, PostStatus::AwaitingModeration)
+            .create(
+                e621_source(2),
+                vec![],
+                None,
+                newer,
+                PostStatus::AwaitingModeration,
+            )
             .await
             .unwrap();
         let a = repo
-            .create(e621_source(1), None, older, PostStatus::AwaitingModeration)
+            .create(
+                e621_source(1),
+                vec![],
+                None,
+                older,
+                PostStatus::AwaitingModeration,
+            )
             .await
             .unwrap();
-        repo.create(e621_source(3), None, Utc::now(), PostStatus::Accepted)
-            .await
-            .unwrap();
+        repo.create(
+            e621_source(3),
+            vec![],
+            None,
+            Utc::now(),
+            PostStatus::Accepted,
+        )
+        .await
+        .unwrap();
 
         let queue = repo
             .list_by_status(PostStatus::AwaitingModeration)

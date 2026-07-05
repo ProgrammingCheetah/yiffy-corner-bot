@@ -40,6 +40,9 @@ pub struct Poster {
     pub forbidden_tags: Vec<Tag>,
     /// At what interval to post
     pub time_interval: PostInterval,
+    /// The consumer's position in the feed: the highest `feed_position` this
+    /// Poster has already consumed or scanned past. Starts at 0 (feed start).
+    pub cursor: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -68,5 +71,8 @@ pub trait PosterRepository: Send + Sync {
         subscribed_tags: Vec<Tag>,
         forbidden_tags: Vec<Tag>,
     ) -> Result<Poster, Self::Err>;
+    /// Persist the consumer's feed cursor. Written after every successful
+    /// consume (or empty scan); read fresh at every fire.
+    async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err>;
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err>;
 }

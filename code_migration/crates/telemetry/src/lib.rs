@@ -54,6 +54,7 @@ vocabulary! {
         // Submissions
         SubmissionCreated => "submission_created",
         SubmissionRejected => "submission_rejected",
+        SubmissionTagsRequested => "submission_tags_requested",
         SubmissionAutoBanned => "submission_auto_banned",
         ForwardRejected => "forward_rejected",
         CopyRefStored => "copy_ref_stored",
@@ -80,14 +81,12 @@ vocabulary! {
         PosterTagsChanged => "poster_tags_changed",
         ChannelBound => "channel_bound",
 
-        // Selection
-        QueueEmpty => "queue_empty",
-        QueueHeadPeeked => "queue_head_peeked",
-        QueueHeadSelected => "queue_head_selected",
-        QueueHeadMismatch => "queue_head_mismatch",
-        PoolSelectionStarted => "pool_selection_started",
-        PoolCandidateSelected => "pool_candidate_selected",
-        PoolExhausted => "pool_exhausted",
+        // Feed & selection
+        AcceptedIntoFeed => "accepted_into_feed",
+        FeedScanStarted => "feed_scan_started",
+        FeedMatch => "feed_match",
+        FeedEndReached => "feed_end_reached",
+        CursorAdvanced => "cursor_advanced",
         TagsFetched => "tags_fetched",
         StatusFlipped => "status_flipped",
         CandidateSkipped => "candidate_skipped",

@@ -36,7 +36,21 @@ Environment (all optional):
 | `YCB_DATABASE_URL` | `sqlite:<vault>/storage/rust-bot.sqlite` |
 | `YCB_OWNER_ID` | `1402476143` |
 | `YCB_HEALTH_ADDR` | `0.0.0.0:3000` |
-| `YCB_REPOST_COOLDOWN_DAYS` | `7` |
+
+## The feed model
+
+All curated posts live in ONE ordered feed (BSky-style). Approving a
+submission — or saving from `/browse` — assigns it the next feed position.
+Every Poster (consumer) stores its tag subscription and a cursor: each fire
+scans forward from the cursor and posts the first entry matching its tags,
+advancing the cursor to the match (or to the pre-scan feed end on a miss —
+appends during a scan are never skipped). Consume-once: when a consumer
+reaches the feed end it stays quiet until new content is curated.
+
+Every feed entry is tagged: e621 tags come from the API; other sources
+require submitter tags — inline (`/suggest <url> wolf male`) or via the
+ask-and-wait dialogue (the bot prompts, your next message is the tags).
+Channel forwards always go through the tag dialogue.
 
 ## First-run flow
 
@@ -44,8 +58,8 @@ Environment (all optional):
 2. `/newposter 15 wolf -gore` → creates Poster #1 (fires every 15 min).
 3. `/setchannel 1 @yourchannel` (bot must be an admin of the channel).
 4. Restart the bot — Poster runtimes are loaded at boot.
-5. Anyone can `/suggest <url>`; Moderators approve via the DM buttons;
-   `/browse wolf` + `/save <e621-url>` fills the tag-based pool.
+5. Fill the feed: `/browse wolf` + Send buttons, or `/suggest <url> [tags…]`
+   from anyone + Moderator approval via the DM buttons.
 
 ## Logging
 

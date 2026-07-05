@@ -37,6 +37,7 @@ fn row_to_poster(row: &sqlx::sqlite::SqliteRow) -> Result<Poster, PosterReposito
         forbidden_tags: split_tags(&row.get::<String, _>("forbidden_tags")),
         time_interval: PostInterval::new(interval as u8)
             .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?,
+        cursor: row.get::<i64, _>("cursor") as u64,
     })
 }
 
@@ -89,6 +90,19 @@ impl PosterRepository for SqlitePosterRepository {
         .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?
         .ok_or(PosterRepositoryError::NotFound(id))?;
         row_to_poster(&row)
+    }
+
+    async fn set_cursor(&self, id: PosterId, cursor: u64) -> Result<(), Self::Err> {
+        let result = sqlx::query("UPDATE posters SET cursor = ? WHERE id = ?")
+            .bind(cursor as i64)
+            .bind(*id.as_ref() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PosterRepositoryError::NotCreated(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(PosterRepositoryError::NotFound(id));
+        }
+        Ok(())
     }
 
     async fn list_all(&self) -> Result<Vec<Poster>, Self::Err> {

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use url::Url;
 
+use crate::elements::tag::Tag;
 use crate::elements::user::UserId;
 
 /// The internal ID for a Post. Program-managed.
@@ -155,23 +156,33 @@ impl std::str::FromStr for PostStatus {
     }
 }
 
-/// A piece of media curated by the bot.
+/// A piece of media curated by the bot — an entry in (or headed for) THE FEED.
 ///
-/// **Lean by design**: the bot is an indexer over e621, not a content store.
-/// Tags, mime type, and other content metadata are always fetched fresh from
-/// e621 — they're never persisted locally. This struct carries only the
-/// identity (`source`) and the local workflow state (`status`, `last_posted`,
-/// `submitted_by`, `submitted_at`).
+/// Feed model (2026-07-05): all curated Posts live in one ordered feed;
+/// consumers (Posters) walk it with per-consumer cursors. `feed_position` is
+/// the monotonic ordering key, assigned once when the Post is accepted into
+/// the feed (approval or admin save) — `None` means "not in the feed"
+/// (awaiting moderation, rejected, or auto-banned at submission).
+///
+/// Every Post carries curated `tags`: fetched from e621 for e621 sources,
+/// supplied by the submitter for everything else. e621 tags are still
+/// re-validated fresh at consume time; curated tags are the fallback truth
+/// for every other platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Post {
     pub id: PostId,
-    /// The canonical reference URL (e621 post URL for re-postable Posts).
+    /// The canonical reference URL.
     pub source: Source,
     pub status: PostStatus,
+    /// Curated tags (e621: API tags at submission; other sources: submitter's).
+    pub tags: Vec<Tag>,
+    /// Position in the feed; `None` until accepted into it.
+    pub feed_position: Option<u64>,
     /// When this Post was most recently published by a Poster. `None` if never.
+    /// Audit only — feed consumption is cursor-driven.
     pub last_posted: Option<DateTime<Utc>>,
     /// The User who submitted it via `/suggest`. `None` for admin-added posts
-    /// from `/browse` (which auto-Accept, bypassing submission).
+    /// from `/browse` (which enter the feed directly, bypassing moderation).
     pub submitted_by: Option<UserId>,
     pub submitted_at: DateTime<Utc>,
 }
@@ -188,13 +199,15 @@ pub enum PostRepositoryError {
 #[async_trait::async_trait]
 pub trait PostRepository: Send + Sync {
     type Err;
-    /// Create a Post with the given source, submitter (if any), submission
-    /// time, and initial status. Caller decides the status: `AwaitingModeration`
-    /// for `/suggest`, `Banned` if the post owns a forbidden tag at submission,
-    /// `Accepted` for admin-added Posts via `/browse`.
+    /// Create a Post with the given source, curated tags, submitter (if any),
+    /// submission time, and initial status. Caller decides the status:
+    /// `AwaitingModeration` for `/suggest`, `Banned` if the post owns a
+    /// forbidden tag at submission. Creation never assigns a feed position —
+    /// use [`Self::accept_into_feed`].
     async fn create(
         &self,
         source: Source,
+        tags: Vec<Tag>,
         submitted_by: Option<UserId>,
         submitted_at: DateTime<Utc>,
         status: PostStatus,
@@ -214,37 +227,56 @@ pub trait PostRepository: Send + Sync {
     /// All Posts currently in `status`, ordered oldest-submitted first.
     /// `AwaitingModeration` ordering IS the moderation queue.
     async fn list_by_status(&self, status: PostStatus) -> Result<Vec<Post>, Self::Err>;
+
+    // --- feed operations -------------------------------------------------
+
+    /// Accept a Post into the feed: status → `Accepted` and the next
+    /// monotonic `feed_position` is assigned (idempotent for Posts already
+    /// holding a position — only the status flips back). Used by moderator
+    /// approval and admin `/browse` saves.
+    async fn accept_into_feed(&self, id: PostId) -> Result<Post, Self::Err>;
+    /// The current end of the feed (highest assigned position; 0 if empty).
+    /// Consumers snapshot this BEFORE scanning so entries appended mid-scan
+    /// are never skipped.
+    async fn feed_end(&self) -> Result<u64, Self::Err>;
+    /// Feed entries with `cursor < position <= up_to`, in feed order.
+    /// Includes `Accepted` and `Banned` entries — Banned is a cached verdict
+    /// the consumer re-validates (and may lift) at consume time.
+    async fn feed_after(&self, cursor: u64, up_to: u64) -> Result<Vec<Post>, Self::Err>;
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelectorError {
-    #[error("no post matched the Poster's tag criteria")]
-    NoMatch,
     #[error("repository error during selection: {0}")]
     Repository(String),
     #[error("upstream fetch error during selection: {0}")]
     Fetch(String),
 }
 
-/// Strategy for selecting which [`Post`] a Poster fires next.
+/// The outcome of one feed scan.
 ///
-/// Different implementations (uniform, weighted, etc.) live behind this trait
-/// so the selection policy can evolve without changing the use case.
+/// `advance_to` is where the consumer's cursor should land — the matched
+/// entry's position on a hit, or the pre-scan feed-end snapshot on a miss —
+/// and the caller persists it only once the entry is safely published (so a
+/// failed publish retries the same entry next tick).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedPick {
+    pub post: Option<Post>,
+    pub advance_to: u64,
+}
+
+/// Strategy for walking the feed on behalf of one consumer.
 ///
 /// `+ Send + Sync` so the scheduler can hold one instance per Poster across an
 /// async task boundary. Async because real selection hits the repository and
-/// re-validates against fresh e621 data.
+/// re-validates e621 entries against fresh data.
 #[async_trait::async_trait]
 pub trait PostSelectorStrategy: Send + Sync {
-    /// Try the moderation queue first: if its head matches this Poster's tag
-    /// criteria, return it; otherwise `Ok(None)` so the caller can fall back
-    /// to [`Self::find_post`].
-    async fn find_due_post(&self) -> Result<Option<Post>, SelectorError>;
-    /// Pick a Post from the saved pool (Accepted ∪ Banned). The strategy
-    /// validates tags against fresh e621 data and may mutate Post.status as a
-    /// side effect (Banned → Accepted on un-ban, Accepted → Banned on policy
-    /// hit).
-    async fn find_post(&self) -> Result<Post, SelectorError>;
+    /// Scan the feed from `cursor` (exclusive) to the pre-scan end snapshot,
+    /// returning the first entry matching this consumer's tag criteria.
+    /// May flip entry statuses as a side effect (Banned → Accepted on
+    /// re-validation, Accepted → Banned on a fresh forbidden hit).
+    async fn next_post(&self, cursor: u64) -> Result<FeedPick, SelectorError>;
 }
 
 #[cfg(test)]

@@ -86,6 +86,31 @@ For the MVP:
   `Forwarded from channel: @<channel>`. Moderation DMs show the same copy
   with the same attribution. Private channels (no @username) are rejected.
 
+# Amendment: The Feed Model (2026-07-05)
+
+Supersedes the queue/pool split above. Curation now produces ONE ordered
+feed, consumed BSky-style:
+
+- **The feed**: every curated Post (moderator-approved submission or admin
+  `/browse` save) is assigned the next monotonic `feed_position`. One pool,
+  all curated, all tagged.
+- **Consumers**: each Poster stores what it wants to see (tag subscription)
+  and its `cursor`. On each fire it snapshots the feed end, scans
+  `(cursor, end]` in order, posts the first tag-match, and sets its cursor to
+  the match — or to the *pre-scan* snapshot end when nothing matched, so an
+  entry appended mid-scan is never skipped. Cursor advances only after a
+  successful publish.
+- **Consume-once**: at the feed end a consumer stays quiet until new content
+  is curated. No recycling, no repost cooldown. Infinite consumers under one
+  pool.
+- **Tags on everything**: e621 entries get API tags at submission (and are
+  still re-validated fresh at consume time — Banned↔Accepted flips live on);
+  every other source requires submitter tags, inline or via the bot's
+  ask-for-tags dialogue (forwards included). The Banned verdict for non-e621
+  entries re-checks curated tags against the *current* global forbidden list.
+- The old rules "non-e621 posts have zero tags", "only e621 can be
+  re-posted", and "submission queue disjoint from tag pool" are obsolete.
+
 # Open Questions
 
 ## 1. User capabilities around Channels/Posters

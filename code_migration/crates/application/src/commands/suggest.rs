@@ -11,6 +11,7 @@ use chrono::Utc;
 use domain::elements::{
     e621::E621Fetcher,
     post::{Post, PostRepository, PostStatus, Source},
+    tag::Tag,
     tag_policy::ForbiddenTagRepository,
     user::{Role, TelegramId, User, UserRepository},
 };
@@ -26,6 +27,10 @@ pub struct SuggestCommand {
     /// "Submitted by <name>" attribution when the Post is eventually published.
     pub display_name: Option<String>,
     pub url: Url,
+    /// Curated tags. e621 sources merge these with the API's tags; every
+    /// other source REQUIRES a non-empty set (feed model — everything in the
+    /// feed is tagged), otherwise the outcome is [`SuggestOutcome::TagsNeeded`].
+    pub tags: Vec<Tag>,
 }
 
 /// What the bot layer needs to react to a submission.
@@ -35,6 +40,9 @@ pub enum SuggestOutcome {
     Queued { post: Post, reviewers: Vec<User> },
     /// Submission owned a globally forbidden tag and was auto-Banned.
     AutoBanned { post: Post },
+    /// Non-e621 source with no tags: nothing was created yet — the bot must
+    /// ask the submitter for tags and retry with them.
+    TagsNeeded,
 }
 
 pub async fn handle<P, E, F>(
@@ -94,37 +102,54 @@ where
         return Err(HandlerError::DuplicateSubmission(existing.id));
     }
 
-    // e621 submissions are tag-checked at the door: a globally forbidden tag
-    // auto-Bans (cached verdict, re-validated at selection). Non-e621 posts
-    // have zero tags (design) — nothing to check.
-    let status = match &source {
+    // Every feed entry is tagged: e621 tags come from the API (merged with
+    // any extras the submitter supplied); other sources need submitter tags.
+    let tags = match &source {
         Source::E621(_) => {
             let metadata = e621
                 .fetch(&source)
                 .await
                 .map_err(|e| HandlerError::Fetch(e.to_string()))?;
-            let mut hit = false;
-            for tag in &metadata.tags {
-                if forbidden
-                    .contains(tag)
-                    .await
-                    .map_err(|_| HandlerError::RepositoryError)?
-                {
-                    hit = true;
-                    break;
+            let mut tags = metadata.tags;
+            for extra in cmd.tags {
+                if !tags.contains(&extra) {
+                    tags.push(extra);
                 }
             }
-            if hit {
-                PostStatus::Banned
-            } else {
-                PostStatus::AwaitingModeration
-            }
+            tags
         }
-        _ => PostStatus::AwaitingModeration,
+        _ if cmd.tags.is_empty() => {
+            tracing::info!(
+                event = %Event::SubmissionTagsRequested,
+                user_id = %submitter.id, source = %source.as_ref(),
+                "non-e621 submission needs tags"
+            );
+            return Ok(SuggestOutcome::TagsNeeded);
+        }
+        _ => cmd.tags,
+    };
+
+    // Tag-check at the door: a globally forbidden tag auto-Bans (cached
+    // verdict, re-validated at consume time).
+    let mut hit = false;
+    for tag in &tags {
+        if forbidden
+            .contains(tag)
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?
+        {
+            hit = true;
+            break;
+        }
+    }
+    let status = if hit {
+        PostStatus::Banned
+    } else {
+        PostStatus::AwaitingModeration
     };
 
     let post = posts
-        .create(source, Some(submitter.id), Utc::now(), status.clone())
+        .create(source, tags, Some(submitter.id), Utc::now(), status.clone())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(
@@ -234,6 +259,7 @@ mod tests {
                     submitter: TelegramId::from(telegram_id),
                     display_name: Some("Tester".to_string()),
                     url: Url::parse(url).unwrap(),
+                    tags: vec![],
                 },
                 &self.users,
                 &self.posts,
@@ -330,12 +356,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_e621_source_queues_without_tag_check() {
+    async fn non_e621_source_without_tags_asks_for_them() {
         let fx = Fixture::new(); // fetcher knows no URLs — must not be called
         let outcome = fx
             .suggest(42, "https://x.com/artist/status/1")
             .await
             .unwrap();
-        assert!(matches!(outcome, SuggestOutcome::Queued { .. }));
+        assert!(matches!(outcome, SuggestOutcome::TagsNeeded));
+        // Nothing was created: the same URL is still submittable.
+        assert!(
+            fx.posts
+                .find_by_source(
+                    &Source::try_from(Url::parse("https://x.com/artist/status/1").unwrap())
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn non_e621_source_with_tags_queues_on_curated_tags() {
+        let fx = Fixture::new();
+        let outcome = handle(
+            SuggestCommand {
+                submitter: TelegramId::from(42),
+                display_name: None,
+                url: Url::parse("https://x.com/artist/status/1").unwrap(),
+                tags: vec![Tag::from("wolf")],
+            },
+            &fx.users,
+            &fx.posts,
+            &fx.fetcher,
+            &fx.forbidden,
+        )
+        .await
+        .unwrap();
+        let SuggestOutcome::Queued { post, .. } = outcome else {
+            panic!("expected Queued");
+        };
+        assert_eq!(post.tags, vec![Tag::from("wolf")]);
+    }
+
+    #[tokio::test]
+    async fn non_e621_forbidden_curated_tag_auto_bans() {
+        let fx = Fixture::new();
+        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        let outcome = handle(
+            SuggestCommand {
+                submitter: TelegramId::from(42),
+                display_name: None,
+                url: Url::parse("https://x.com/artist/status/1").unwrap(),
+                tags: vec![Tag::from("gore")],
+            },
+            &fx.users,
+            &fx.posts,
+            &fx.fetcher,
+            &fx.forbidden,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, SuggestOutcome::AutoBanned { .. }));
     }
 }
