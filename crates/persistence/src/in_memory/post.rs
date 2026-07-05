@@ -170,6 +170,25 @@ impl PostRepository for InMemoryPostRepository {
         Ok(matching)
     }
 
+    async fn top_submitters(&self, limit: usize) -> Result<Vec<(UserId, u64)>, Self::Err> {
+        let mut scores: HashMap<u64, u64> = HashMap::new();
+        for post in self.posts.read().await.values() {
+            if post.feed_position.is_none() || post.status == PostStatus::Deleted {
+                continue;
+            }
+            if let Some(user) = post.submitted_by {
+                *scores.entry(*user.as_ref()).or_default() += 1;
+            }
+        }
+        let mut ranked: Vec<(UserId, u64)> = scores
+            .into_iter()
+            .map(|(user, score)| (UserId::from(user), score))
+            .collect();
+        ranked.sort_by_key(|(user, score)| (std::cmp::Reverse(*score), *user.as_ref()));
+        ranked.truncate(limit);
+        Ok(ranked)
+    }
+
     async fn accept_into_feed(&self, id: PostId) -> Result<Post, Self::Err> {
         let mut posts = self.posts.write().await;
         let next_position = posts
@@ -376,6 +395,40 @@ mod tests {
         let window = repo.feed_after(1, 4).await.unwrap();
         let positions: Vec<u64> = window.iter().filter_map(|p| p.feed_position).collect();
         assert_eq!(positions, vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn top_submitters_ranks_accepted_posts_only() {
+        let repo = InMemoryPostRepository::new();
+        // User 1: two accepted; user 2: one accepted, one still queued,
+        // one accepted-then-deleted (doesn't count).
+        for (i, submitter) in [(1u64, 1u64), (2, 1), (3, 2), (4, 2), (5, 2)] {
+            let post = repo
+                .create(
+                    source(i),
+                    vec![],
+                    vec![],
+                    Some(UserId::from(submitter)),
+                    Utc::now(),
+                    PostStatus::AwaitingModeration,
+                )
+                .await
+                .unwrap();
+            if i != 4 {
+                repo.accept_into_feed(post.id).await.unwrap();
+            }
+            if i == 5 {
+                repo.remove(post.id).await.unwrap();
+            }
+        }
+
+        let ranked = repo.top_submitters(10).await.unwrap();
+        assert_eq!(
+            ranked,
+            vec![(UserId::from(1), 2), (UserId::from(2), 1)],
+            "user 1 leads with 2; user 2 counts only the surviving accepted post"
+        );
+        assert_eq!(repo.top_submitters(1).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

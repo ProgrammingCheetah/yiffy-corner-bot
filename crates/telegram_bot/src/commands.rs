@@ -116,6 +116,8 @@ pub enum Command {
         description = "preview a poster's next publication: /nextpost <poster|@channel|chat-id> (mods)"
     )]
     Nextpost(String),
+    #[command(description = "top submitters leaderboard")]
+    Highscore,
     #[command(description = "personal token for the browser userscript (rotates on each use)")]
     Apitoken,
     #[command(description = "channel directory broadcasts: /announcements <hours|now|off> (owner)")]
@@ -167,6 +169,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Delposter(_) => "delposter",
         Command::Posters => "posters",
         Command::Nextpost(_) => "nextpost",
+        Command::Highscore => "highscore",
         Command::Apitoken => "apitoken",
         Command::Announcements(_) => "announcements",
         Command::Spotlight(_) => "spotlight",
@@ -565,6 +568,7 @@ pub async fn handle_command(
         Command::Delposter(arg) => handle_delposter(&state, actor, &arg).await,
         Command::Posters => handle_posters(&state, actor).await,
         Command::Nextpost(arg) => handle_nextpost(&bot, &state, actor, &arg).await,
+        Command::Highscore => handle_highscore(&state).await,
         Command::Apitoken => handle_apitoken(&state, &msg, actor).await,
         Command::Announcements(arg) => handle_announcements(&bot, &state, actor, &arg).await,
         Command::Spotlight(arg) => handle_spotlight(&bot, &state, actor, &arg).await,
@@ -1641,8 +1645,39 @@ pub(crate) fn parse_tag_lists<'a>(
     Ok((subscribed, forbidden))
 }
 
-/// Resolve a poster reference: `#7`/`7` = poster id; `@channel` or a
-/// (negative) chat id = every poster bound to that chat.
+/// The submitter leaderboard — public on purpose, that's what makes it a
+/// highscore. Scored on Posts accepted into the feed.
+async fn handle_highscore(state: &SharedState) -> String {
+    use domain::elements::post::PostRepository as _;
+    use domain::elements::user::UserRepository as _;
+
+    let ranked = match state.posts.top_submitters(10).await {
+        Ok(ranked) => ranked,
+        Err(_) => return "Repository error reading the leaderboard.".to_string(),
+    };
+    if ranked.is_empty() {
+        return "No accepted submissions yet — claim the crown with /suggest!".to_string();
+    }
+    let mut lines = vec!["🏆 Top submitters".to_string()];
+    for (rank, (user_id, score)) in ranked.iter().enumerate() {
+        let name = match state.users.find_by_id(*user_id).await {
+            Ok(Some(user)) => user
+                .display_name
+                .unwrap_or_else(|| format!("user {}", user.telegram_id.as_ref())),
+            _ => format!("user {user_id}"),
+        };
+        let medal = match rank {
+            0 => "🥇".to_string(),
+            1 => "🥈".to_string(),
+            2 => "🥉".to_string(),
+            n => format!("{}.", n + 1),
+        };
+        let noun = if *score == 1 { "post" } else { "posts" };
+        lines.push(format!("{medal} {name} — {score} {noun}"));
+    }
+    lines.join("\n")
+}
+
 /// Preview what a poster would publish on its next fire, WITHOUT advancing
 /// its cursor or publishing anything. Runs the exact selector the scheduler
 /// runs, so the answer can't drift from reality — including its side
@@ -1728,6 +1763,8 @@ async fn handle_nextpost(bot: &Bot, state: &SharedState, actor: TelegramId, arg:
     blocks.join("\n\n")
 }
 
+/// Resolve a poster reference: `#7`/`7` = poster id; `@channel` or a
+/// (negative) chat id = every poster bound to that chat.
 pub(crate) async fn resolve_posters(
     bot: &Bot,
     state: &SharedState,

@@ -246,6 +246,31 @@ impl PostRepository for SqlitePostRepository {
         rows.iter().map(row_to_post).collect()
     }
 
+    async fn top_submitters(&self, limit: usize) -> Result<Vec<(UserId, u64)>, Self::Err> {
+        let rows = sqlx::query(
+            "SELECT submitted_by, COUNT(*) AS score FROM posts
+             WHERE submitted_by IS NOT NULL
+               AND feed_position IS NOT NULL
+               AND status != 'deleted'
+             GROUP BY submitted_by
+             ORDER BY score DESC, submitted_by
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    UserId::from(row.get::<i64, _>("submitted_by") as u64),
+                    row.get::<i64, _>("score") as u64,
+                )
+            })
+            .collect())
+    }
+
     async fn accept_into_feed(&self, id: PostId) -> Result<Post, Self::Err> {
         // Single statement → atomic under SQLite's single-writer model.
         // COALESCE keeps an existing position (idempotent re-accept).

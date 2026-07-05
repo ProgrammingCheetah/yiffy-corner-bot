@@ -299,6 +299,10 @@ pub trait PostRepository: Send + Sync {
     /// All Posts currently in `status`, ordered oldest-submitted first.
     /// `AwaitingModeration` ordering IS the moderation queue.
     async fn list_by_status(&self, status: PostStatus) -> Result<Vec<Post>, Self::Err>;
+    /// The submission leaderboard: users by number of their Posts accepted
+    /// into the feed (soft-deleted rows excluded), highest first, ties to
+    /// the earlier user id. At most `limit` entries.
+    async fn top_submitters(&self, limit: usize) -> Result<Vec<(UserId, u64)>, Self::Err>;
 
     // --- feed operations -------------------------------------------------
 

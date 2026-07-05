@@ -531,6 +531,12 @@ mod tests {
         async fn set_phash(&self, _id: PostId, _phash: Option<u64>) -> Result<(), Self::Err> {
             unimplemented!()
         }
+        async fn top_submitters(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<(domain::elements::user::UserId, u64)>, Self::Err> {
+            unimplemented!()
+        }
         async fn list_phashes(&self) -> Result<Vec<(PostId, u64)>, Self::Err> {
             unimplemented!()
         }
