@@ -55,12 +55,12 @@ impl PerceptualHasher for HttpPerceptualHasher {
             .await
             .and_then(|r| r.error_for_status())
             .map_err(|e| PHashError::Fetch(e.to_string()))?;
-        if let Some(length) = response.content_length() {
-            if length as usize > MAX_IMAGE_BYTES {
-                return Err(PHashError::Fetch(format!(
-                    "media too large to hash: {length} bytes"
-                )));
-            }
+        if let Some(length) = response.content_length()
+            && length as usize > MAX_IMAGE_BYTES
+        {
+            return Err(PHashError::Fetch(format!(
+                "media too large to hash: {length} bytes"
+            )));
         }
         let bytes = response
             .bytes()
