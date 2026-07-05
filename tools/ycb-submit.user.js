@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.3
+// @version      1.4
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -138,20 +138,20 @@
           item.querySelector('a[href*="/post/"]')?.getAttribute('href') ??
           (/^\/profile\/[^/]+\/post\//.test(location.pathname) ? location.pathname : null);
         if (!href) continue;
-        // Append to the action BAR (smallest ancestor holding reply too),
-        // not inside the like button's own wrapper — that one stacks.
-        let row = like.parentElement;
-        while (row && row !== item && !row.querySelector('[data-testid="replyBtn"]')) {
-          row = row.parentElement;
+        // React Native Web stacks every container by default (column).
+        // Force the like button's wrapper into a row and sit right of it.
+        const wrap = like.parentElement;
+        if (wrap) {
+          wrap.style.display = 'flex';
+          wrap.style.flexDirection = 'row';
+          wrap.style.alignItems = 'center';
         }
         const btn = pawButton(() => clean(href), false, {
           display: 'inline-flex',
-          flexDirection: 'row',
           alignItems: 'center',
-          alignSelf: 'center'
+          marginLeft: '10px'
         });
-        if (row && row !== item) row.appendChild(btn);
-        else like.insertAdjacentElement('afterend', btn);
+        like.insertAdjacentElement('afterend', btn);
       }
     } else if (SITE === 'e6') {
       // Gallery thumbnails get a corner paw; instant submit (API tags).
