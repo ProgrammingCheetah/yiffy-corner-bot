@@ -117,7 +117,9 @@
       </div>
       <div class="row-btns">
         <select value={u.role} on:change={(e) => run(patch(`/users/${u.id}`, { role: e.target.value }), loadUsers)}>
-          <option>User</option><option>Moderator</option><option>Owner</option>
+          <option value="user">User</option>
+          <option value="moderator">Moderator</option>
+          <option value="owner">Owner</option>
         </select>
         <button class="ghost" on:click={() => run(patch(`/users/${u.id}`, { banned: !u.banned }), loadUsers)}>
           {u.banned ? 'Unban' : 'Ban'}

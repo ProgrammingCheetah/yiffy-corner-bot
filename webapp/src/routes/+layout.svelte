@@ -16,16 +16,17 @@
     }
   });
 
-  $: role = me?.role ?? 'User';
+  // The API sends roles in their storage form: "user" | "moderator" | "owner".
+  $: role = (me?.role ?? 'user').toLowerCase();
   $: tabs = [
     { href: '/', label: 'Submit', icon: '➕' },
-    ...(role === 'Moderator' || role === 'Owner'
+    ...(role === 'moderator' || role === 'owner'
       ? [
           { href: '/review', label: 'Review', icon: '🔥' },
           { href: '/browse', label: 'Browse', icon: '🔎' }
         ]
       : []),
-    ...(role === 'Owner' ? [{ href: '/admin', label: 'Admin', icon: '⚙️' }] : [])
+    ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: '⚙️' }] : [])
   ];
 </script>
 
