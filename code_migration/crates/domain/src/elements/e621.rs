@@ -23,6 +23,9 @@ pub struct E621PostMetadata {
     pub artists: Vec<Tag>,
     /// The original-resolution media URL (what `/suggest` would re-post).
     pub file_url: Url,
+    /// A Telegram-compatible MP4 rendition for webm posts (e621 provides
+    /// h264 alternates). `None` for images/gifs or when e621 has none.
+    pub mp4_url: Option<Url>,
     /// A smaller URL suitable for moderation/browse previews.
     pub preview_url: Url,
     /// The artist-declared off-site sources exactly as e621 reports them

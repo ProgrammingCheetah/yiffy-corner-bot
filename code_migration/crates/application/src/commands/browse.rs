@@ -181,6 +181,7 @@ mod tests {
                 .unwrap(),
             tags: tags.iter().map(|t| Tag::from(*t)).collect(),
             artists: vec![Tag::from("coolwolf")],
+            mp4_url: None,
             file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
             preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
             artist_sources: vec![],

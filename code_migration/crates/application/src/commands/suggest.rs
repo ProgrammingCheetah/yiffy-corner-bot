@@ -222,6 +222,7 @@ mod tests {
                 tags,
                 artists: vec![],
                 file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
+                mp4_url: None,
                 preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
                 artist_sources: vec![],
             })

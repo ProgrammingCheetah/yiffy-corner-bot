@@ -140,7 +140,16 @@ impl MediaResolver for RateLimitedE621Client {
             FetchError::Network(msg) => MediaResolveError::Network(msg),
             FetchError::Parse(msg) => MediaResolveError::Parse(msg),
         })?;
-        Ok(ResolvedMedia::classify(metadata.file_url))
+        let media = ResolvedMedia::classify(metadata.file_url);
+        // Telegram can't URL-fetch webm — substitute e621's h264 rendition
+        // so videos post natively via sendVideo.
+        if let ResolvedMedia::Video(original) = &media
+            && original.path().to_ascii_lowercase().ends_with(".webm")
+            && let Some(mp4) = metadata.mp4_url
+        {
+            return Ok(ResolvedMedia::Video(mp4));
+        }
+        Ok(media)
     }
 }
 
@@ -183,6 +192,25 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
     let source = Source::try_from(source_url)
         .map_err(|e| FetchError::Parse(format!("source rejected: {e}")))?;
 
+    // Telegram fetches video URLs only as MP4 and only up to ~20MB — pick
+    // the best e621 h264 rendition that fits.
+    const TELEGRAM_URL_FETCH_CAP: u64 = 19_000_000;
+    let mp4_url = raw.sample.as_ref().and_then(|sample| {
+        let alternates = sample.alternates.as_ref()?;
+        let mut candidates: Vec<&RawRendition> = Vec::new();
+        if let Some(variants) = &alternates.variants {
+            candidates.extend(variants.get("mp4"));
+        }
+        if let Some(samples) = &alternates.samples {
+            candidates.extend(samples.get("720p"));
+            candidates.extend(samples.get("480p"));
+        }
+        candidates
+            .into_iter()
+            .filter(|r| r.size.is_none_or(|size| size <= TELEGRAM_URL_FETCH_CAP))
+            .find_map(|r| r.url.clone())
+    });
+
     let artists: Vec<Tag> = raw
         .tags
         .artist
@@ -212,6 +240,7 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
         tags,
         artists,
         file_url,
+        mp4_url,
         preview_url,
         artist_sources: raw.sources,
     })
@@ -253,6 +282,23 @@ struct RawPreview {
 #[derive(Debug, Deserialize)]
 struct RawSample {
     url: Option<Url>,
+    #[serde(default)]
+    alternates: Option<RawAlternates>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawAlternates {
+    #[serde(default)]
+    variants: Option<std::collections::HashMap<String, RawRendition>>,
+    #[serde(default)]
+    samples: Option<std::collections::HashMap<String, RawRendition>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRendition {
+    url: Option<Url>,
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -310,6 +356,42 @@ mod tests {
         assert_eq!(metadata.artists, vec![Tag::from("coolwolf")]);
         // The full tag list still carries everything (policy checks need it).
         assert!(metadata.tags.contains(&Tag::from("conditional_dnp")));
+    }
+
+    #[test]
+    fn webm_posts_expose_the_mp4_rendition() {
+        let raw: RawPost = serde_json::from_str(
+            r#"{"id":1,"file":{"url":"https://static1.e621.net/data/a.webm"},
+                "preview":{"url":null},
+                "sample":{"url":null,"alternates":{
+                    "variants":{"mp4":{"url":"https://static1.e621.net/data/sample/a_alt.mp4","size":7000000}},
+                    "samples":{"720p":{"url":"https://static1.e621.net/data/sample/a_720p.mp4","size":4000000}}}},
+                "tags":{},"sources":[]}"#,
+        )
+        .unwrap();
+        let metadata = metadata_from_raw(raw).unwrap();
+        assert_eq!(
+            metadata.mp4_url.unwrap().as_str(),
+            "https://static1.e621.net/data/sample/a_alt.mp4"
+        );
+    }
+
+    #[test]
+    fn oversized_mp4_variant_falls_back_to_smaller_sample() {
+        let raw: RawPost = serde_json::from_str(
+            r#"{"id":1,"file":{"url":"https://static1.e621.net/data/a.webm"},
+                "preview":{"url":null},
+                "sample":{"url":null,"alternates":{
+                    "variants":{"mp4":{"url":"https://static1.e621.net/data/sample/a_alt.mp4","size":25000000}},
+                    "samples":{"720p":{"url":"https://static1.e621.net/data/sample/a_720p.mp4","size":4000000}}}},
+                "tags":{},"sources":[]}"#,
+        )
+        .unwrap();
+        let metadata = metadata_from_raw(raw).unwrap();
+        assert_eq!(
+            metadata.mp4_url.unwrap().as_str(),
+            "https://static1.e621.net/data/sample/a_720p.mp4"
+        );
     }
 
     #[test]
