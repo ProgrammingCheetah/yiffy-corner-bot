@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.4
+// @version      1.5
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -106,6 +106,22 @@
     return b;
   }
 
+  // Media detection. Items WITHOUT media stay unmarked so a later rescan
+  // catches images that mount after the first pass.
+  const xHasMedia = (art) =>
+    !!art.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video');
+  const bskyHasMedia = (item) => {
+    if (item.querySelector('video')) return true;
+    for (const img of item.querySelectorAll('img[src*="cdn.bsky.app/img/feed_"]')) {
+      // External link-cards use the same CDN but wrap the thumb in an
+      // http(s) anchor to the external site; real post media links
+      // internally (lightbox) or not at all.
+      const href = img.closest('a')?.getAttribute('href') ?? '';
+      if (!href.startsWith('http')) return true;
+    }
+    return false;
+  };
+
   const clean = (href) => {
     const u = new URL(href, location.origin);
     u.search = '';
@@ -120,20 +136,22 @@
       // Every tweet card, timeline or detail: the action bar is the
       // [role=group] row; the permalink is the timestamp's link.
       for (const art of document.querySelectorAll('article[data-testid="tweet"]:not([data-ycb])')) {
-        art.dataset.ycb = '1';
+        if (!xHasMedia(art)) continue; // unmarked: media may still be loading
         const timeLink = art.querySelector('a[href*="/status/"] time')?.closest('a');
         const group = art.querySelector('[role="group"]');
         const href = timeLink?.getAttribute('href') ?? (art.closest('main') && /\/status\/\d+/.test(location.pathname) ? location.pathname : null);
         if (!group || !href) continue;
+        art.dataset.ycb = '1';
         group.appendChild(pawButton(() => clean(href), false, { marginLeft: '4px' }));
       }
     } else if (SITE === 'bsky') {
       for (const item of document.querySelectorAll(
         '[data-testid^="feedItem-by-"]:not([data-ycb]), [data-testid^="postThreadItem-by-"]:not([data-ycb])'
       )) {
-        item.dataset.ycb = '1';
+        if (!bskyHasMedia(item)) continue; // unmarked: retried on rescans
         const like = item.querySelector('[data-testid="likeBtn"]');
         if (!like) continue;
+        item.dataset.ycb = '1';
         const href =
           item.querySelector('a[href*="/post/"]')?.getAttribute('href') ??
           (/^\/profile\/[^/]+\/post\//.test(location.pathname) ? location.pathname : null);
