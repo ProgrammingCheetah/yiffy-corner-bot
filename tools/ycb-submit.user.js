@@ -1,15 +1,16 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.0
+// @version      1.1
 // @description  One-click submissions to the Yiffy Corner curation feed from e621, FurAffinity, Twitter/X and BlueSky.
-// @match        https://e621.net/posts/*
-// @match        https://e926.net/posts/*
-// @match        https://www.furaffinity.net/view/*
-// @match        https://furaffinity.net/view/*
-// @match        https://twitter.com/*/status/*
-// @match        https://x.com/*/status/*
-// @match        https://bsky.app/profile/*/post/*
+// @match        https://e621.net/*
+// @match        https://e926.net/*
+// @match        https://www.furaffinity.net/*
+// @match        https://furaffinity.net/*
+// @match        https://twitter.com/*
+// @match        https://x.com/*
+// @match        https://bsky.app/*
+// @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -38,10 +39,21 @@
     if (base !== null) GM_setValue('ycb_base', base.trim().replace(/\/$/, ''));
   });
 
-  // e621 has authoritative tags server-side; everything else needs yours.
-  const isE621 = /e[69]2[16]\.net$/.test(location.hostname);
+  // Only single-work pages are submittable. Matching happens against the
+  // live URL (not @match) because X/BlueSky are SPAs — the page never
+  // reloads while you browse, so the button tracks navigation instead.
+  const PAGES = [
+    { re: /^https:\/\/e(621|926)\.net\/posts\/\d+/, e621: true },
+    { re: /^https:\/\/(www\.)?furaffinity\.net\/view\/\d+/ },
+    { re: /^https:\/\/(twitter|x)\.com\/[^/]+\/status\/\d+/ },
+    { re: /^https:\/\/bsky\.app\/profile\/[^/]+\/post\/[^/]+/ }
+  ];
+  const currentPage = () => PAGES.find((p) => p.re.test(location.href));
 
   function submit() {
+    const page = currentPage();
+    if (!page) return;
+    const isE621 = !!page.e621;
     const { base, token } = config();
     if (!token) {
       alert('Yiffy Corner: set your API token first (userscript menu → Set API token).');
@@ -68,7 +80,7 @@
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       },
-      data: JSON.stringify({ url: location.href.split('?')[0], tags }),
+      data: JSON.stringify({ url: location.origin + location.pathname, tags }),
       onload: (res) => {
         setBusy(false);
         try {
@@ -104,7 +116,20 @@
     boxShadow: '0 4px 14px rgba(0,0,0,.4)'
   });
   btn.addEventListener('click', submit);
-  document.body.appendChild(btn);
+
+  // Mount once the body exists, then follow SPA navigation.
+  function mount() {
+    document.body.appendChild(btn);
+    let lastHref = '';
+    setInterval(() => {
+      if (location.href !== lastHref) {
+        lastHref = location.href;
+        btn.style.display = currentPage() ? 'block' : 'none';
+      }
+    }, 400);
+  }
+  if (document.body) mount();
+  else window.addEventListener('DOMContentLoaded', mount);
 
   function setBusy(busy) {
     btn.disabled = busy;
