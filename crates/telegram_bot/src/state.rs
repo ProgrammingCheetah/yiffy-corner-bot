@@ -81,6 +81,8 @@ pub struct PendingSubmission {
     /// Present when the submission arrived as a channel forward — carries
     /// what the copy-ref store needs once tags arrive.
     pub forward: Option<PendingForward>,
+    /// Moderator /save: tags complete a DIRECT feed add, not a suggestion.
+    pub direct_add: bool,
 }
 
 #[derive(Debug, Clone)]

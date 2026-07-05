@@ -54,7 +54,7 @@ pub enum Command {
     Unban(String),
     #[command(description = "browse e621 by tags (mods)")]
     Browse(String),
-    #[command(description = "save a browsed e621 post to the pool (mods)")]
+    #[command(description = "add any source straight to the feed: /save <url> [tags…] (mods)")]
     Save(String),
     #[command(description = "globally forbid a tag (mods)")]
     Forbidtag(String),
@@ -284,11 +284,14 @@ async fn complete_moderation_dialogue(
             .await
             {
                 Err(e) => describe(e),
-                Ok(post) => format!(
-                    "Post #{post_id} accepted into the feed with {} tags \
-                     ({requested} supplied, duplicates ignored).",
-                    post.tags.len()
-                ),
+                Ok(post) => {
+                    notify_submitter_approved(bot, state, &post).await;
+                    format!(
+                        "Post #{post_id} accepted into the feed with {} tags \
+                         ({requested} supplied, duplicates ignored).",
+                        post.tags.len()
+                    )
+                }
             }
         }
     }
@@ -399,8 +402,8 @@ pub async fn handle_command(
                 .join("\n"),
             Err(e) => describe(e),
         },
-        Command::Approve(arg) => moderate_reply(&state, actor, &arg, true).await,
-        Command::Reject(arg) => moderate_reply(&state, actor, &arg, false).await,
+        Command::Approve(arg) => moderate_reply(&bot, &state, actor, &arg, true).await,
+        Command::Reject(arg) => moderate_reply(&bot, &state, actor, &arg, false).await,
         Command::Delete(arg) => match parse_post_id(&arg) {
             Some(post_id) => match moderate::delete(
                 ModerateCommand { actor, post_id },
@@ -418,22 +421,7 @@ pub async fn handle_command(
         Command::Ban(arg) => ban_reply(&bot, &state, actor, &arg, true).await,
         Command::Unban(arg) => ban_reply(&bot, &state, actor, &arg, false).await,
         Command::Browse(arg) => handle_browse(&bot, msg.chat.id, &state, actor, &arg).await,
-        Command::Save(arg) => match Url::parse(arg.trim()) {
-            Ok(url) => {
-                match browse::save(
-                    SaveCommand { actor, url },
-                    &state.users,
-                    &state.posts,
-                    &*state.e621,
-                )
-                .await
-                {
-                    Ok(post) => format!("Saved to the pool as #{} (Accepted).", post.id),
-                    Err(e) => describe(e),
-                }
-            }
-            Err(_) => "Usage: /save <e621-url>".to_string(),
-        },
+        Command::Save(arg) => handle_save(&state, actor, &arg).await,
         Command::Forbidtag(arg) => {
             tag_policy_reply(&state, actor, &arg, TagPolicyAction::Forbid).await
         }
@@ -546,11 +534,14 @@ async fn submit(
     .await;
     match outcome {
         Ok(SuggestOutcome::TagsNeeded) => {
-            state
-                .pending
-                .lock()
-                .await
-                .insert(*submitter.id.as_ref(), PendingSubmission { url, forward });
+            state.pending.lock().await.insert(
+                *submitter.id.as_ref(),
+                PendingSubmission {
+                    url,
+                    forward,
+                    direct_add: false,
+                },
+            );
             "Almost there! Reply with the tags that describe this post, separated by \
              spaces — species, character, artist, anything relevant.\n\
              Example: `wolf male solo digital_art`"
@@ -727,15 +718,19 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
         .await?;
         return Ok(());
     }
-    let reply = submit(
-        &bot,
-        &state,
-        Submitter::from(from),
-        pending.url,
-        tags,
-        pending.forward,
-    )
-    .await;
+    let reply = if pending.direct_add {
+        complete_direct_save(&state, actor, pending.url, tags).await
+    } else {
+        submit(
+            &bot,
+            &state,
+            Submitter::from(from),
+            pending.url,
+            tags,
+            pending.forward,
+        )
+        .await
+    };
     bot.send_message(msg.chat.id, reply)
         .link_preview_options(no_preview())
         .await?;
@@ -853,6 +848,7 @@ async fn handle_postinfo(state: &SharedState, actor: TelegramId, arg: &str) -> S
 }
 
 async fn moderate_reply(
+    bot: &Bot,
     state: &SharedState,
     actor: TelegramId,
     arg: &str,
@@ -868,7 +864,12 @@ async fn moderate_reply(
         moderate::reject(cmd, &state.users, &state.posts).await
     };
     match result {
-        Ok(post) => format!("Post #{} is now {:?}.", post.id, post.status),
+        Ok(post) => {
+            if approve {
+                notify_submitter_approved(bot, state, &post).await;
+            }
+            format!("Post #{} is now {:?}.", post.id, post.status)
+        }
         Err(e) => describe(e),
     }
 }
@@ -955,6 +956,92 @@ fn browse_keyboard(
         ],
         vec![InlineKeyboardButton::callback("Erase", "browse:erase")],
     ])
+}
+
+/// Moderator direct add: any source, straight into the feed.
+async fn handle_save(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    let mut parts = arg.split_whitespace();
+    let Some(url) = parts.next().and_then(|raw| Url::parse(raw).ok()) else {
+        return "Usage: /save <url> [tags…] — any supported source goes straight into the \
+                feed. Non-e621 sources need tags (I'll ask if you leave them off)."
+            .to_string();
+    };
+    let tags: Vec<Tag> = parts.map(Tag::from).collect();
+    complete_direct_save(state, actor, url, tags).await
+}
+
+async fn complete_direct_save(
+    state: &SharedState,
+    actor: TelegramId,
+    url: Url,
+    tags: Vec<Tag>,
+) -> String {
+    match browse::save(
+        SaveCommand {
+            actor,
+            url: url.clone(),
+            tags,
+        },
+        &state.users,
+        &state.posts,
+        &*state.e621,
+        &state.forbidden,
+    )
+    .await
+    {
+        Ok(browse::SaveOutcome::Added(post)) => format!(
+            "Added to the feed as #{} (position {}).",
+            post.id,
+            post.feed_position.unwrap_or_default()
+        ),
+        Ok(browse::SaveOutcome::TagsNeeded) => {
+            state.pending.lock().await.insert(
+                *actor.as_ref(),
+                PendingSubmission {
+                    url,
+                    forward: None,
+                    direct_add: true,
+                },
+            );
+            "Reply with the tags for this post (space-separated) — it goes straight into \
+             the feed."
+                .to_string()
+        }
+        Err(e) => describe(e),
+    }
+}
+
+/// Good news travels: tell the submitter their post made it into the feed.
+/// (Rejections stay silent unless the moderator used Reject-with-reason.)
+async fn notify_submitter_approved(
+    bot: &Bot,
+    state: &SharedState,
+    post: &domain::elements::post::Post,
+) {
+    use domain::elements::user::UserRepository as _;
+
+    let Some(user_id) = post.submitted_by else {
+        return;
+    };
+    let Ok(Some(user)) = state.users.find_by_id(user_id).await else {
+        return;
+    };
+    match bot
+        .send_message(
+            ChatId(*user.telegram_id.as_ref()),
+            format!(
+                "🎉 Your submission #{} was approved — it will be posted when a matching \
+                 channel's turn comes up!",
+                post.id
+            ),
+        )
+        .await
+    {
+        Ok(_) => tracing::info!(
+            event = %Event::SubmitterNotified, post_id = %post.id, "approval relayed to submitter"
+        ),
+        Err(e) => tracing::debug!(post_id = %post.id, error = %e, "approval DM failed"),
+    }
 }
 
 /// Send one page of browse previews; returns how many were delivered.
@@ -1838,7 +1925,12 @@ pub async fn handle_callback(
                         moderate::reject(cmd, &state.users, &state.posts).await
                     };
                     match result {
-                        Ok(post) => format!("Post #{} → {:?}", post.id, post.status),
+                        Ok(post) => {
+                            if verb == "approve" {
+                                notify_submitter_approved(&bot, &state, &post).await;
+                            }
+                            format!("Post #{} → {:?}", post.id, post.status)
+                        }
                         Err(e) => describe(e),
                     }
                 }
@@ -1936,14 +2028,24 @@ pub async fn handle_callback(
             {
                 Some(url) => {
                     match browse::save(
-                        SaveCommand { actor, url },
+                        SaveCommand {
+                            actor,
+                            url,
+                            tags: vec![],
+                        },
                         &state.users,
                         &state.posts,
                         &*state.e621,
+                        &state.forbidden,
                     )
                     .await
                     {
-                        Ok(post) => format!("Saved to the pool as #{}.", post.id),
+                        Ok(browse::SaveOutcome::Added(post)) => {
+                            format!("Saved to the feed as #{}.", post.id)
+                        }
+                        Ok(browse::SaveOutcome::TagsNeeded) => {
+                            "This source needs tags — use /save <url> <tags…>.".to_string()
+                        }
                         Err(e) => describe(e),
                     }
                 }

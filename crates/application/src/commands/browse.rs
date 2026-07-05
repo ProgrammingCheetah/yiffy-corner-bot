@@ -86,28 +86,40 @@ where
 pub struct SaveCommand {
     pub actor: TelegramId,
     pub url: Url,
+    /// Curated tags for non-e621 sources (merged extras for e621).
+    pub tags: Vec<Tag>,
 }
 
-/// Save a browsed e621 post straight into the feed: admin-added, tags from
-/// the e621 API, no moderation step.
-pub async fn save<P, E>(
+/// What the bot layer needs to react to a direct add.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum SaveOutcome {
+    /// In the feed, admin-added, moderation audit recorded.
+    Added(Post),
+    /// Non-e621 source with no tags: nothing created — ask and retry.
+    TagsNeeded,
+}
+
+/// Add a post from ANY source straight into the feed: admin-added, no
+/// moderation round-trip. e621 sources auto-tag from the API (submitter
+/// extras merged); every other source needs tags (`TagsNeeded` otherwise).
+/// Content owning a globally forbidden tag is refused outright — a direct
+/// add should fail loudly, not silently auto-ban.
+pub async fn save<P, E, F>(
     cmd: SaveCommand,
     users: &impl UserRepository,
     posts: &P,
     e621: &E,
-) -> HandlerResult<Post>
+    forbidden: &F,
+) -> HandlerResult<SaveOutcome>
 where
     P: PostRepository,
     E: E621Fetcher,
+    F: ForbiddenTagRepository,
 {
     let curator = require_role(users, cmd.actor, Role::Moderator).await?;
     let source =
         Source::try_from(cmd.url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
-    if !matches!(source, Source::E621(_)) {
-        return Err(HandlerError::InvalidSource(
-            "only e621 posts can be saved via /browse (use /suggest for other sources)".to_string(),
-        ));
-    }
     if let Some(existing) = posts
         .find_by_source(&source)
         .await
@@ -115,15 +127,39 @@ where
     {
         return Err(HandlerError::DuplicateSubmission(existing.id));
     }
-    let metadata = e621
-        .fetch(&source)
-        .await
-        .map_err(|e| HandlerError::Fetch(e.to_string()))?;
+    let (tags, artists) = match &source {
+        Source::E621(_) => {
+            let metadata = e621
+                .fetch(&source)
+                .await
+                .map_err(|e| HandlerError::Fetch(e.to_string()))?;
+            let mut tags = metadata.tags;
+            for extra in cmd.tags {
+                if !tags.contains(&extra) {
+                    tags.push(extra);
+                }
+            }
+            (tags, metadata.artists)
+        }
+        _ if cmd.tags.is_empty() => return Ok(SaveOutcome::TagsNeeded),
+        _ => (cmd.tags, Vec::new()),
+    };
+    for tag in &tags {
+        if forbidden
+            .contains(tag)
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?
+        {
+            return Err(HandlerError::InvalidState(format!(
+                "refused: owns globally forbidden tag '{tag}'"
+            )));
+        }
+    }
     let post = posts
         .create(
             source,
-            metadata.tags,
-            metadata.artists,
+            tags,
+            artists,
             None,
             Utc::now(),
             PostStatus::Accepted,
@@ -141,9 +177,9 @@ where
     tracing::info!(
         event = %Event::AcceptedIntoFeed, post_id = %post.id,
         source = %post.source.as_ref(), position = post.feed_position,
-        "browse: saved into the feed"
+        "saved directly into the feed"
     );
-    Ok(post)
+    Ok(SaveOutcome::Added(post))
 }
 
 #[cfg(test)]
@@ -285,17 +321,21 @@ mod tests {
     #[tokio::test]
     async fn save_enters_feed_with_e621_tags() {
         let fx = fixture().await;
-        let post = save(
+        let SaveOutcome::Added(post) = save(
             SaveCommand {
                 actor: TelegramId::from(1),
                 url: Url::parse("https://e621.net/posts/1").unwrap(),
+                tags: vec![],
             },
             &fx.users,
             &fx.posts,
             &stub_fetcher(),
+            &fx.forbidden,
         )
         .await
-        .unwrap();
+        .unwrap() else {
+            panic!("expected Added");
+        };
         assert_eq!(post.status, PostStatus::Accepted);
         assert!(post.submitted_by.is_none());
         assert_eq!(post.feed_position, Some(1));
@@ -303,20 +343,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_rejects_non_e621_sources() {
+    async fn save_non_e621_needs_tags_then_adds_directly() {
         let fx = fixture().await;
-        let err = save(
+        let outcome = save(
             SaveCommand {
                 actor: TelegramId::from(1),
                 url: Url::parse("https://x.com/a/status/1").unwrap(),
+                tags: vec![],
             },
             &fx.users,
             &fx.posts,
             &stub_fetcher(),
+            &fx.forbidden,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, SaveOutcome::TagsNeeded));
+
+        let SaveOutcome::Added(post) = save(
+            SaveCommand {
+                actor: TelegramId::from(1),
+                url: Url::parse("https://x.com/a/status/1").unwrap(),
+                tags: vec![Tag::from("wolf")],
+            },
+            &fx.users,
+            &fx.posts,
+            &stub_fetcher(),
+            &fx.forbidden,
+        )
+        .await
+        .unwrap() else {
+            panic!("expected Added");
+        };
+        assert_eq!(post.tags, vec![Tag::from("wolf")]);
+        assert!(post.feed_position.is_some());
+    }
+
+    #[tokio::test]
+    async fn save_refuses_globally_forbidden_content() {
+        use domain::elements::tag_policy::ForbiddenTagRepository as _;
+        let fx = fixture().await;
+        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        let err = save(
+            SaveCommand {
+                actor: TelegramId::from(1),
+                url: Url::parse("https://x.com/a/status/1").unwrap(),
+                tags: vec![Tag::from("gore")],
+            },
+            &fx.users,
+            &fx.posts,
+            &stub_fetcher(),
+            &fx.forbidden,
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, HandlerError::InvalidSource(_)));
+        assert!(matches!(err, HandlerError::InvalidState(_)));
     }
 
     #[tokio::test]
@@ -325,11 +406,12 @@ mod tests {
         let cmd = || SaveCommand {
             actor: TelegramId::from(1),
             url: Url::parse("https://e621.net/posts/1").unwrap(),
+            tags: vec![],
         };
-        save(cmd(), &fx.users, &fx.posts, &stub_fetcher())
+        save(cmd(), &fx.users, &fx.posts, &stub_fetcher(), &fx.forbidden)
             .await
             .unwrap();
-        let err = save(cmd(), &fx.users, &fx.posts, &stub_fetcher())
+        let err = save(cmd(), &fx.users, &fx.posts, &stub_fetcher(), &fx.forbidden)
             .await
             .unwrap_err();
         assert!(matches!(err, HandlerError::DuplicateSubmission(_)));

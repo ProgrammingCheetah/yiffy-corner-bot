@@ -57,7 +57,12 @@ pub enum SourceError {
 
 impl TryFrom<Url> for Source {
     type Error = SourceError;
-    fn try_from(url: Url) -> Result<Self, Self::Error> {
+    fn try_from(mut url: Url) -> Result<Self, Self::Error> {
+        // Sources are canonical references: tracking/search query strings
+        // and fragments never identify content on any supported platform,
+        // and stripping them keeps duplicate detection honest.
+        url.set_query(None);
+        url.set_fragment(None);
         let host = url
             .host_str()
             .ok_or_else(|| SourceError::NoHost(url.clone()))?;
@@ -396,6 +401,22 @@ mod source_tests {
         let url = parse("https://e621.net/posts/1");
         let source = Source::try_from(url.clone()).unwrap();
         assert_eq!(source.as_ref(), &url);
+    }
+
+    #[test]
+    fn query_and_fragment_are_stripped_from_every_source() {
+        let twitter = Source::try_from(parse("https://x.com/a/status/123?s=20&t=abc")).unwrap();
+        assert_eq!(twitter.as_ref().as_str(), "https://x.com/a/status/123");
+        let fa = Source::try_from(parse(
+            "https://www.furaffinity.net/view/1/?upload=success#cid",
+        ))
+        .unwrap();
+        assert_eq!(fa.as_ref().as_str(), "https://www.furaffinity.net/view/1/");
+        // Dedupe: with-query and without collapse to the same Source.
+        assert_eq!(
+            twitter,
+            Source::try_from(parse("https://x.com/a/status/123")).unwrap()
+        );
     }
 
     #[test]
