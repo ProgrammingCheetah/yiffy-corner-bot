@@ -120,3 +120,35 @@ too: `reason` (`RejectReason`/`SkipReason`) and `upstream`
 cargo test --workspace                  # unit + adapter suites (offline)
 cargo test --workspace -- --ignored     # live checks against e621/FixUp/FA
 ```
+
+
+## Mini App (Telegram WebApp)
+
+Everything the commands do, in an app — including Tinder-style moderation
+(swipe right = approve, left = reject, with reason / extra-tags buttons).
+
+Setup, once:
+
+1. **Tunnel**: Cloudflare Zero Trust → Networks → Tunnels → create one, add a
+   public hostname (e.g. `app.got-paws.net`) pointing at
+   `http://bot-rust:3000`, and copy the tunnel token.
+2. **Env**: in the repo root create `.env`:
+
+   ```
+   TUNNEL_TOKEN=eyJ…
+   YCB_WEBAPP_URL=https://app.got-paws.net
+   ```
+
+3. **Run**: `just start-tunnel` (instead of `just start`). The bot registers
+   its own menu button, so the app appears in every private chat with it.
+
+The SvelteKit bundle in `webapp/build/` is committed — production needs no
+node. After editing `webapp/src`, rebuild it with `just webapp` and commit.
+
+## Desktop userscript
+
+`tools/ycb-submit.user.js` (Tampermonkey) adds a 🐾 Submit button on
+e621/e926 posts, FurAffinity views, Twitter/X statuses and BlueSky posts.
+e621 submits straight away (tags come from the API); the others prompt for
+tags (`artist:<name>` credits the artist). Auth: run `/apitoken` in the bot,
+then userscript menu → *Set API token*.

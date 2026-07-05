@@ -65,3 +65,12 @@ status:
     @docker compose ps bot-rust
     @curl -sf -o /dev/null -w 'health: %{http_code}\n' http://127.0.0.1:3000/health \
         || echo 'health: unreachable'
+
+# Rebuild the Mini App bundle (needs node; the result is committed)
+webapp:
+    cd webapp && npm install --no-fund --no-audit && npm run build
+
+# Start bot + Cloudflare tunnel (needs TUNNEL_TOKEN in .env)
+start-tunnel:
+    docker compose --profile tunnel up -d --build
+    @echo "Bot + tunnel starting — follow with: just logs"

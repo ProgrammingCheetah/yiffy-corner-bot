@@ -8,6 +8,25 @@ services:
     environment:
       YCB_ENV: ${YCB_ENV:-production}
       RUST_LOG: ${RUST_LOG:-info,teloxide=warn}
+      # Public HTTPS URL of the Mini App (sets the bot menu button).
+      YCB_WEBAPP_URL: ${YCB_WEBAPP_URL:-}
+      YCB_WEBAPP_DIR: /app/webapp/build
     volumes:
       # Secrets (token.txt, e621 credentials, FA cookies) + sqlite storage.
       - ./config/vault:/app/config/vault
+      # The built SvelteKit bundle (committed to the repo).
+      - ./webapp/build:/app/webapp/build:ro
+
+  # Cloudflare Tunnel: exposes the bot's port 3000 as the public Mini App
+  # URL. Create the tunnel in Cloudflare Zero Trust → Networks → Tunnels,
+  # point it at http://bot-rust:3000, and put its token in .env as
+  # TUNNEL_TOKEN. Optional: the stack runs fine without it.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: yiffy_corner_tunnel
+    restart: always
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:-}
+    depends_on:
+      - bot-rust
+    profiles:
+      - tunnel

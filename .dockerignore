@@ -4,3 +4,5 @@ config/
 design/
 .git/
 *.md
+webapp/node_modules/
+webapp/.svelte-kit/

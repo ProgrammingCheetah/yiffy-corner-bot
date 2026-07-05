@@ -7,3 +7,8 @@ config/vault/
 node_modules/
 dist/
 /target/
+
+# Webapp build artifacts (build/ itself IS committed so prod needs no node)
+webapp/node_modules/
+webapp/.svelte-kit/
+.env
