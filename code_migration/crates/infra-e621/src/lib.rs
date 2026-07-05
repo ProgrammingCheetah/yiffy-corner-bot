@@ -12,6 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use domain::elements::{
     e621::{E621Fetcher, E621Order, E621PostMetadata, FetchError},
+    media::{MediaResolveError, MediaResolver, ResolvedMedia},
     post::Source,
     tag::Tag,
 };
@@ -118,6 +119,35 @@ impl E621Fetcher for RateLimitedE621Client {
 
         let wrapper: SearchResponse = self.get_json(url).await?;
         wrapper.posts.into_iter().map(metadata_from_raw).collect()
+    }
+}
+
+/// Classify a direct media URL by file extension. e621's `file.url` always
+/// carries the real extension.
+fn media_from_file_url(file_url: Url) -> ResolvedMedia {
+    let path = file_url.path().to_ascii_lowercase();
+    if path.ends_with(".webm") || path.ends_with(".mp4") {
+        ResolvedMedia::Video(file_url)
+    } else if path.ends_with(".gif") {
+        ResolvedMedia::Animation(file_url)
+    } else {
+        ResolvedMedia::Photo(file_url)
+    }
+}
+
+#[async_trait]
+impl MediaResolver for RateLimitedE621Client {
+    async fn resolve(&self, source: &Source) -> Result<ResolvedMedia, MediaResolveError> {
+        if !matches!(source, Source::E621(_)) {
+            return Err(MediaResolveError::Unsupported(source.clone()));
+        }
+        let metadata = self.fetch(source).await.map_err(|e| match e {
+            FetchError::NotFound(s) => MediaResolveError::NotFound(s),
+            FetchError::RateLimit => MediaResolveError::Network("e621 rate limit".into()),
+            FetchError::Network(msg) => MediaResolveError::Network(msg),
+            FetchError::Parse(msg) => MediaResolveError::Parse(msg),
+        })?;
+        Ok(media_from_file_url(metadata.file_url))
     }
 }
 
@@ -247,5 +277,63 @@ mod tests {
     fn extract_post_id_returns_none_for_non_post_url() {
         let s = Source::try_from(Url::parse("https://e621.net/").unwrap()).unwrap();
         assert_eq!(extract_post_id(&s), None);
+    }
+
+    #[test]
+    fn media_kind_follows_file_extension() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(matches!(
+            media_from_file_url(u("https://static1.e621.net/data/a.png")),
+            ResolvedMedia::Photo(_)
+        ));
+        assert!(matches!(
+            media_from_file_url(u("https://static1.e621.net/data/a.webm")),
+            ResolvedMedia::Video(_)
+        ));
+        assert!(matches!(
+            media_from_file_url(u("https://static1.e621.net/data/a.gif")),
+            ResolvedMedia::Animation(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_rejects_non_e621_sources() {
+        let client = RateLimitedE621Client::new("test").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let source =
+            Source::try_from(Url::parse("https://x.com/a/status/1").unwrap()).unwrap();
+        let err = rt.block_on(client.resolve(&source)).unwrap_err();
+        assert!(matches!(err, MediaResolveError::Unsupported(_)));
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    //! Network tests against real e621. Run with `--ignored`.
+    use super::*;
+
+    const UA: &str = "yiffy-corner-bot/0.1 (by ZielAnima; test suite)";
+
+    #[tokio::test]
+    #[ignore = "hits live e621"]
+    async fn live_search_and_resolve_roundtrip() {
+        let client = RateLimitedE621Client::new(UA).unwrap();
+        let results = client
+            .search(
+                &[Tag::from("canine"), Tag::from("rating:s")],
+                E621Order::Random,
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(!results.is_empty(), "search returned no posts");
+        let first = &results[0];
+        assert!(!first.tags.is_empty());
+
+        // Resolve the same post through the MediaResolver port.
+        let media = client.resolve(&first.source).await.unwrap();
+        assert!(!media.as_ref().as_str().is_empty());
     }
 }
