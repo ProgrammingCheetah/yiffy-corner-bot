@@ -101,23 +101,24 @@ where
                 continue;
             }
         };
-        if entry.phash.is_none() && outcome.hashes_backfilled < BACKFILL_CAP {
-            if let ResolvedMedia::Photo(url) = &media {
-                match hasher.hash_image(url).await {
-                    Ok(hash) => {
-                        if posts.set_phash(entry.id, Some(hash)).await.is_ok() {
-                            outcome.hashes_backfilled += 1;
-                            tracing::debug!(
-                                event = %Event::PhashComputed, post_id = %entry.id,
-                                phash = format!("{hash:016x}"), "hash backfilled by sweep"
-                            );
-                        }
+        if entry.phash.is_none()
+            && outcome.hashes_backfilled < BACKFILL_CAP
+            && let ResolvedMedia::Photo(url) = &media
+        {
+            match hasher.hash_image(url).await {
+                Ok(hash) => {
+                    if posts.set_phash(entry.id, Some(hash)).await.is_ok() {
+                        outcome.hashes_backfilled += 1;
+                        tracing::debug!(
+                            event = %Event::PhashComputed, post_id = %entry.id,
+                            phash = format!("{hash:016x}"), "hash backfilled by sweep"
+                        );
                     }
-                    Err(e) => tracing::debug!(
-                        event = %Event::PhashFailed, post_id = %entry.id,
-                        error = %e, "sweep backfill hash failed"
-                    ),
                 }
+                Err(e) => tracing::debug!(
+                    event = %Event::PhashFailed, post_id = %entry.id,
+                    error = %e, "sweep backfill hash failed"
+                ),
             }
         }
     }
