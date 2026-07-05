@@ -149,6 +149,9 @@ pub enum ModerationDialogue {
     RejectReason(domain::elements::post::PostId),
     /// Next message = extra tags to merge before accepting into the feed.
     ExtraTags(domain::elements::post::PostId),
+    /// Next message = the changes the submitter should make (relayed to
+    /// them; they can then re-submit the same source).
+    RequestChanges(domain::elements::post::PostId),
 }
 
 pub type SharedState = Arc<AppState>;

@@ -1,9 +1,13 @@
-//! Moderator queue operations: approve, reject, delete, and list.
+//! Moderator queue operations: approve, reject, request changes, delete,
+//! and list.
 //!
-//! Approve/Reject act on `AwaitingModeration` Posts only — `Rejected` and
-//! `Deleted` are permanent human decisions (design), so double-moderation is
-//! an `InvalidState` error rather than a silent overwrite. Delete is the
-//! soft-delete used for takedowns and queue cleanup; it works from any status.
+//! Approve/Reject/Request-changes act on `AwaitingModeration` Posts only —
+//! `Rejected` and `Deleted` are permanent human decisions (design), so
+//! double-moderation is an `InvalidState` error rather than a silent
+//! overwrite. `ChangesRequested` is the one reversible verdict: the submitter
+//! re-submits the same source and the post returns to the queue. Delete is
+//! the soft-delete used for takedowns and queue cleanup; it works from any
+//! status.
 
 use domain::elements::{
     post::{Post, PostId, PostRepository, PostStatus},
@@ -125,6 +129,31 @@ pub async fn reject<P: PostRepository>(
     tracing::info!(event = %Event::ModerationApplied, post_id = %post.id, decision = %PostStatus::Rejected, "moderation decision applied");
     Ok(Post {
         status: PostStatus::Rejected,
+        ..post
+    })
+}
+
+/// Ask the submitter for changes: status → `ChangesRequested`. Unlike
+/// `Rejected` this is NOT permanent — the original submitter may re-submit
+/// the same source, which returns the post to the moderation queue (see
+/// the resubmission path in `suggest`).
+pub async fn request_changes<P: PostRepository>(
+    cmd: ModerateCommand,
+    users: &impl UserRepository,
+    posts: &P,
+) -> HandlerResult<Post> {
+    let (post, moderator) = awaiting_post(&cmd, users, posts).await?;
+    posts
+        .set_status_to(post.id, PostStatus::ChangesRequested)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    posts
+        .record_moderation(post.id, moderator.id, chrono::Utc::now())
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(event = %Event::ModerationApplied, post_id = %post.id, decision = %PostStatus::ChangesRequested, "moderation decision applied");
+    Ok(Post {
+        status: PostStatus::ChangesRequested,
         ..post
     })
 }
@@ -260,6 +289,34 @@ mod tests {
         reject(cmd(1, post.id), &fx.users, &fx.posts).await.unwrap();
         let stored = fx.posts.find_by_id(post.id).await.unwrap().unwrap();
         assert_eq!(stored.status, PostStatus::Rejected);
+    }
+
+    #[tokio::test]
+    async fn moderator_can_request_changes() {
+        let fx = Fixture::new().await;
+        let post = fx.awaiting_post(1).await;
+        let updated = request_changes(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap();
+        assert_eq!(updated.status, PostStatus::ChangesRequested);
+        let stored = fx.posts.find_by_id(post.id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PostStatus::ChangesRequested);
+        assert!(stored.moderated_by.is_some());
+        // Not in the feed: no position was assigned.
+        assert!(stored.feed_position.is_none());
+    }
+
+    #[tokio::test]
+    async fn request_changes_then_approve_is_invalid_state() {
+        let fx = Fixture::new().await;
+        let post = fx.awaiting_post(1).await;
+        request_changes(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap();
+        let err = approve(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HandlerError::InvalidState(_)));
     }
 
     #[tokio::test]

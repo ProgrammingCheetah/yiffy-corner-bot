@@ -126,6 +126,36 @@ impl PostRepository for SqlitePostRepository {
         Ok(())
     }
 
+    async fn resubmit(
+        &self,
+        id: PostId,
+        tags: Vec<Tag>,
+        artists: Vec<Tag>,
+        submitted_at: DateTime<Utc>,
+        status: PostStatus,
+    ) -> Result<Post, Self::Err> {
+        let join = |tags: &[Tag]| {
+            tags.iter()
+                .map(|t| t.as_ref())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let row = sqlx::query(
+            "UPDATE posts SET tags = ?, artists = ?, submitted_at = ?, status = ?
+             WHERE id = ? RETURNING *",
+        )
+        .bind(join(&tags))
+        .bind(join(&artists))
+        .bind(submitted_at)
+        .bind(status.to_string())
+        .bind(*id.as_ref() as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?
+        .ok_or(PostRepositoryError::NotFound(id))?;
+        row_to_post(&row)
+    }
+
     async fn record_moderation(
         &self,
         id: PostId,

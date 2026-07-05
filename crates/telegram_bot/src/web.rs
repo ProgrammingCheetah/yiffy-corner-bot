@@ -41,7 +41,7 @@ use telemetry::Event;
 
 use crate::commands::{
     Submitter, notify_submitter_approved, poster_summary, poster_verdicts, reject_with_reason,
-    resolve_publish_code, submit,
+    request_changes_with_message, resolve_publish_code, submit,
 };
 use crate::state::SharedState;
 
@@ -287,12 +287,13 @@ async fn post_media(
 #[derive(Deserialize)]
 struct ModerateBody {
     post_id: u64,
-    /// "approve" | "reject"
+    /// "approve" | "reject" | "changes"
     action: String,
     /// Extra tags to merge on approve (the 🏷 flow).
     #[serde(default)]
     extra_tags: Vec<String>,
-    /// Reason to relay on reject (the 📝 flow).
+    /// Reason to relay on reject (the 📝 flow), or the change list to relay
+    /// on changes (the ✏️ flow — required there).
     #[serde(default)]
     reason: String,
 }
@@ -347,6 +348,13 @@ async fn moderate_post(
         }
         "reject" => {
             reject_with_reason(&state.bot, &state.app, actor, post_id, body.reason.trim()).await
+        }
+        "changes" if body.reason.trim().is_empty() => {
+            return Err(bad_request("`changes` needs a message for the submitter"));
+        }
+        "changes" => {
+            request_changes_with_message(&state.bot, &state.app, actor, post_id, body.reason.trim())
+                .await
         }
         other => return Err(bad_request(format!("unknown action `{other}`"))),
     };

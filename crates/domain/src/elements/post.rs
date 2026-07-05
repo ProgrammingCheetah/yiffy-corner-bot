@@ -146,6 +146,10 @@ pub enum PostStatus {
     Accepted,
     /// A moderator explicitly rejected this post.
     Rejected,
+    /// A moderator asked the submitter for changes. NOT permanent: the
+    /// original submitter may re-submit the same source, which returns the
+    /// post to `AwaitingModeration` with fresh tags.
+    ChangesRequested,
     /// External takedown (DMCA etc.). Soft-delete; row retained for audit.
     Deleted,
     /// Owns at least one globally forbidden tag. May flip back to `Accepted`
@@ -160,6 +164,7 @@ impl std::fmt::Display for PostStatus {
             PostStatus::AwaitingModeration => "awaiting_moderation",
             PostStatus::Accepted => "accepted",
             PostStatus::Rejected => "rejected",
+            PostStatus::ChangesRequested => "changes_requested",
             PostStatus::Deleted => "deleted",
             PostStatus::Banned => "banned",
         })
@@ -177,6 +182,7 @@ impl std::str::FromStr for PostStatus {
             "awaiting_moderation" => Ok(PostStatus::AwaitingModeration),
             "accepted" => Ok(PostStatus::Accepted),
             "rejected" => Ok(PostStatus::Rejected),
+            "changes_requested" => Ok(PostStatus::ChangesRequested),
             "deleted" => Ok(PostStatus::Deleted),
             "banned" => Ok(PostStatus::Banned),
             other => Err(PostStatusParseError(other.to_string())),
@@ -260,6 +266,18 @@ pub trait PostRepository: Send + Sync {
     async fn set_status_to(&self, post_id: PostId, status: PostStatus) -> Result<(), Self::Err>;
     /// Replace the curated tag set (moderator "accept with more tags").
     async fn set_tags(&self, id: PostId, tags: Vec<Tag>) -> Result<Post, Self::Err>;
+    /// Revive a `ChangesRequested` Post on re-submission: replace tags and
+    /// artists, stamp the new submission time, and set the caller-decided
+    /// status (`AwaitingModeration`, or `Banned` on a fresh forbidden hit).
+    /// The row (and any feed history) is kept — sources are UNIQUE.
+    async fn resubmit(
+        &self,
+        id: PostId,
+        tags: Vec<Tag>,
+        artists: Vec<Tag>,
+        submitted_at: DateTime<Utc>,
+        status: PostStatus,
+    ) -> Result<Post, Self::Err>;
     /// Record which moderator last acted on this Post, and when.
     async fn record_moderation(
         &self,

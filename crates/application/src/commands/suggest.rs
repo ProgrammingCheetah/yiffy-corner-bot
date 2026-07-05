@@ -37,7 +37,13 @@ pub struct SuggestCommand {
 #[derive(Debug)]
 pub enum SuggestOutcome {
     /// Submission entered the moderation queue; DM these reviewers.
-    Queued { post: Post, reviewers: Vec<User> },
+    /// `resubmission` marks a `ChangesRequested` post revived by its
+    /// original submitter (same post id, fresh tags).
+    Queued {
+        post: Post,
+        reviewers: Vec<User>,
+        resubmission: bool,
+    },
     /// Submission owned a globally forbidden tag and was auto-Banned.
     AutoBanned { post: Post },
     /// Non-e621 source with no tags: nothing was created yet — the bot must
@@ -89,18 +95,30 @@ where
         HandlerError::InvalidSource(e.to_string())
     })?;
 
-    if let Some(existing) = posts
+    // A `ChangesRequested` post is the one duplicate that ISN'T final: the
+    // original submitter re-submitting the same source revives it into the
+    // queue with fresh tags. Anyone else still hits the duplicate wall.
+    let revives = match posts
         .find_by_source(&source)
         .await
         .map_err(|_| HandlerError::RepositoryError)?
     {
-        tracing::info!(
-            event = %Event::SubmissionRejected, reason = %RejectReason::DuplicateSource,
-            user_id = %submitter.id, existing_post = %existing.id, source = %source.as_ref(),
-            "submission rejected: duplicate source"
-        );
-        return Err(HandlerError::DuplicateSubmission(existing.id));
-    }
+        None => None,
+        Some(existing)
+            if existing.status == PostStatus::ChangesRequested
+                && existing.submitted_by == Some(submitter.id) =>
+        {
+            Some(existing.id)
+        }
+        Some(existing) => {
+            tracing::info!(
+                event = %Event::SubmissionRejected, reason = %RejectReason::DuplicateSource,
+                user_id = %submitter.id, existing_post = %existing.id, source = %source.as_ref(),
+                "submission rejected: duplicate source"
+            );
+            return Err(HandlerError::DuplicateSubmission(existing.id));
+        }
+    };
 
     // Every feed entry is tagged: e621 tags come from the API (merged with
     // any extras the submitter supplied); other sources need submitter tags.
@@ -157,23 +175,41 @@ where
         PostStatus::AwaitingModeration
     };
 
-    let post = posts
-        .create(
-            source,
-            tags,
-            artists,
-            Some(submitter.id),
-            Utc::now(),
-            status.clone(),
-        )
-        .await
-        .map_err(|_| HandlerError::RepositoryError)?;
-    tracing::info!(
-        event = %Event::SubmissionCreated,
-        post_id = %post.id, user_id = %submitter.id,
-        source = %post.source.as_ref(), status = %post.status,
-        "submission created"
-    );
+    let post = match revives {
+        Some(post_id) => {
+            let post = posts
+                .resubmit(post_id, tags, artists, Utc::now(), status.clone())
+                .await
+                .map_err(|_| HandlerError::RepositoryError)?;
+            tracing::info!(
+                event = %Event::SubmissionResubmitted,
+                post_id = %post.id, user_id = %submitter.id,
+                source = %post.source.as_ref(), status = %post.status,
+                "changes-requested submission revived"
+            );
+            post
+        }
+        None => {
+            let post = posts
+                .create(
+                    source,
+                    tags,
+                    artists,
+                    Some(submitter.id),
+                    Utc::now(),
+                    status.clone(),
+                )
+                .await
+                .map_err(|_| HandlerError::RepositoryError)?;
+            tracing::info!(
+                event = %Event::SubmissionCreated,
+                post_id = %post.id, user_id = %submitter.id,
+                source = %post.source.as_ref(), status = %post.status,
+                "submission created"
+            );
+            post
+        }
+    };
 
     match status {
         PostStatus::Banned => {
@@ -195,7 +231,11 @@ where
                     .await
                     .map_err(|_| HandlerError::RepositoryError)?,
             );
-            Ok(SuggestOutcome::Queued { post, reviewers })
+            Ok(SuggestOutcome::Queued {
+                post,
+                reviewers,
+                resubmission: revives.is_some(),
+            })
         }
     }
 }
@@ -301,11 +341,17 @@ mod tests {
             .unwrap();
 
         let outcome = fx.suggest(42, "https://e621.net/posts/1").await.unwrap();
-        let SuggestOutcome::Queued { post, reviewers } = outcome else {
+        let SuggestOutcome::Queued {
+            post,
+            reviewers,
+            resubmission,
+        } = outcome
+        else {
             panic!("expected Queued");
         };
         assert_eq!(post.status, PostStatus::AwaitingModeration);
         assert!(post.submitted_by.is_some());
+        assert!(!resubmission);
         assert_eq!(reviewers.len(), 2); // the Moderator + the Owner
     }
 
@@ -361,6 +407,96 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, HandlerError::DuplicateSubmission(_)));
+    }
+
+    #[tokio::test]
+    async fn changes_requested_post_can_be_resubmitted_by_its_submitter() {
+        let fx = Fixture::new().with_e621_post("https://e621.net/posts/1", &["wolf"]);
+        let SuggestOutcome::Queued { post, .. } =
+            fx.suggest(42, "https://e621.net/posts/1").await.unwrap()
+        else {
+            panic!("expected Queued");
+        };
+        fx.posts
+            .set_status_to(post.id, PostStatus::ChangesRequested)
+            .await
+            .unwrap();
+
+        let outcome = fx.suggest(42, "https://e621.net/posts/1").await.unwrap();
+        let SuggestOutcome::Queued {
+            post: revived,
+            resubmission,
+            ..
+        } = outcome
+        else {
+            panic!("expected Queued");
+        };
+        assert!(resubmission);
+        assert_eq!(revived.id, post.id); // same row, not a new one
+        assert_eq!(revived.status, PostStatus::AwaitingModeration);
+    }
+
+    #[tokio::test]
+    async fn changes_requested_post_is_still_duplicate_for_others() {
+        let fx = Fixture::new().with_e621_post("https://e621.net/posts/1", &["wolf"]);
+        let SuggestOutcome::Queued { post, .. } =
+            fx.suggest(42, "https://e621.net/posts/1").await.unwrap()
+        else {
+            panic!("expected Queued");
+        };
+        fx.posts
+            .set_status_to(post.id, PostStatus::ChangesRequested)
+            .await
+            .unwrap();
+
+        let err = fx
+            .suggest(43, "https://e621.net/posts/1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HandlerError::DuplicateSubmission(_)));
+    }
+
+    #[tokio::test]
+    async fn resubmission_with_forbidden_tag_auto_bans() {
+        let fx = Fixture::new();
+        let outcome = handle(
+            SuggestCommand {
+                submitter: TelegramId::from(42),
+                display_name: None,
+                url: Url::parse("https://x.com/artist/status/1").unwrap(),
+                tags: vec![Tag::from("wolf")],
+            },
+            &fx.users,
+            &fx.posts,
+            &fx.fetcher,
+            &fx.forbidden,
+        )
+        .await
+        .unwrap();
+        let SuggestOutcome::Queued { post, .. } = outcome else {
+            panic!("expected Queued");
+        };
+        fx.posts
+            .set_status_to(post.id, PostStatus::ChangesRequested)
+            .await
+            .unwrap();
+        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+
+        let outcome = handle(
+            SuggestCommand {
+                submitter: TelegramId::from(42),
+                display_name: None,
+                url: Url::parse("https://x.com/artist/status/1").unwrap(),
+                tags: vec![Tag::from("gore")],
+            },
+            &fx.users,
+            &fx.posts,
+            &fx.fetcher,
+            &fx.forbidden,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, SuggestOutcome::AutoBanned { .. }));
     }
 
     #[tokio::test]

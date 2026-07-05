@@ -1,7 +1,7 @@
 <script>
   // The moderation deck. Swipe right = approve, left = reject; the button
-  // row adds "accept with tags" and "reject with reason", exactly like the
-  // DM dialogues.
+  // row adds "accept with tags", "reject with reason" and "request changes",
+  // exactly like the DM dialogues.
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import Modal from '$lib/Modal.svelte';
   import { get, post } from '$lib/api.js';
@@ -12,8 +12,10 @@
   let toast = '';
   let tagModal = false;
   let reasonModal = false;
+  let changesModal = false;
   let extraTags = '';
   let reason = '';
+  let changes = '';
 
   async function load() {
     const res = await get('/queue');
@@ -78,6 +80,7 @@
   <div class="actions">
     <button class="round nope" on:click={() => deck.fly(-1)} title="Reject">✖</button>
     <button class="round reason" on:click={() => { reason = ''; reasonModal = true; }} title="Reject with reason">📝</button>
+    <button class="round changes" on:click={() => { changes = ''; changesModal = true; }} title="Request changes">✏️</button>
     <button class="round tags" on:click={() => { extraTags = ''; tagModal = true; }} title="Accept with tags">🏷</button>
     <button class="round like" on:click={() => deck.fly(1)} title="Approve">✔</button>
   </div>
@@ -94,6 +97,17 @@
       tagModal = false;
       act(card, 'approve', { extra_tags: extraTags.split(/\s+/).filter(Boolean) });
     }}>Accept into the feed</button>
+</Modal>
+
+<Modal bind:open={changesModal} title="Request changes">
+  <textarea rows="3" placeholder="What should the submitter change? They can re-submit the same link." bind:value={changes}></textarea>
+  <button
+    disabled={!changes.trim()}
+    on:click={() => {
+      const card = cards[0];
+      changesModal = false;
+      act(card, 'changes', { reason: changes });
+    }}>Send the change request</button>
 </Modal>
 
 <Modal bind:open={reasonModal} title="Reject with reason">
@@ -127,6 +141,7 @@
   .round.nope { color: #f87171; }
   .round.tags { color: #facc15; }
   .round.reason { color: #93c5fd; }
+  .round.changes { color: #c4b5fd; }
   .toast {
     position: fixed;
     bottom: 86px;

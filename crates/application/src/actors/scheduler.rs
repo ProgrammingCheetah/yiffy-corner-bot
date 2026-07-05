@@ -517,6 +517,16 @@ mod tests {
         ) -> Result<Post, Self::Err> {
             unimplemented!()
         }
+        async fn resubmit(
+            &self,
+            _id: PostId,
+            _tags: Vec<domain::elements::tag::Tag>,
+            _artists: Vec<domain::elements::tag::Tag>,
+            _submitted_at: DateTime<Utc>,
+            _status: PostStatus,
+        ) -> Result<Post, Self::Err> {
+            unimplemented!()
+        }
         async fn record_moderation(
             &self,
             _id: PostId,

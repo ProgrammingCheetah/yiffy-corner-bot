@@ -256,6 +256,14 @@ async fn complete_moderation_dialogue(
             }
             reject_with_reason(bot, state, actor, post_id, reason).await
         }
+        ModerationDialogue::RequestChanges(post_id) => {
+            let changes = text.trim();
+            if changes.is_empty() {
+                return "Empty message — post left untouched. Press the button again to retry."
+                    .to_string();
+            }
+            request_changes_with_message(bot, state, actor, post_id, changes).await
+        }
         ModerationDialogue::ExtraTags(post_id) => {
             let extra: Vec<Tag> = text.split_whitespace().map(Tag::from).collect();
             if extra.is_empty() {
@@ -337,6 +345,60 @@ pub(crate) async fn reject_with_reason(
     }
 }
 
+/// Request changes + relay the change list to the submitter, who can then
+/// re-submit the same source. Shared by the DM dialogue and the web app.
+pub(crate) async fn request_changes_with_message(
+    bot: &Bot,
+    state: &SharedState,
+    actor: TelegramId,
+    post_id: PostId,
+    changes: &str,
+) -> String {
+    use domain::elements::user::UserRepository as _;
+
+    match moderate::request_changes(
+        ModerateCommand { actor, post_id },
+        &state.users,
+        &state.posts,
+    )
+    .await
+    {
+        Err(e) => describe(e),
+        Ok(post) => {
+            let notified = match post.submitted_by {
+                None => false,
+                Some(user_id) => match state.users.find_by_id(user_id).await {
+                    Ok(Some(user)) => bot
+                        .send_message(
+                            ChatId(*user.telegram_id.as_ref()),
+                            format!(
+                                "The moderators would like some changes before accepting \
+                                 your submission #{post_id}:\n{changes}\n\n\
+                                 Once that's sorted, just /suggest the same link again — \
+                                 it goes straight back into the review queue."
+                            ),
+                        )
+                        .await
+                        .is_ok(),
+                    _ => false,
+                },
+            };
+            if notified {
+                tracing::info!(
+                    event = %Event::SubmitterNotified, post_id = %post_id,
+                    "change request relayed to submitter"
+                );
+                format!("Post #{post_id} → changes requested — the submitter was told what to fix.")
+            } else {
+                format!(
+                    "Post #{post_id} → changes requested. (Couldn't DM the submitter — they \
+                     may not have a chat open with the bot.)"
+                )
+            }
+        }
+    }
+}
+
 /// Append the outcome to a review/report DM, media-aware: text messages
 /// get edit_message_text, media messages (photo/video reviews) get
 /// edit_message_caption. Never propagates — a cosmetic edit failing must
@@ -384,6 +446,10 @@ fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
                 format!("mod:reason:{post_id}"),
             ),
         ],
+        vec![InlineKeyboardButton::callback(
+            "✏️ Request changes",
+            format!("mod:changes:{post_id}"),
+        )],
     ])
 }
 
@@ -593,7 +659,11 @@ pub(crate) async fn submit(
              Example: `wolf male solo digital_art artist:coolwolf`"
                 .to_string()
         }
-        Ok(SuggestOutcome::Queued { post, reviewers }) => {
+        Ok(SuggestOutcome::Queued {
+            post,
+            reviewers,
+            resubmission,
+        }) => {
             if let Some(fwd) = &forward {
                 if let Err(e) = state
                     .telegram_copies
@@ -626,8 +696,13 @@ pub(crate) async fn submit(
                 Some(fwd) => format!("Forwarded from channel: @{}", fwd.channel_username),
                 None => post.source.as_ref().to_string(),
             };
+            let header = if resubmission {
+                "Re-submission (changes were requested)"
+            } else {
+                "New submission"
+            };
             let text = format!(
-                "New submission #{}\n{origin_line}\nTags: {tag_line}\nSubmitted by {submitter_contact}",
+                "{header} #{}\n{origin_line}\nTags: {tag_line}\nSubmitted by {submitter_contact}",
                 post.id
             );
             // Reviewers should see the actual media, not just a link:
@@ -706,6 +781,11 @@ pub(crate) async fn submit(
                     "Submission #{} is in the moderation queue — it will be posted as a copy \
                      credited to @{} once approved!",
                     post.id, fwd.channel_username
+                ),
+                None if resubmission => format!(
+                    "Re-submitted! #{} is back in the moderation queue — thanks for making \
+                     the changes.",
+                    post.id
                 ),
                 None => format!(
                     "Submission #{} is in the moderation queue — you'll see it posted once approved!",
@@ -2411,7 +2491,7 @@ pub async fn handle_callback(
     match data.split(':').collect::<Vec<_>>()[..] {
         // Dialogue buttons: the moderator's next message completes the
         // action (rejection reason / extra tags).
-        ["mod", verb @ ("reason" | "addtags"), id] => {
+        ["mod", verb @ ("reason" | "addtags" | "changes"), id] => {
             use crate::state::ModerationDialogue;
             use teloxide::payloads::AnswerCallbackQuerySetters as _;
 
@@ -2434,6 +2514,16 @@ pub async fn handle_callback(
                                     format!(
                                         "Reply with the reason for rejecting post #{post_id} — \
                                          it will be sent to the submitter."
+                                    ),
+                                )
+                            } else if verb == "changes" {
+                                (
+                                    ModerationDialogue::RequestChanges(post_id),
+                                    Event::ChangeListRequested,
+                                    format!(
+                                        "Reply with the changes you want for post #{post_id} — \
+                                         they'll be sent to the submitter, who can then \
+                                         re-submit the same link."
                                     ),
                                 )
                             } else {

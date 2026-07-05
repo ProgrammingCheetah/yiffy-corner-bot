@@ -83,6 +83,25 @@ impl PostRepository for InMemoryPostRepository {
         Ok(())
     }
 
+    async fn resubmit(
+        &self,
+        id: PostId,
+        tags: Vec<Tag>,
+        artists: Vec<Tag>,
+        submitted_at: DateTime<Utc>,
+        status: PostStatus,
+    ) -> Result<Post, Self::Err> {
+        let mut posts = self.posts.write().await;
+        let post = posts
+            .get_mut(id.as_ref())
+            .ok_or(PostRepositoryError::NotFound(id))?;
+        post.tags = tags;
+        post.artists = artists;
+        post.submitted_at = submitted_at;
+        post.status = status;
+        Ok(post.clone())
+    }
+
     async fn record_moderation(
         &self,
         id: PostId,
