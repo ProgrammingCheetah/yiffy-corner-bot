@@ -1,0 +1,9 @@
+# Secrets + runtime state: the vault never enters git.
+config/vault/
+*.sqlite
+*.sqlite-journal
+
+# Build output
+node_modules/
+dist/
+code_migration/target/
