@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use async_trait::async_trait;
 use domain::elements::{
     post::PostId,
@@ -9,8 +7,8 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Default)]
 pub struct InMemoryReportRepository {
-    /// (post id, reporter telegram id) — the dedupe key.
-    reports: RwLock<HashSet<(u64, i64)>>,
+    /// Full reports; (post id, reporter telegram id) stays the dedupe key.
+    reports: RwLock<Vec<Report>>,
 }
 
 impl InMemoryReportRepository {
@@ -24,11 +22,15 @@ impl ReportRepository for InMemoryReportRepository {
     type Err = ReportRepositoryError;
 
     async fn add(&self, report: Report) -> Result<bool, Self::Err> {
-        Ok(self
-            .reports
-            .write()
-            .await
-            .insert((*report.post_id.as_ref(), *report.reporter.as_ref())))
+        let mut reports = self.reports.write().await;
+        if reports
+            .iter()
+            .any(|r| r.post_id == report.post_id && r.reporter == report.reporter)
+        {
+            return Ok(false);
+        }
+        reports.push(report);
+        Ok(true)
     }
 
     async fn count_for(&self, post_id: PostId) -> Result<u64, Self::Err> {
@@ -37,15 +39,18 @@ impl ReportRepository for InMemoryReportRepository {
             .read()
             .await
             .iter()
-            .filter(|(post, _)| post == post_id.as_ref())
+            .filter(|r| r.post_id == post_id)
             .count() as u64)
     }
 
+    async fn list_all(&self) -> Result<Vec<Report>, Self::Err> {
+        let mut all = self.reports.read().await.clone();
+        all.sort_by(|a, b| b.reported_at.cmp(&a.reported_at));
+        Ok(all)
+    }
+
     async fn clear_for(&self, post_id: PostId) -> Result<(), Self::Err> {
-        self.reports
-            .write()
-            .await
-            .retain(|(post, _)| post != post_id.as_ref());
+        self.reports.write().await.retain(|r| r.post_id != post_id);
         Ok(())
     }
 }

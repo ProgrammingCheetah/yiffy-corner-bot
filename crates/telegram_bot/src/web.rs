@@ -21,7 +21,7 @@ use teloxide::Bot;
 use url::Url;
 
 use application::commands::{
-    browse, manage_poster, moderate, moderate::ModerateCommand, post_info::post_info,
+    browse, manage_poster, moderate, moderate::ModerateCommand, post_info::post_info, report,
 };
 use application::selectors::feed::refusal_for;
 use domain::elements::{
@@ -355,6 +355,113 @@ async fn moderate_post(
         "changes" => {
             request_changes_with_message(&state.bot, &state.app, actor, post_id, body.reason.trim())
                 .await
+        }
+        other => return Err(bad_request(format!("unknown action `{other}`"))),
+    };
+    Ok(Json(json!({ "message": message })))
+}
+
+// ------------------------------------------------------------- reports ----
+
+/// The moderation overview: reported posts with who reported and why.
+async fn list_reports(State(state): State<Arc<WebState>>, headers: HeaderMap) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let overview = report::overview(
+        authed.user.telegram_id,
+        &state.app.users,
+        &state.app.posts,
+        &state.app.reports,
+    )
+    .await
+    .map_err(bad_request)?;
+
+    let mut cards = Vec::with_capacity(overview.len());
+    for reported in overview {
+        let mut reports = Vec::with_capacity(reported.reports.len());
+        for r in reported.reports {
+            let name = state
+                .app
+                .users
+                .find_by_telegram_id(r.reporter)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|u| u.display_name);
+            reports.push(json!({
+                "reporter_telegram_id": r.reporter.as_ref(),
+                "reporter_name": name,
+                "reason": r.reason,
+                "at": r.reported_at.to_rfc3339(),
+            }));
+        }
+        cards.push(json!({
+            "post_id": reported.post.id.as_ref(),
+            "source": reported.post.source.as_ref().as_str(),
+            "status": reported.post.status.to_string(),
+            "tags": tags_json(&reported.post.tags),
+            "report_count": reports.len(),
+            "reports": reports,
+        }));
+    }
+    Ok(Json(json!({ "cards": cards })))
+}
+
+#[derive(Deserialize)]
+struct ResolveReportBody {
+    post_id: u64,
+    /// "takedown" | "dismiss"
+    action: String,
+}
+
+async fn resolve_report(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(body): Json<ResolveReportBody>,
+) -> ApiResult {
+    use teloxide::prelude::Requester as _;
+    use teloxide::types::{ChatId, MessageId};
+
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let actor = authed.user.telegram_id;
+    let post_id = PostId::from(body.post_id);
+    let message = match body.action.as_str() {
+        "dismiss" => {
+            report::dismiss(actor, post_id, &state.app.users, &state.app.reports)
+                .await
+                .map_err(bad_request)?;
+            format!("Reports for post #{post_id} dismissed.")
+        }
+        "takedown" => {
+            let deliveries = report::take_down(
+                actor,
+                post_id,
+                &state.app.users,
+                &state.app.posts,
+                &state.app.publications,
+            )
+            .await
+            .map_err(bad_request)?;
+            let mut deleted = 0usize;
+            for delivery in &deliveries {
+                match state
+                    .bot
+                    .delete_message(ChatId(delivery.chat_id), MessageId(delivery.message_id))
+                    .await
+                {
+                    Ok(_) => deleted += 1,
+                    Err(e) => tracing::warn!(
+                        event = %Event::PublishFailed, post_id = %post_id,
+                        chat_id = delivery.chat_id, error = %e,
+                        "channel message delete failed"
+                    ),
+                }
+            }
+            format!(
+                "Post #{post_id} taken down ({deleted}/{} channel message(s) deleted).",
+                deliveries.len()
+            )
         }
         other => return Err(bad_request(format!("unknown action `{other}`"))),
     };
@@ -1001,6 +1108,8 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/queue", get(queue))
         .route("/posts/{id}/media", get(post_media))
         .route("/moderate", post(moderate_post))
+        .route("/reports", get(list_reports))
+        .route("/reports/resolve", post(resolve_report))
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
         .route("/resolve", post(resolve_preview))

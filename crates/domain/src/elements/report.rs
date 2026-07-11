@@ -38,6 +38,9 @@ pub trait ReportRepository: Send + Sync {
     /// this post (nothing new is stored).
     async fn add(&self, report: Report) -> Result<bool, Self::Err>;
     async fn count_for(&self, post_id: PostId) -> Result<u64, Self::Err>;
+    /// Every stored report, newest first — the moderation overview reads
+    /// this and groups by post.
+    async fn list_all(&self) -> Result<Vec<Report>, Self::Err>;
     /// Clear a post's reports (moderator dismissal).
     async fn clear_for(&self, post_id: PostId) -> Result<(), Self::Err>;
 }

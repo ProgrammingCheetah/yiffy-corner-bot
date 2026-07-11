@@ -36,6 +36,27 @@ impl ReportRepository for SqliteReportRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn list_all(&self) -> Result<Vec<Report>, Self::Err> {
+        let rows = sqlx::query(
+            "SELECT post_id, reporter_telegram_id, reported_at, reason
+             FROM reports ORDER BY reported_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ReportRepositoryError::Storage(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| Report {
+                post_id: PostId::from(row.get::<i64, _>("post_id") as u64),
+                reporter: domain::elements::user::TelegramId::from(
+                    row.get::<i64, _>("reporter_telegram_id"),
+                ),
+                reported_at: row.get("reported_at"),
+                reason: row.get("reason"),
+            })
+            .collect())
+    }
+
     async fn count_for(&self, post_id: PostId) -> Result<u64, Self::Err> {
         let row = sqlx::query("SELECT COUNT(*) AS n FROM reports WHERE post_id = ?")
             .bind(*post_id.as_ref() as i64)

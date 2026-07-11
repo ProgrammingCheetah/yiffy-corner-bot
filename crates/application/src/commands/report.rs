@@ -99,6 +99,64 @@ where
     })
 }
 
+/// One reported post with all its open reports, newest report first.
+#[derive(Debug)]
+pub struct ReportedPost {
+    pub post: Post,
+    pub reports: Vec<Report>,
+}
+
+/// The moderation overview: every not-yet-deleted post that has open
+/// reports, ordered by most recent report. Taken-down posts drop out
+/// (soft-deleted), dismissed ones too (their reports are cleared).
+pub async fn overview<P, RR>(
+    actor: TelegramId,
+    users: &impl UserRepository,
+    posts: &P,
+    reports: &RR,
+) -> HandlerResult<Vec<ReportedPost>>
+where
+    P: PostRepository,
+    RR: ReportRepository,
+{
+    use std::collections::HashMap;
+
+    use domain::elements::post::PostStatus;
+
+    require_role(users, actor, Role::Moderator).await?;
+    let all = reports
+        .list_all()
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+
+    // Group per post, keeping the newest-first order of first appearance.
+    let mut order: Vec<PostId> = Vec::new();
+    let mut grouped: HashMap<PostId, Vec<Report>> = HashMap::new();
+    for report in all {
+        if !grouped.contains_key(&report.post_id) {
+            order.push(report.post_id);
+        }
+        grouped.entry(report.post_id).or_default().push(report);
+    }
+
+    let mut out = Vec::with_capacity(order.len());
+    for post_id in order {
+        let Some(post) = posts
+            .find_by_id(post_id)
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?
+        else {
+            continue;
+        };
+        if post.status == PostStatus::Deleted {
+            continue; // already taken down — nothing left to act on
+        }
+        let reports = grouped.remove(&post_id).unwrap_or_default();
+        out.push(ReportedPost { post, reports });
+    }
+    Ok(out)
+}
+
 /// Moderator takedown: soft-delete the Post and hand back every recorded
 /// delivery so the bot layer can delete the channel messages.
 pub async fn take_down<P, PB>(
@@ -306,6 +364,70 @@ mod tests {
         ));
         assert!(matches!(
             dismiss(TelegramId::from(2), post_id, &fx.users, &fx.reports)
+                .await
+                .unwrap_err(),
+            HandlerError::NotAuthorized(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn overview_groups_reports_and_drops_taken_down_posts() {
+        let (fx, post_id) = fixture().await;
+        let second = fx
+            .posts
+            .create(
+                Source::try_from(Url::parse("https://e621.net/posts/2").unwrap()).unwrap(),
+                vec![],
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
+            .await
+            .unwrap();
+        for (reporter, post, why) in [
+            (99, post_id, "gore"),
+            (98, post_id, "untagged"),
+            (99, second.id, "off-topic"),
+        ] {
+            report(
+                TelegramId::from(reporter),
+                post,
+                Some(why.to_string()),
+                &fx.posts,
+                &fx.reports,
+                &fx.users,
+            )
+            .await
+            .unwrap();
+        }
+
+        let all = overview(TelegramId::from(1), &fx.users, &fx.posts, &fx.reports)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        let first = all.iter().find(|r| r.post.id == post_id).unwrap();
+        assert_eq!(first.reports.len(), 2);
+
+        // A takedown removes the post from the overview.
+        take_down(
+            TelegramId::from(1),
+            second.id,
+            &fx.users,
+            &fx.posts,
+            &fx.publications,
+        )
+        .await
+        .unwrap();
+        let all = overview(TelegramId::from(1), &fx.users, &fx.posts, &fx.reports)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].post.id, post_id);
+
+        // Plain users don't get the overview.
+        assert!(matches!(
+            overview(TelegramId::from(2), &fx.users, &fx.posts, &fx.reports)
                 .await
                 .unwrap_err(),
             HandlerError::NotAuthorized(_)

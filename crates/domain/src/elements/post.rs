@@ -5,7 +5,7 @@ use crate::elements::tag::Tag;
 use crate::elements::user::UserId;
 
 /// The internal ID for a Post. Program-managed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PostId(u64);
 
 impl From<u64> for PostId {

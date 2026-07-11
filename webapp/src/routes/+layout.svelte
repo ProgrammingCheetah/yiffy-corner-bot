@@ -23,7 +23,8 @@
     ...(role === 'moderator' || role === 'owner'
       ? [
           { href: '/review', label: 'Review', icon: '🔥' },
-          { href: '/browse', label: 'Browse', icon: '🔎' }
+          { href: '/browse', label: 'Browse', icon: '🔎' },
+          { href: '/reports', label: 'Reports', icon: '⚠️' }
         ]
       : []),
     ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: '⚙️' }] : [])
