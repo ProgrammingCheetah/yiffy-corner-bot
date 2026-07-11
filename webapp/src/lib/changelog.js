@@ -1,9 +1,18 @@
 // The changelog, newest first. The first entry is the current version:
 // the layout banner announces it until the user dismisses that exact
 // version (per-user via CloudStorage), and /changelog renders it all.
+//
+// Release ritual: ask Ziel whether the batch bumps the MAJOR or the MINOR
+// number, add the entry here (each minor version gets an `alias`), and
+// bump crates/telegram_bot/Cargo.toml + webapp/package.json to match.
+
+// Every release is an Alpha until further notice.
+export const stage = 'Alpha';
+
 export const changelog = [
   {
     version: '0.3.0',
+    alias: 'Wolf',
     date: '2026-07-11',
     changes: [
       'Reports ask for a reason, and moderators see who reported — with a tappable contact.',
@@ -36,3 +45,9 @@ export const changelog = [
 ];
 
 export const currentVersion = changelog[0].version;
+export const currentAlias = changelog[0].alias;
+
+// "Alpha 0.3.0 “Wolf”" — the one way a release is written out.
+export function releaseName(entry) {
+  return `${stage} ${entry.version}${entry.alias ? ` “${entry.alias}”` : ''}`;
+}

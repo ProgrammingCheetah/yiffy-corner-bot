@@ -1,5 +1,5 @@
 <script>
-  import { changelog, currentVersion } from '$lib/changelog.js';
+  import { changelog, currentVersion, releaseName } from '$lib/changelog.js';
 </script>
 
 <h2>Changelog</h2>
@@ -7,7 +7,7 @@
 {#each changelog as entry (entry.version)}
   <div class="release" class:current={entry.version === currentVersion}>
     <div class="head">
-      <strong>v{entry.version}</strong>
+      <strong>{releaseName(entry)}</strong>
       {#if entry.version === currentVersion}<span class="chip now">current</span>{/if}
       <span class="muted">{entry.date}</span>
     </div>

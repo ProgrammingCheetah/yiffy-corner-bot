@@ -4,7 +4,7 @@
   import { goto } from '$app/navigation';
   import { get } from '$lib/api.js';
   import { loadJson, saveJson } from '$lib/store.js';
-  import { currentVersion } from '$lib/changelog.js';
+  import { changelog, currentVersion, releaseName } from '$lib/changelog.js';
 
   let me = null;
   let error = '';
@@ -60,7 +60,7 @@
     {#if showNews}
       <div class="news">
         <button class="news-body" on:click={() => { dismissNews(); goto('/changelog'); }}>
-          ✨ Yiffy Corner v{currentVersion} — tap to see what's new
+          ✨ Yiffy Corner {releaseName(changelog[0])} — tap to see what's new
         </button>
         <button class="news-x" on:click={dismissNews}>✕</button>
       </div>
