@@ -1,7 +1,8 @@
 //! The report system (design/domain.md: reports + abuse prevention).
 //!
 //! Any Telegram user who can see a published post can report it via the
-//! ⚠️ button. Abuse prevention (MVP): one report per (post, reporter) —
+//! ⚠️ button; filing asks for a reason so moderators know why.
+//! Abuse prevention (MVP): one report per (post, reporter) —
 //! duplicates are acknowledged but not re-recorded and never re-notify
 //! moderators. Moderators resolve a report by taking the post down
 //! (deleting its published messages + soft-deleting the Post) or dismissing
@@ -18,6 +19,9 @@ pub struct Report {
     /// Raw Telegram id — reporters don't need to be registered Users.
     pub reporter: TelegramId,
     pub reported_at: DateTime<Utc>,
+    /// Why the reporter flagged the post. `None` only on paths that cannot
+    /// collect one (legacy report buttons when the reporter's DMs are closed).
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

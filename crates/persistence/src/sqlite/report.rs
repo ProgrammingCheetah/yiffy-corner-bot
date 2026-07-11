@@ -22,13 +22,14 @@ impl ReportRepository for SqliteReportRepository {
 
     async fn add(&self, report: Report) -> Result<bool, Self::Err> {
         let result = sqlx::query(
-            "INSERT INTO reports (post_id, reporter_telegram_id, reported_at)
-             VALUES (?, ?, ?)
+            "INSERT INTO reports (post_id, reporter_telegram_id, reported_at, reason)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT (post_id, reporter_telegram_id) DO NOTHING",
         )
         .bind(*report.post_id.as_ref() as i64)
         .bind(*report.reporter.as_ref())
         .bind(report.reported_at)
+        .bind(&report.reason)
         .execute(&self.pool)
         .await
         .map_err(|e| ReportRepositoryError::Storage(e.to_string()))?;
@@ -97,6 +98,7 @@ mod tests {
             post_id,
             reporter: TelegramId::from(reporter),
             reported_at: Utc::now(),
+            reason: Some("gore, not tagged".to_string()),
         };
         assert!(repo.add(report(42)).await.unwrap());
         assert!(!repo.add(report(42)).await.unwrap());

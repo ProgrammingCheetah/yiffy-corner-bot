@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use domain::elements::{
-    e621::{E621Fetcher, E621Order, E621PostMetadata, FetchError},
+    e621::{E621Fetcher, E621Order, E621Pool, E621PoolCategory, E621PostMetadata, FetchError},
     media::{MediaResolveError, MediaResolver, ResolvedMedia},
     post::Source,
     tag::Tag,
@@ -188,6 +188,67 @@ impl E621Fetcher for RateLimitedE621Client {
         }
         Ok(results)
     }
+
+    async fn pools(&self, ids: &[u64]) -> Result<Vec<E621Pool>, FetchError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let csv = ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = Url::parse(&format!("{E621_BASE}/pools.json?search[id]={csv}"))
+            .map_err(|e| FetchError::Parse(e.to_string()))?;
+        let pools: Vec<RawPool> = self.get_json(url).await?;
+        Ok(pools.into_iter().map(E621Pool::from).collect())
+    }
+
+    async fn pool_posts(&self, pool: &E621Pool) -> Result<Vec<E621PostMetadata>, FetchError> {
+        // `tags=pool:<id>` returns up to 320 posts per request — one call
+        // for almost every pool, instead of one /posts/<id> fetch per page.
+        const PAGE_LIMIT: usize = 320;
+        let mut by_id: std::collections::HashMap<u64, E621PostMetadata> =
+            std::collections::HashMap::with_capacity(pool.post_ids.len());
+        let mut page = 1u32;
+        loop {
+            let url = Url::parse(&format!(
+                "{E621_BASE}/posts.json?tags=pool:{}&page={page}&limit={PAGE_LIMIT}",
+                pool.id
+            ))
+            .map_err(|e| FetchError::Parse(e.to_string()))?;
+            let wrapper: SearchResponse = self.get_json(url).await?;
+            let fetched = wrapper.posts.len();
+            for raw in wrapper.posts {
+                let id = raw.id;
+                match metadata_from_raw(raw) {
+                    Ok(metadata) => {
+                        by_id.insert(id, metadata);
+                    }
+                    // Deleted/restricted pages: absent from the result, the
+                    // caller counts the gap against pool.post_ids.
+                    Err(FetchError::Unavailable(source)) => {
+                        tracing::debug!(
+                            event = %Event::UpstreamStatus, upstream = %Upstream::E621,
+                            source = %source.as_ref(), pool_id = pool.id,
+                            "skipping unavailable post in pool"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if fetched < PAGE_LIMIT || by_id.len() >= pool.post_ids.len() {
+                break;
+            }
+            page += 1;
+        }
+        // The search endpoint orders by id — re-sort into pool order.
+        Ok(pool
+            .post_ids
+            .iter()
+            .filter_map(|id| by_id.remove(id))
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -305,6 +366,7 @@ fn metadata_from_raw(raw: RawPost) -> Result<E621PostMetadata, FetchError> {
         mp4_url,
         preview_url,
         artist_sources: raw.sources,
+        pools: raw.pools,
     })
 }
 
@@ -329,6 +391,35 @@ struct RawPost {
     tags: RawTags,
     #[serde(default)]
     sources: Vec<String>,
+    #[serde(default)]
+    pools: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPool {
+    id: u64,
+    name: String,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    post_ids: Vec<u64>,
+    #[serde(default)]
+    is_active: bool,
+}
+
+impl From<RawPool> for E621Pool {
+    fn from(raw: RawPool) -> Self {
+        E621Pool {
+            id: raw.id,
+            name: raw.name,
+            category: raw
+                .category
+                .parse::<E621PoolCategory>()
+                .unwrap_or(E621PoolCategory::Collection),
+            post_ids: raw.post_ids,
+            is_active: raw.is_active,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -523,5 +614,58 @@ mod live_tests {
         // Resolve the same post through the MediaResolver port.
         let media = client.resolve(&first.source).await.unwrap();
         assert!(media.url().is_some_and(|u| !u.as_str().is_empty()));
+    }
+
+    #[tokio::test]
+    #[ignore = "hits live e621"]
+    async fn live_pool_roundtrip() {
+        let client = RateLimitedE621Client::new(UA).unwrap();
+        // Pool 44687 is a long-running SFW comic series ("Panic!!
+        // Mysterious Dungeons!" by virmir); 20810 is a collection.
+        let pools = client.pools(&[44687, 20810]).await.unwrap();
+        assert_eq!(pools.len(), 2);
+        let series = pools.iter().find(|p| p.id == 44687).unwrap();
+        assert_eq!(series.category, E621PoolCategory::Series);
+        assert!(!series.post_ids.is_empty());
+        let collection = pools.iter().find(|p| p.id == 20810).unwrap();
+        assert_eq!(collection.category, E621PoolCategory::Collection);
+
+        // Post membership shows up on a fetched post.
+        let source = Source::try_from(
+            Url::parse(&format!("https://e621.net/posts/{}", series.post_ids[0])).unwrap(),
+        )
+        .unwrap();
+        let metadata = client.fetch(&source).await.unwrap();
+        assert!(metadata.pools.contains(&series.id));
+
+        // Pool pages come back in pool order.
+        let pages = client.pool_posts(series).await.unwrap();
+        assert!(!pages.is_empty());
+        let expected: Vec<&u64> = series
+            .post_ids
+            .iter()
+            .filter(|id| {
+                pages
+                    .iter()
+                    .any(|m| m.source.as_ref().path().ends_with(&format!("/{id}")))
+            })
+            .collect();
+        let got: Vec<String> = pages
+            .iter()
+            .map(|m| {
+                m.source
+                    .as_ref()
+                    .path()
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            got,
+            expected.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "pages must follow pool order"
+        );
     }
 }

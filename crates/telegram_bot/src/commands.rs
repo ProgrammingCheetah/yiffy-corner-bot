@@ -197,19 +197,82 @@ fn describe(err: HandlerError) -> String {
     }
 }
 
+/// How long a reporter gets to answer "why?" before the report files
+/// without a reason (better a reasonless report than a lost one).
+const REPORT_REASON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Step one of the viewer report dialogue: remember which post is being
+/// reported; the reporter's next message is the reason (see
+/// [`handle_pending_tags`]), and a timeout task files reasonless if they
+/// never answer. `Ok` is the "why?" prompt (dialogue armed), `Err` means it
+/// never started (unknown post, storage trouble).
+async fn begin_report_dialogue(
+    bot: &Bot,
+    state: &SharedState,
+    reporter: TelegramId,
+    post_id: PostId,
+) -> Result<String, String> {
+    use domain::elements::post::PostRepository as _;
+
+    match state.posts.find_by_id(post_id).await {
+        Err(_) => Err(describe(HandlerError::RepositoryError)),
+        Ok(None) => Err(describe(HandlerError::PostNotFound(post_id))),
+        Ok(Some(_)) => {
+            let armed_at = std::time::Instant::now();
+            state
+                .pending_reports
+                .lock()
+                .await
+                .insert(*reporter.as_ref(), (post_id, armed_at));
+
+            let bot = bot.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(REPORT_REASON_TIMEOUT).await;
+                {
+                    let mut pending = state.pending_reports.lock().await;
+                    // Only reap the dialogue this task armed — the reporter
+                    // may have answered (entry gone) or re-pressed Report
+                    // (fresh entry, its own timeout task).
+                    match pending.get(reporter.as_ref()) {
+                        Some(&(_, at)) if at == armed_at => pending.remove(reporter.as_ref()),
+                        _ => return,
+                    };
+                }
+                let outcome = file_report(&bot, &state, reporter, post_id, None).await;
+                let _ = bot
+                    .send_message(
+                        ChatId(*reporter.as_ref()),
+                        format!("No reason received — I filed the report without one. {outcome}"),
+                    )
+                    .await;
+            });
+
+            Ok(format!(
+                "Why are you reporting post #{post_id}? \
+                 Reply with a short reason and I'll notify the moderators. \
+                 If I don't hear back in 5 minutes I'll file it without one."
+            ))
+        }
+    }
+}
+
 /// File a viewer report and fan the moderator DM out. Shared by the
-/// caption deep link (`/start report_<id>`) and the legacy inline button.
+/// reason dialogue (deep link / legacy button) and the reasonless legacy
+/// fallback when the reporter's DMs are closed.
 async fn file_report(
     bot: &Bot,
     state: &SharedState,
     reporter: TelegramId,
     post_id: PostId,
+    reason: Option<String>,
 ) -> String {
     use application::commands::report::{self, ReportOutcome};
 
     match report::report(
         reporter,
         post_id,
+        reason,
         &state.posts,
         &state.reports,
         &state.users,
@@ -221,11 +284,13 @@ async fn file_report(
             post,
             reviewers,
             total_reports,
+            reason,
         }) => {
             let text = format!(
-                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}",
+                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}\nReason: {}",
                 post.id,
-                post.source.as_ref()
+                post.source.as_ref(),
+                reason.as_deref().unwrap_or("(none given)")
             );
             let keyboard = InlineKeyboardMarkup::new([[
                 InlineKeyboardButton::callback("🗑 Take down", format!("repmod:take:{}", post.id)),
@@ -442,9 +507,11 @@ async fn reflect_outcome_on_dm(
     }
 }
 
-/// The moderation inline keyboard attached to review DMs.
-fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new([
+/// The moderation inline keyboard attached to review DMs. A non-zero
+/// `pool_count` (an e621 post that belongs to pools) adds the whole-pool
+/// submission row.
+fn review_keyboard(post_id: PostId, pool_count: usize) -> InlineKeyboardMarkup {
+    let mut rows = vec![
         vec![
             InlineKeyboardButton::callback("✅ Approve", format!("mod:approve:{post_id}")),
             InlineKeyboardButton::callback("❌ Reject", format!("mod:reject:{post_id}")),
@@ -463,7 +530,59 @@ fn review_keyboard(post_id: PostId) -> InlineKeyboardMarkup {
             "✏️ Request changes",
             format!("mod:changes:{post_id}"),
         )],
-    ])
+    ];
+    if pool_count > 0 {
+        let label = if pool_count == 1 {
+            "📚 Part of a pool — submit it all?".to_string()
+        } else {
+            format!("📚 In {pool_count} pools — submit one?")
+        };
+        rows.push(vec![InlineKeyboardButton::callback(
+            label,
+            format!("pool:list:{post_id}"),
+        )]);
+    }
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// The pool chooser a moderator lands on from the review DM's 📚 button:
+/// one row per pool — pick-callback plus an e621 page link for inspecting
+/// the pool before committing. 📖 marks a `series` (ordered comic),
+/// 🗂 a `collection` (loose grouping, often huge — read the size!).
+fn pool_choice_keyboard(
+    post_id: PostId,
+    pools: &[domain::elements::e621::E621Pool],
+) -> InlineKeyboardMarkup {
+    use domain::elements::e621::E621PoolCategory;
+
+    // Callback buttons cap out visually around here; more pools than this
+    // on one post is vanishingly rare.
+    const MAX_POOLS: usize = 8;
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = pools
+        .iter()
+        .take(MAX_POOLS)
+        .map(|pool| {
+            let icon = match pool.category {
+                E621PoolCategory::Series => "📖",
+                E621PoolCategory::Collection => "🗂",
+            };
+            let mut name = pool.display_name();
+            if name.chars().count() > 30 {
+                name = name.chars().take(29).collect::<String>() + "…";
+            }
+            let inactive = if pool.is_active { "" } else { " · inactive" };
+            let label = format!("{icon} {name} · {} posts{inactive}", pool.post_ids.len());
+            vec![
+                InlineKeyboardButton::callback(label, format!("pool:pick:{post_id}:{}", pool.id)),
+                InlineKeyboardButton::url("↗", pool.page_url()),
+            ]
+        })
+        .collect();
+    rows.push(vec![InlineKeyboardButton::callback(
+        "◀ Back",
+        format!("pool:back:{post_id}:{}", pools.len()),
+    )]);
+    InlineKeyboardMarkup::new(rows)
 }
 
 pub async fn handle_command(
@@ -494,10 +613,14 @@ pub async fn handle_command(
             )
             .await;
             // Deep-link payloads: `t.me/<bot>?start=report_<id>` arrives as
-            // `/start report_<id>` — the buttonless Report path.
+            // `/start report_<id>` — the buttonless Report path. Filing is a
+            // two-step dialogue: the reporter's next message is the reason.
             if let Some(raw_id) = payload.trim().strip_prefix("report_") {
                 match parse_post_id(raw_id) {
-                    Some(post_id) => file_report(&bot, &state, actor, post_id).await,
+                    // The prompt and the error are both just the DM reply.
+                    Some(post_id) => begin_report_dialogue(&bot, &state, actor, post_id)
+                        .await
+                        .unwrap_or_else(|e| e),
                     None => "That report link is malformed.".to_string(),
                 }
             } else {
@@ -679,6 +802,7 @@ pub(crate) async fn submit(
             post,
             reviewers,
             resubmission,
+            pool_ids,
         }) => {
             if let Some(fwd) = &forward {
                 if let Err(e) = state
@@ -760,6 +884,7 @@ pub(crate) async fn submit(
                     }
                 ));
             }
+            let keyboard = review_keyboard(post.id, pool_ids.len());
             for reviewer in &reviewers {
                 use domain::elements::media::ResolvedMedia;
                 use teloxide::types::InputFile;
@@ -773,32 +898,32 @@ pub(crate) async fn submit(
                             MessageId(fwd.origin_message_id),
                         )
                         .caption(text.clone())
-                        .reply_markup(review_keyboard(post.id))
+                        .reply_markup(keyboard.clone())
                         .await
                         .map(|_| ()),
                     (None, Some(ResolvedMedia::Photo(media_url))) => bot
                         .send_photo(reviewer_chat, InputFile::url(media_url.clone()))
                         .caption(text.clone())
-                        .reply_markup(review_keyboard(post.id))
+                        .reply_markup(keyboard.clone())
                         .await
                         .map(|_| ()),
                     (None, Some(ResolvedMedia::Video(media_url))) => bot
                         .send_video(reviewer_chat, InputFile::url(media_url.clone()))
                         .caption(text.clone())
-                        .reply_markup(review_keyboard(post.id))
+                        .reply_markup(keyboard.clone())
                         .await
                         .map(|_| ()),
                     (None, Some(ResolvedMedia::Animation(media_url))) => bot
                         .send_animation(reviewer_chat, InputFile::url(media_url.clone()))
                         .caption(text.clone())
-                        .reply_markup(review_keyboard(post.id))
+                        .reply_markup(keyboard.clone())
                         .await
                         .map(|_| ()),
                     // Link media / no resolution: text with the default
                     // link preview doing its best.
                     _ => bot
                         .send_message(reviewer_chat, text.clone())
-                        .reply_markup(review_keyboard(post.id))
+                        .reply_markup(keyboard.clone())
                         .await
                         .map(|_| ()),
                 };
@@ -862,6 +987,29 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
     // Moderation dialogues first.
     if let Some(dialogue) = state.pending_moderation.lock().await.remove(actor.as_ref()) {
         let reply = complete_moderation_dialogue(&bot, &state, actor, dialogue, text).await;
+        bot.send_message(msg.chat.id, reply)
+            .link_preview_options(no_preview())
+            .await?;
+        return Ok(());
+    }
+
+    // Then viewer reports awaiting their reason.
+    if let Some((post_id, armed_at)) = state.pending_reports.lock().await.remove(actor.as_ref()) {
+        let reason = text.trim();
+        if reason.is_empty() {
+            // Re-arm as-is: the original timeout keeps governing.
+            state
+                .pending_reports
+                .lock()
+                .await
+                .insert(*actor.as_ref(), (post_id, armed_at));
+            bot.send_message(msg.chat.id, "I need a reason — a few words is fine.")
+                .await?;
+            return Ok(());
+        }
+        // Keep the moderator DM readable, whatever gets pasted in.
+        let reason: String = reason.chars().take(500).collect();
+        let reply = file_report(&bot, &state, actor, post_id, Some(reason)).await;
         bot.send_message(msg.chat.id, reply)
             .link_preview_options(no_preview())
             .await?;
@@ -2784,14 +2932,104 @@ pub async fn handle_callback(
                 reflect_outcome_on_dm(&bot, message, &outcome).await;
             }
         }
+        // Whole-pool submission: 📚 on the review DM opens the chooser…
+        ["pool", "list", id] => {
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            let toast = match parse_post_id(id) {
+                None => "Malformed callback.".to_string(),
+                Some(post_id) => {
+                    match application::commands::pool::inspect(
+                        actor,
+                        post_id,
+                        &state.users,
+                        &state.posts,
+                        &*state.e621,
+                    )
+                    .await
+                    {
+                        Err(e) => describe(e),
+                        Ok((_, pools)) if pools.is_empty() => {
+                            "This post is no longer in any pool.".to_string()
+                        }
+                        Ok((_, pools)) => {
+                            if let Some(message) = query.message.as_ref() {
+                                let _ = bot
+                                    .edit_message_reply_markup(message.chat().id, message.id())
+                                    .reply_markup(pool_choice_keyboard(post_id, &pools))
+                                    .await;
+                            }
+                            "Pick a pool — 📖 series are ordered comics, 🗂 collections are \
+                             loose groupings (mind the size). ↗ inspects it on e621."
+                                .to_string()
+                        }
+                    }
+                }
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
+        }
+        // …Back restores the normal moderation keyboard (pool row included)…
+        ["pool", "back", id, count] => {
+            if let (Some(post_id), Ok(pool_count), Some(message)) = (
+                parse_post_id(id),
+                count.parse::<usize>(),
+                query.message.as_ref(),
+            ) {
+                let _ = bot
+                    .edit_message_reply_markup(message.chat().id, message.id())
+                    .reply_markup(review_keyboard(post_id, pool_count))
+                    .await;
+            }
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
+        // …and picking a pool stages + batch-publishes it off the callback,
+        // so the button answers instantly while big pools take their time.
+        ["pool", "pick", id, pool] => {
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            match (parse_post_id(id), pool.parse::<u64>().ok()) {
+                (Some(post_id), Some(pool_id)) => {
+                    bot.answer_callback_query(query.id.clone())
+                        .text("📚 Submitting the pool — staging its pages…")
+                        .await?;
+                    let bot = bot.clone();
+                    let state = state.clone();
+                    let message = query.message.clone();
+                    tokio::spawn(async move {
+                        run_pool_submission(bot, state, actor, post_id, pool_id, message).await;
+                    });
+                }
+                _ => {
+                    bot.answer_callback_query(query.id.clone())
+                        .text("Malformed callback.")
+                        .await?;
+                }
+            }
+        }
         // Viewer report button on published posts (legacy messages; new
-        // publications use the caption deep link instead).
+        // publications use the caption deep link instead). Ask for a reason
+        // over DM; if their DMs are closed (never /start-ed the bot) fall
+        // back to filing without one rather than losing the report.
         ["report", id] => {
             use teloxide::payloads::AnswerCallbackQuerySetters as _;
 
             let toast = match parse_post_id(id) {
                 None => "Malformed report.".to_string(),
-                Some(post_id) => file_report(&bot, &state, actor, post_id).await,
+                Some(post_id) => match begin_report_dialogue(&bot, &state, actor, post_id).await {
+                    Err(msg) => msg,
+                    Ok(prompt) => {
+                        match bot.send_message(ChatId(*actor.as_ref()), prompt).await {
+                            Ok(_) => "Check your DM with me — tell me why you're reporting it."
+                                .to_string(),
+                            Err(_) => {
+                                state.pending_reports.lock().await.remove(actor.as_ref());
+                                file_report(&bot, &state, actor, post_id, None).await
+                            }
+                        }
+                    }
+                },
             };
             bot.answer_callback_query(query.id.clone())
                 .text(toast)
@@ -2977,4 +3215,140 @@ pub async fn handle_callback(
         }
     }
     Ok(())
+}
+
+/// Drive one whole-pool submission end-to-end, spawned off the pick
+/// callback: stage the pool (every page → curated, positionless, off the
+/// feed), settle the review DM, then batch-publish to the posters matching
+/// the reviewed post — all at once for small pools, groups of five with a
+/// pause for big ones. Every outcome lands as messages in the moderator's
+/// chat; nothing here propagates.
+async fn run_pool_submission(
+    bot: Bot,
+    state: SharedState,
+    actor: TelegramId,
+    post_id: PostId,
+    pool_id: u64,
+    message: Option<teloxide::types::MaybeInaccessibleMessage>,
+) {
+    use application::actors::pool_batch::{
+        self, POOL_BURST_MAX, POOL_CHUNK_PAUSE, POOL_CHUNK_SIZE,
+    };
+
+    let chat = message
+        .as_ref()
+        .map(|m| m.chat().id)
+        .unwrap_or(ChatId(*actor.as_ref()));
+    let staged = match application::commands::pool::stage(
+        actor,
+        post_id,
+        pool_id,
+        &state.users,
+        &state.posts,
+        &*state.e621,
+        &state.forbidden,
+    )
+    .await
+    {
+        Ok(staged) => staged,
+        Err(e) => {
+            let _ = bot
+                .send_message(chat, format!("Pool submission failed: {}", describe(e)))
+                .await;
+            return;
+        }
+    };
+    let pool_name = staged.pool.display_name();
+
+    // The review DM is settled: note the decision (its buttons stay usable
+    // for the other moderation verbs only until someone else acts — same
+    // semantics as a plain approve).
+    if let Some(message) = message.as_ref() {
+        reflect_outcome_on_dm(
+            &bot,
+            message,
+            &format!("📚 Whole pool \"{pool_name}\" accepted."),
+        )
+        .await;
+    }
+    // The reviewed post's approval rides with the pool.
+    if staged.posts.iter().any(|p| p.id == staged.trigger.id) {
+        notify_submitter_approved(&bot, &state, &staged.trigger).await;
+    }
+
+    let mut skipped = Vec::new();
+    if staged.already_curated > 0 {
+        skipped.push(format!("{} already curated", staged.already_curated));
+    }
+    if staged.forbidden > 0 {
+        skipped.push(format!("{} forbidden", staged.forbidden));
+    }
+    if staged.missing_upstream > 0 {
+        skipped.push(format!("{} gone upstream", staged.missing_upstream));
+    }
+    let skipped = if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(" Skipped: {}.", skipped.join(", "))
+    };
+    let pages = staged.posts.len();
+    if pages == 0 {
+        let _ = bot
+            .send_message(
+                chat,
+                format!("📚 Pool \"{pool_name}\": nothing new to publish.{skipped}"),
+            )
+            .await;
+        return;
+    }
+    let pace = if pages > POOL_BURST_MAX {
+        format!(
+            " in groups of {POOL_CHUNK_SIZE} every {}s",
+            POOL_CHUNK_PAUSE.as_secs()
+        )
+    } else {
+        " all at once".to_string()
+    };
+    let _ = bot
+        .send_message(
+            chat,
+            format!(
+                "📚 Pool \"{pool_name}\": publishing {pages} page(s){pace} to every \
+                 channel this post matches.{skipped}"
+            ),
+        )
+        .await;
+
+    let report = pool_batch::publish_pool(
+        &staged.posts,
+        &staged.trigger.tags,
+        &state.publish_deps,
+        POOL_CHUNK_PAUSE,
+    )
+    .await;
+
+    let mut summary = if report.channels == 0 {
+        format!(
+            "📚 Pool \"{pool_name}\": no poster's subscription matches the reviewed post, \
+             so nothing was published. The pages stay curated."
+        )
+    } else {
+        format!(
+            "📚 Pool \"{pool_name}\" done: {}/{pages} page(s) published to {} channel(s).",
+            report.published, report.channels
+        )
+    };
+    if report.unresolved > 0 {
+        summary.push_str(&format!(" {} page(s) had dead media.", report.unresolved));
+    }
+    if report.send_failures > 0 {
+        summary.push_str(&format!(" {} send(s) failed.", report.send_failures));
+    }
+    if report.poster_skips > 0 {
+        summary.push_str(&format!(
+            " {} page-channel skip(s) from channel tag policy.",
+            report.poster_skips
+        ));
+    }
+    let _ = bot.send_message(chat, summary).await;
 }

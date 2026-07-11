@@ -43,6 +43,9 @@ pub enum SuggestOutcome {
         post: Post,
         reviewers: Vec<User>,
         resubmission: bool,
+        /// The e621 pools the post belongs to (empty for every other
+        /// source) — lets the review DM offer whole-pool submission.
+        pool_ids: Vec<u64>,
     },
     /// Submission owned a globally forbidden tag and was auto-Banned.
     AutoBanned { post: Post },
@@ -123,12 +126,14 @@ where
     // Every feed entry is tagged: e621 tags come from the API (merged with
     // any extras the submitter supplied); other sources need submitter tags.
     let (extra_tags, extra_artists) = domain::elements::tag::split_artist_tags(cmd.tags);
+    let mut pool_ids = Vec::new();
     let (tags, artists) = match &source {
         Source::E621(_) => {
             let metadata = e621
                 .fetch(&source)
                 .await
                 .map_err(|e| HandlerError::Fetch(e.to_string()))?;
+            pool_ids = metadata.pools;
             let mut tags = metadata.tags;
             for extra in extra_tags {
                 if !tags.contains(&extra) {
@@ -235,6 +240,7 @@ where
                 post,
                 reviewers,
                 resubmission: revives.is_some(),
+                pool_ids,
             })
         }
     }
@@ -274,6 +280,7 @@ mod tests {
                 mp4_url: None,
                 preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
                 artist_sources: vec![],
+                pools: vec![7, 9],
             })
         }
         async fn search(
@@ -281,6 +288,18 @@ mod tests {
             _tags: &[Tag],
             _order: E621Order,
             _page: u32,
+        ) -> Result<Vec<E621PostMetadata>, FetchError> {
+            unimplemented!("not needed by suggest tests")
+        }
+        async fn pools(
+            &self,
+            _ids: &[u64],
+        ) -> Result<Vec<domain::elements::e621::E621Pool>, FetchError> {
+            unimplemented!("not needed by suggest tests")
+        }
+        async fn pool_posts(
+            &self,
+            _pool: &domain::elements::e621::E621Pool,
         ) -> Result<Vec<E621PostMetadata>, FetchError> {
             unimplemented!("not needed by suggest tests")
         }
@@ -345,6 +364,7 @@ mod tests {
             post,
             reviewers,
             resubmission,
+            pool_ids,
         } = outcome
         else {
             panic!("expected Queued");
@@ -353,6 +373,7 @@ mod tests {
         assert!(post.submitted_by.is_some());
         assert!(!resubmission);
         assert_eq!(reviewers.len(), 2); // the Moderator + the Owner
+        assert_eq!(pool_ids, vec![7, 9]); // pool membership rides along for the review DM
     }
 
     #[tokio::test]

@@ -22,6 +22,8 @@ pub enum ReportOutcome {
         post: Post,
         reviewers: Vec<User>,
         total_reports: u64,
+        /// The reporter's (trimmed, non-empty) reason, for the reviewer DM.
+        reason: Option<String>,
     },
     /// This viewer already reported this post (abuse dedupe) — acknowledge
     /// quietly, no re-notification.
@@ -29,9 +31,12 @@ pub enum ReportOutcome {
 }
 
 /// A viewer (any Telegram user — registration not required) reports a post.
+/// `reason` is what they answered to "why?" — `None` only on paths that
+/// cannot collect one (legacy buttons with the reporter's DMs closed).
 pub async fn report<P, RR>(
     reporter: TelegramId,
     post_id: PostId,
+    reason: Option<String>,
     posts: &P,
     reports: &RR,
     users: &impl UserRepository,
@@ -46,11 +51,15 @@ where
         .map_err(|_| HandlerError::RepositoryError)?
         .ok_or(HandlerError::PostNotFound(post_id))?;
 
+    let reason = reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
     let fresh = reports
         .add(Report {
             post_id,
             reporter,
             reported_at: Utc::now(),
+            reason: reason.clone(),
         })
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
@@ -68,7 +77,8 @@ where
         .map_err(|_| HandlerError::RepositoryError)?;
     tracing::info!(
         event = %Event::PostReported, post_id = %post_id,
-        reporter = reporter.as_ref(), total_reports, "post reported"
+        reporter = reporter.as_ref(), total_reports,
+        reason = reason.as_deref().unwrap_or("(none)"), "post reported"
     );
 
     let mut reviewers = users
@@ -85,6 +95,7 @@ where
         post,
         reviewers,
         total_reports,
+        reason,
     })
 }
 
@@ -202,6 +213,7 @@ mod tests {
         let outcome = report(
             TelegramId::from(99),
             post_id,
+            Some("  untagged gore  ".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
@@ -211,6 +223,7 @@ mod tests {
         let ReportOutcome::New {
             reviewers,
             total_reports,
+            reason,
             ..
         } = outcome
         else {
@@ -218,10 +231,12 @@ mod tests {
         };
         assert_eq!(reviewers.len(), 1); // the moderator
         assert_eq!(total_reports, 1);
+        assert_eq!(reason.as_deref(), Some("untagged gore")); // trimmed
 
         let again = report(
             TelegramId::from(99),
             post_id,
+            Some("still gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
@@ -237,6 +252,7 @@ mod tests {
         let err = report(
             TelegramId::from(99),
             PostId::from(777),
+            Some("untagged gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
@@ -302,6 +318,7 @@ mod tests {
         report(
             TelegramId::from(99),
             post_id,
+            Some("untagged gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
@@ -314,6 +331,7 @@ mod tests {
         let outcome = report(
             TelegramId::from(99),
             post_id,
+            Some("untagged gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,

@@ -116,17 +116,62 @@ async fn main() -> anyhow::Result<()> {
     let telegram_copies =
         persistence::sqlite::telegram_copy::SqliteTelegramCopyRepository::new(pool.clone());
     let resolver = build_resolver(&config, e621.clone(), telegram_copies.clone())?;
+
+    let main_token = read_secret(&config.token_path())?;
+    let bot = Bot::new(main_token.clone());
+
+    // Publish the command menu so Telegram clients autocomplete them.
+    if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
+        tracing::warn!(error = %e, "set_my_commands failed; menu may be stale");
+    }
+    // The bot's @username feeds the Report deep links in captions.
+    let bot_username = bot
+        .get_me()
+        .await
+        .ok()
+        .and_then(|me| me.username.clone())
+        .unwrap_or_default();
+
+    let posts = SqlitePostRepository::new(pool.clone());
+    let users = SqliteUserRepository::new(pool.clone());
+    let posters = SqlitePosterRepository::new(pool.clone());
+    let publications = SqlitePublicationRepository::new(pool.clone());
+    let spoilers = SqliteSpoilerTagRepository::new(pool.clone());
+    let forbidden = SqliteForbiddenTagRepository::new(pool.clone());
+    let publisher_configs = SqlitePublisherConfigRepository::new(pool.clone());
+    // One publish pipeline shared by the scheduler AND out-of-band publishes
+    // (whole-pool batches) — same publisher cache, same repositories.
+    let publish_deps = SchedulerDeps {
+        posts: Arc::new(posts.clone()),
+        users: Arc::new(users.clone()),
+        posters: Arc::new(posters.clone()),
+        publications: Arc::new(publications.clone()),
+        spoilers: Arc::new(spoilers.clone()),
+        selectors: Arc::new(FeedSelectorFactory {
+            posts: Arc::new(posts.clone()),
+            e621: e621.clone(),
+            forbidden: Arc::new(forbidden.clone()),
+        }),
+        publishers: Arc::new(DbPublisherFactory::new(
+            publisher_configs.clone(),
+            bot.clone(),
+            main_token.clone(),
+        )),
+        resolver: resolver.clone(),
+        bot_username,
+    };
+
     let state = Arc::new(AppState {
-        users: SqliteUserRepository::new(pool.clone()),
-        posts: SqlitePostRepository::new(pool.clone()),
-        posters: SqlitePosterRepository::new(pool.clone()),
-        publisher_configs: SqlitePublisherConfigRepository::new(pool.clone()),
-        forbidden: SqliteForbiddenTagRepository::new(pool.clone()),
+        users,
+        posts,
+        posters,
+        publisher_configs,
+        forbidden,
         required: SqliteRequiredTagRepository::new(pool.clone()),
-        spoilers: SqliteSpoilerTagRepository::new(pool.clone()),
+        spoilers,
         telegram_copies: telegram_copies.clone(),
         reports: SqliteReportRepository::new(pool.clone()),
-        publications: SqlitePublicationRepository::new(pool.clone()),
+        publications,
         announcements: persistence::sqlite::announcement::SqliteAnnouncementRepository::new(
             pool.clone(),
         ),
@@ -134,9 +179,11 @@ async fn main() -> anyhow::Result<()> {
         e621: e621.clone(),
         resolver: resolver.clone(),
         hasher: Arc::new(infra_phash::HttpPerceptualHasher::new(USER_AGENT)),
+        publish_deps: publish_deps.clone(),
         config: config.clone(),
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         pending_moderation: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        pending_reports: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         browse_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
@@ -156,44 +203,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(event = %Event::OwnerSeeded, owner = config.owner_id.as_ref(), "seeded Owner");
     }
 
-    let main_token = read_secret(&config.token_path())?;
-    let bot = Bot::new(main_token.clone());
-
-    // Publish the command menu so Telegram clients autocomplete them.
-    if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
-        tracing::warn!(error = %e, "set_my_commands failed; menu may be stale");
-    }
-    // The bot's @username feeds the Report deep links in captions.
-    let bot_username = bot
-        .get_me()
-        .await
-        .ok()
-        .and_then(|me| me.username.clone())
-        .unwrap_or_default();
-
     // Scheduler, database-first: posters, tags, cursors and channel bindings
     // are read fresh every tick — /newposter, /settags and /setchannel are
     // live within a minute, no restarts.
     tracing::info!(event = %Event::RuntimesLoaded, "scheduler running database-first");
-    tokio::spawn(start_scheduler(SchedulerDeps {
-        posts: Arc::new(state.posts.clone()),
-        users: Arc::new(state.users.clone()),
-        posters: Arc::new(state.posters.clone()),
-        publications: Arc::new(state.publications.clone()),
-        spoilers: Arc::new(state.spoilers.clone()),
-        selectors: Arc::new(FeedSelectorFactory {
-            posts: Arc::new(state.posts.clone()),
-            e621: e621.clone(),
-            forbidden: Arc::new(state.forbidden.clone()),
-        }),
-        publishers: Arc::new(DbPublisherFactory::new(
-            state.publisher_configs.clone(),
-            bot.clone(),
-            main_token.clone(),
-        )),
-        resolver,
-        bot_username,
-    }));
+    tokio::spawn(start_scheduler(publish_deps));
 
     // Announcement cycle (channel directory broadcasts).
     tokio::spawn(announcer::run(state.clone(), bot.clone()));

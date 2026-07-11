@@ -324,6 +324,7 @@ mod tests {
                 mp4_url: None,
                 preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
                 artist_sources: vec![],
+                pools: vec![],
             })
         }
         async fn search(
@@ -331,6 +332,18 @@ mod tests {
             _tags: &[Tag],
             _order: E621Order,
             _page: u32,
+        ) -> Result<Vec<E621PostMetadata>, FetchError> {
+            unimplemented!("not needed by selector tests")
+        }
+        async fn pools(
+            &self,
+            _ids: &[u64],
+        ) -> Result<Vec<domain::elements::e621::E621Pool>, FetchError> {
+            unimplemented!("not needed by selector tests")
+        }
+        async fn pool_posts(
+            &self,
+            _pool: &domain::elements::e621::E621Pool,
         ) -> Result<Vec<E621PostMetadata>, FetchError> {
             unimplemented!("not needed by selector tests")
         }

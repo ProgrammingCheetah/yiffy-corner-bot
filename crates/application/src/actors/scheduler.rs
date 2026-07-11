@@ -6,7 +6,9 @@ use domain::elements::{
     media::MediaResolver,
     post::{Post, PostRepository, PostSelectorStrategy},
     poster::{Poster, PosterRepository},
-    publisher::{Publication, PublicationRepository, PublishItem, Publisher},
+    publisher::{
+        Publication, PublicationRepository, PublishItem, PublishReceipt, Publisher, PublisherError,
+    },
     tag::Tag,
     tag_policy::SpoilerTagRepository,
     user::UserRepository,
@@ -48,6 +50,31 @@ where
     pub resolver: Arc<dyn MediaResolver>,
     /// The bot's @username (without `@`), for the Report deep link.
     pub bot_username: String,
+}
+
+// Manual impl: every field is an Arc (or String), so the deps clone cheaply
+// regardless of whether the repositories themselves are Clone.
+impl<R, U, PR, PB, ST> Clone for SchedulerDeps<R, U, PR, PB, ST>
+where
+    R: PostRepository + Send + Sync,
+    U: UserRepository,
+    PR: PosterRepository,
+    PB: PublicationRepository,
+    ST: SpoilerTagRepository,
+{
+    fn clone(&self) -> Self {
+        Self {
+            posts: self.posts.clone(),
+            users: self.users.clone(),
+            posters: self.posters.clone(),
+            publications: self.publications.clone(),
+            spoilers: self.spoilers.clone(),
+            selectors: self.selectors.clone(),
+            publishers: self.publishers.clone(),
+            resolver: self.resolver.clone(),
+            bot_username: self.bot_username.clone(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -203,6 +230,63 @@ where
     Ok(())
 }
 
+/// Publish one already-resolved entry through `publisher` on behalf of
+/// `poster`: caption → spoiler policy → send → record publication →
+/// mark_posted. The publish tail shared by the scheduler fire and the
+/// out-of-band pool batch (`actors::pool_batch`). Post-send bookkeeping
+/// failures are logged but never returned — the message is already out.
+pub async fn publish_resolved<R, U, PR, PB, ST>(
+    post: &Post,
+    media: domain::elements::media::ResolvedMedia,
+    poster: &Poster,
+    publisher: &dyn Publisher,
+    deps: &SchedulerDeps<R, U, PR, PB, ST>,
+    now: DateTime<Utc>,
+) -> Result<PublishReceipt, PublisherError>
+where
+    R: PostRepository + Send + Sync,
+    R::Err: std::fmt::Display,
+    U: UserRepository,
+    PR: PosterRepository,
+    PB: PublicationRepository,
+    PB::Err: std::fmt::Display,
+    ST: SpoilerTagRepository,
+    ST::Err: std::fmt::Display,
+{
+    let caption = build_caption(post, poster.id, &*deps.users, &deps.bot_username, &media).await;
+    let spoiler = match deps.spoilers.list_all().await {
+        Ok(spoiler_tags) => needs_spoiler(&post.tags, &spoiler_tags),
+        Err(e) => {
+            tracing::warn!(post_id = %post.id, error = %e, "spoiler list read failed; publishing unspoilered");
+            false
+        }
+    };
+    let item = PublishItem {
+        post_id: post.id,
+        media,
+        caption: Some(caption),
+        spoiler,
+    };
+    let receipt = publisher.publish(&item).await?;
+    if let Err(e) = deps
+        .publications
+        .record(Publication {
+            post_id: post.id,
+            chat_id: receipt.chat_id,
+            message_id: receipt.message_id,
+            published_at: now,
+        })
+        .await
+    {
+        // Takedowns for this delivery won't find it; publish itself is done.
+        tracing::error!(event = %Event::PublicationRecordFailed, post_id = %post.id, error = %e, "publication record failed");
+    }
+    if let Err(e) = deps.posts.mark_posted(post.id, now).await {
+        tracing::error!(event = %Event::MarkPostedFailed, post_id = %post.id, error = %e, "mark_posted failed");
+    }
+    Ok(receipt)
+}
+
 /// One consumer's full fire pipeline: resolve destination → scan feed →
 /// resolve media → caption → publish → record publication + advance cursor.
 /// The cursor only advances after a successful publish (or a clean empty
@@ -318,21 +402,7 @@ async fn fire_one<R, U, PR, PB, ST>(
         }
     };
     tracing::debug!(event = %Event::MediaResolved, post_id = %post.id, media = ?media, "media resolved");
-    let caption = build_caption(&post, poster.id, &*deps.users, &deps.bot_username, &media).await;
-    let spoiler = match deps.spoilers.list_all().await {
-        Ok(spoiler_tags) => needs_spoiler(&post.tags, &spoiler_tags),
-        Err(e) => {
-            tracing::warn!(post_id = %post.id, error = %e, "spoiler list read failed; publishing unspoilered");
-            false
-        }
-    };
-    let item = PublishItem {
-        post_id: post.id,
-        media,
-        caption: Some(caption),
-        spoiler,
-    };
-    let receipt = match publisher.publish(&item).await {
+    let receipt = match publish_resolved(&post, media, &poster, &*publisher, deps, now).await {
         Ok(receipt) => receipt,
         Err(e) => {
             tracing::error!(
@@ -342,22 +412,6 @@ async fn fire_one<R, U, PR, PB, ST>(
             return;
         }
     };
-    if let Err(e) = deps
-        .publications
-        .record(Publication {
-            post_id: post.id,
-            chat_id: receipt.chat_id,
-            message_id: receipt.message_id,
-            published_at: now,
-        })
-        .await
-    {
-        // Takedowns for this delivery won't find it; publish itself is done.
-        tracing::error!(event = %Event::PublicationRecordFailed, post_id = %post.id, error = %e, "publication record failed");
-    }
-    if let Err(e) = deps.posts.mark_posted(post.id, now).await {
-        tracing::error!(event = %Event::MarkPostedFailed, post_id = %post.id, error = %e, "mark_posted failed");
-    }
     if let Err(e) = deps.posters.set_cursor(poster.id, advance_to).await {
         // Publish succeeded but the cursor didn't move: the entry may repeat.
         tracing::error!(

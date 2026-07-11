@@ -61,6 +61,7 @@ mod tests {
             post_id: PostId::from(post),
             reporter: TelegramId::from(reporter),
             reported_at: Utc::now(),
+            reason: Some("test reason".to_string()),
         }
     }
 

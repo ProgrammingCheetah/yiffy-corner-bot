@@ -86,6 +86,13 @@ vocabulary! {
         BrowseAlbumFailed => "browse_album_failed",
         PoolSaved => "pool_saved",
 
+        // e621 pools (whole-pool submission)
+        PoolInspected => "pool_inspected",
+        PoolLookupFailed => "pool_lookup_failed",
+        PoolSubmitted => "pool_submitted",
+        PoolPostSkipped => "pool_post_skipped",
+        PoolBatchCompleted => "pool_batch_completed",
+
         // Posters
         PosterCreated => "poster_created",
         PosterTagsChanged => "poster_tags_changed",
@@ -171,6 +178,7 @@ vocabulary! {
         PosterForbiddenTag => "poster_forbidden_tag",
         MissingSubscribedTags => "missing_subscribed_tags",
         ConditionalRule => "conditional_rule",
+        AlreadyCurated => "already_curated",
     }
 }
 

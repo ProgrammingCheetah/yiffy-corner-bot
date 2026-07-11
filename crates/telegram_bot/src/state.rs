@@ -107,6 +107,17 @@ pub struct PendingForward {
     pub channel_username: String,
 }
 
+/// The concrete dependency bundle the scheduler AND the out-of-band pool
+/// batch publish through — one instance, shared, so both paths use the same
+/// publisher cache and repositories.
+pub type PublishDeps = application::actors::scheduler::SchedulerDeps<
+    SqlitePostRepository,
+    SqliteUserRepository,
+    SqlitePosterRepository,
+    SqlitePublicationRepository,
+    SqliteSpoilerTagRepository,
+>;
+
 /// Everything the command handlers need. One `Arc` in dptree deps.
 pub struct AppState {
     pub config: AppConfig,
@@ -128,11 +139,25 @@ pub struct AppState {
     pub resolver: Arc<crate::resolvers::CompositeResolver>,
     /// Perceptual hasher for the duplicate check on submissions.
     pub hasher: Arc<dyn domain::elements::phash::PerceptualHasher>,
+    /// The publish pipeline (same instance the scheduler runs on), for
+    /// out-of-band publishes like whole-pool batches.
+    pub publish_deps: PublishDeps,
     /// Submissions awaiting tags, keyed by submitter Telegram id.
     pub pending: tokio::sync::Mutex<std::collections::HashMap<i64, PendingSubmission>>,
     /// In-flight moderation dialogues, keyed by moderator Telegram id:
     /// their next message completes the action.
     pub pending_moderation: tokio::sync::Mutex<std::collections::HashMap<i64, ModerationDialogue>>,
+    /// Viewer reports awaiting their reason, keyed by reporter Telegram id:
+    /// their next message files the report. The [`Instant`] is when the
+    /// dialogue was armed — after `REPORT_REASON_TIMEOUT` the report files
+    /// without a reason (the Instant tells the timeout task whether the
+    /// entry is still *its* dialogue). In-memory like `pending` — a restart
+    /// just means pressing Report again.
+    ///
+    /// [`Instant`]: std::time::Instant
+    pub pending_reports: tokio::sync::Mutex<
+        std::collections::HashMap<i64, (domain::elements::post::PostId, std::time::Instant)>,
+    >,
     /// Last /browse query per moderator, for the "More ➡" paging button.
     pub browse_sessions: tokio::sync::Mutex<std::collections::HashMap<i64, BrowseSession>>,
 }

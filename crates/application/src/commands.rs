@@ -4,6 +4,7 @@ pub mod browse;
 pub mod manage_poster;
 pub mod moderate;
 pub mod phash_check;
+pub mod pool;
 pub mod post_info;
 pub mod report;
 pub mod scoreboard;

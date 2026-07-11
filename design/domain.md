@@ -124,6 +124,43 @@ feed, consumed BSky-style:
 - The old rules "non-e621 posts have zero tags", "only e621 can be
   re-posted", and "submission queue disjoint from tag pool" are obsolete.
 
+# Amendment: Whole-Pool Submission (2026-07-05)
+
+e621 groups posts into **pools**: `series` (ordered comic pages) and
+`collection` (loose thematic groupings). A post can belong to several pools
+at once, so pools are never auto-added — a human picks.
+
+- **The offer**: when a reviewed e621 submission belongs to ≥1 pool, its
+  moderation DM grows a 📚 button. It opens a chooser listing each pool with
+  its category (📖 series / 🗂 collection), size, and an e621 link for
+  inspection; the moderator picks exactly one (or goes Back).
+- **Staging**: every pool page becomes a curated Post — `Accepted`, staff
+  attribution semantics (no "Submitted by"; `moderated_by` = the acting
+  moderator), and **NO feed position, ever**. Positionless entries are
+  invisible to every consumer's cursor scan, so the batch can't double-post
+  through the timer and the feed invariants stay untouched. The reviewed
+  post itself, if still awaiting moderation and a member of the pool, is
+  adopted into the batch (this IS its approval; it keeps its submitter and
+  the submitter is congratulated as usual).
+- **Skips**: pages already known locally (curated or queued) are left
+  alone; pages owning a globally forbidden tag are refused; pages gone
+  upstream are counted. Staging is idempotent — re-picking a pool resumes
+  after a crash instead of duplicating.
+- **Delivery**: the batch publishes OUT-OF-BAND, immediately, to every
+  Poster whose full eligibility (subscription, forbidden tags, rules)
+  matches the TRIGGERING post — the pool goes wherever the reviewed page
+  would have gone. Within the batch each page still respects a poster's own
+  forbidden tags (channel content policy outranks comic continuity) but not
+  its subscription/rules — per-page interest matching would tear comics
+  apart. Publications are recorded as usual, so channel scoreboards count
+  pool pages; the global /highscore does not (nothing was accepted into the
+  feed, and the pages carry no submitter).
+- **Pacing**: pools of ≤10 pages post all at once; bigger pools go out in
+  groups of 5 with a 30s pause between groups.
+- **Known gap**: positionless pages sit outside the housekeeping sweep's
+  feed window, so they get no pHash backfill (source-URL dedup still
+  applies) — and they're published once, so dead-media revival is moot.
+
 # Open Questions
 
 ## 1. User capabilities around Channels/Posters

@@ -222,6 +222,18 @@ mod tests {
             *self.seen_query.lock().unwrap() = tags.to_vec();
             Ok(self.results.clone())
         }
+        async fn pools(
+            &self,
+            _ids: &[u64],
+        ) -> Result<Vec<domain::elements::e621::E621Pool>, FetchError> {
+            unimplemented!("not needed by browse tests")
+        }
+        async fn pool_posts(
+            &self,
+            _pool: &domain::elements::e621::E621Pool,
+        ) -> Result<Vec<E621PostMetadata>, FetchError> {
+            unimplemented!("not needed by browse tests")
+        }
     }
 
     fn metadata(id: u64, tags: &[&str]) -> E621PostMetadata {
@@ -234,6 +246,7 @@ mod tests {
             file_url: Url::parse("https://static1.e621.net/data/full.png").unwrap(),
             preview_url: Url::parse("https://static1.e621.net/data/preview.png").unwrap(),
             artist_sources: vec![],
+            pools: vec![],
         }
     }
 
