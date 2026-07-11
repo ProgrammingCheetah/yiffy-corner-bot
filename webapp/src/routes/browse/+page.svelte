@@ -5,6 +5,7 @@
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import { get, post } from '$lib/api.js';
   import { loadJson, saveJson } from '$lib/store.js';
+  import { session } from '$lib/browse_session.js';
   import { onMount } from 'svelte';
 
   let pinned = [];
@@ -38,9 +39,12 @@
     saveJson('browse_history', []);
   }
 
-  let query = '';
-  let page = 1;
-  let cards = [];
+  // Restored from the module-level session, so the deck survives
+  // navigating away and back.
+  let query = session.query;
+  let page = session.page;
+  let cards = session.cards;
+  $: Object.assign(session, { query, page, cards });
   let deck;
   let busy = false;
   let toast = '';
