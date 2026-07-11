@@ -1,6 +1,7 @@
 <script>
   // The report desk: every post with open reports — who flagged it, why —
   // with the same Take down / Dismiss resolution the DM buttons offer.
+  import Icon from '$lib/Icon.svelte';
   import Media from '$lib/Media.svelte';
   import { get, post } from '$lib/api.js';
   import { onMount } from 'svelte';
@@ -110,10 +111,10 @@
 
     <div class="row-btns">
       <button class="ghost" on:click={() => peek(card)}>
-        {media[card.post_id] ? 'Hide media' : '👁 Show media'}
+        {media[card.post_id] ? 'Hide media' : 'Show media'}
       </button>
-      <button class="ghost" on:click={() => resolve(card, 'dismiss')}>✅ Dismiss</button>
-      <button class="danger" on:click={() => resolve(card, 'takedown')}>🗑 Take down</button>
+      <button class="ghost" on:click={() => resolve(card, 'dismiss')}><Icon name="check" size={16} /> Dismiss</button>
+      <button class="danger" on:click={() => resolve(card, 'takedown')}><Icon name="trash" size={16} /> Take down</button>
     </div>
   </div>
 {/each}

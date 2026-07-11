@@ -2,6 +2,7 @@
   // The moderation deck. Swipe right = approve, left = reject; the button
   // row adds "accept with tags", "reject with reason" and "request changes",
   // exactly like the DM dialogues.
+  import Icon from '$lib/Icon.svelte';
   import TagInput from '$lib/TagInput.svelte';
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import Modal from '$lib/Modal.svelte';
@@ -79,11 +80,11 @@
 
 {#if cards.length}
   <div class="actions">
-    <button class="round nope" on:click={() => deck.fly(-1)} title="Reject">✖</button>
-    <button class="round reason" on:click={() => { reason = ''; reasonModal = true; }} title="Reject with reason">📝</button>
-    <button class="round changes" on:click={() => { changes = ''; changesModal = true; }} title="Request changes">✏️</button>
-    <button class="round tags" on:click={() => { extraTags = ''; tagModal = true; }} title="Accept with tags">🏷</button>
-    <button class="round like" on:click={() => deck.fly(1)} title="Approve">✔</button>
+    <button class="round nope" on:click={() => deck.fly(-1)} title="Reject"><Icon name="x" /></button>
+    <button class="round reason" on:click={() => { reason = ''; reasonModal = true; }} title="Reject with reason"><Icon name="message" /></button>
+    <button class="round changes" on:click={() => { changes = ''; changesModal = true; }} title="Request changes"><Icon name="pencil" /></button>
+    <button class="round tags" on:click={() => { extraTags = ''; tagModal = true; }} title="Accept with tags"><Icon name="tag" /></button>
+    <button class="round like" on:click={() => deck.fly(1)} title="Approve"><Icon name="check" /></button>
   </div>
 {/if}
 

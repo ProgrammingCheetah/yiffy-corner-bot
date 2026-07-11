@@ -1,5 +1,6 @@
 <script>
   // e621 browsing as a deck: right = save into the feed, left = skip.
+  import Icon from '$lib/Icon.svelte';
   import TagInput from '$lib/TagInput.svelte';
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import { get, post } from '$lib/api.js';
@@ -152,9 +153,9 @@
 
 {#if cards.length}
   <div class="actions">
-    <button class="round nope" on:click={() => deck.fly(-1)} title="Skip for now">✖</button>
-    <button class="round never" on:click={skipForever} title="Never show again">🚫</button>
-    <button class="round like" on:click={() => deck.fly(1)} title="Save to the feed">💾</button>
+    <button class="round nope" on:click={() => deck.fly(-1)} title="Skip for now"><Icon name="x" /></button>
+    <button class="round never" on:click={skipForever} title="Never show again"><Icon name="ban" /></button>
+    <button class="round like" on:click={() => deck.fly(1)} title="Save to the feed"><Icon name="save" /></button>
   </div>
 {/if}
 {#if toast}<div class="toast">{toast}</div>{/if}

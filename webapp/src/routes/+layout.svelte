@@ -1,4 +1,5 @@
 <script>
+  import Icon from '$lib/Icon.svelte';
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -32,17 +33,17 @@
   // The API sends roles in their storage form: "user" | "moderator" | "owner".
   $: role = (me?.role ?? 'user').toLowerCase();
   $: tabs = [
-    { href: '/', label: 'Submit', icon: '➕' },
+    { href: '/', label: 'Submit', icon: 'upload' },
     ...(role === 'moderator' || role === 'owner'
       ? [
-          { href: '/review', label: 'Review', icon: '🔥' },
-          { href: '/browse', label: 'Browse', icon: '🔎' },
-          { href: '/feed', label: 'Feed', icon: '📜' },
-          { href: '/reports', label: 'Reports', icon: '⚠️' }
+          { href: '/review', label: 'Review', icon: 'flame' },
+          { href: '/browse', label: 'Browse', icon: 'search' },
+          { href: '/feed', label: 'Feed', icon: 'scroll' },
+          { href: '/reports', label: 'Reports', icon: 'alert' }
         ]
       : []),
-    ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: '⚙️' }] : []),
-    { href: '/changelog', label: 'News', icon: '✨' }
+    ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: 'settings' }] : []),
+    { href: '/changelog', label: 'News', icon: 'sparkles' }
   ];
 </script>
 
@@ -60,7 +61,7 @@
     {#if showNews}
       <div class="news">
         <button class="news-body" on:click={() => { dismissNews(); goto('/changelog'); }}>
-          ✨ Yiffy Corner {releaseName(changelog[0])} — tap to see what's new
+          <Icon name="sparkles" size={16} /> Yiffy Corner {releaseName(changelog[0])} — tap to see what's new
         </button>
         <button class="news-x" on:click={dismissNews}>✕</button>
       </div>
@@ -69,7 +70,7 @@
     <nav>
       {#each tabs as tab}
         <a href={tab.href} class:active={$page.url.pathname === tab.href}>
-          <span class="icon">{tab.icon}</span>
+          <span class="icon"><Icon name={tab.icon} size={20} /></span>
           <span>{tab.label}</span>
         </a>
       {/each}
