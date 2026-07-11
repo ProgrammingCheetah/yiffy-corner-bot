@@ -2,6 +2,7 @@
 config/vault/
 *.sqlite
 *.sqlite-journal
+*.log
 
 # Build output
 node_modules/
