@@ -101,13 +101,6 @@ impl E621Pool {
     }
 }
 
-/// Sort order for [`E621Fetcher::search`] results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum E621Order {
-    /// Maps to e621's `order:random` query modifier — used by `/browse`.
-    Random,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     #[error("e621 post not found: {0:?}")]
@@ -127,16 +120,11 @@ pub enum FetchError {
 pub trait E621Fetcher: Send + Sync {
     /// Fetch metadata for a single known post.
     async fn fetch(&self, source: &Source) -> Result<E621PostMetadata, FetchError>;
-    /// Search e621 for posts matching `tags` with the given order. `page` is
-    /// 1-indexed; the caller paginates via incrementing `page`. The infra
-    /// impl is responsible for injecting REQUIRED tags and excluding
-    /// FORBIDDEN tags into the underlying query string.
-    async fn search(
-        &self,
-        tags: &[Tag],
-        order: E621Order,
-        page: u32,
-    ) -> Result<Vec<E621PostMetadata>, FetchError>;
+    /// Search e621 for posts matching `tags`. Ordering belongs to the query
+    /// itself — `order:…` modifiers ride along as ordinary tags, and without
+    /// one e621's default (newest first) applies. `page` is 1-indexed; the
+    /// caller paginates via incrementing `page`.
+    async fn search(&self, tags: &[Tag], page: u32) -> Result<Vec<E621PostMetadata>, FetchError>;
     /// Metadata for the given pool ids. Unknown ids are simply absent from
     /// the result; the order follows e621's listing, not the input.
     async fn pools(&self, ids: &[u64]) -> Result<Vec<E621Pool>, FetchError>;

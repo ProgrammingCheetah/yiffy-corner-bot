@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     use async_trait::async_trait;
-    use domain::elements::e621::{E621Order, E621PoolCategory, E621PostMetadata, FetchError};
+    use domain::elements::e621::{E621PoolCategory, E621PostMetadata, FetchError};
     use persistence::in_memory::{
         post::InMemoryPostRepository, tag_policy::InMemoryForbiddenTagRepository,
         user::InMemoryUserRepository,
@@ -257,7 +257,6 @@ mod tests {
         async fn search(
             &self,
             _tags: &[Tag],
-            _order: E621Order,
             _page: u32,
         ) -> Result<Vec<E621PostMetadata>, FetchError> {
             unimplemented!("not needed by pool tests")

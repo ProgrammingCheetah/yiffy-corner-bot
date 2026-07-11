@@ -254,7 +254,7 @@ mod tests {
 
     use async_trait::async_trait;
     use domain::elements::{
-        e621::{E621Order, E621PostMetadata, FetchError},
+        e621::{E621PostMetadata, FetchError},
         tag::Tag,
     };
     use persistence::in_memory::{
@@ -286,7 +286,6 @@ mod tests {
         async fn search(
             &self,
             _tags: &[Tag],
-            _order: E621Order,
             _page: u32,
         ) -> Result<Vec<E621PostMetadata>, FetchError> {
             unimplemented!("not needed by suggest tests")

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use domain::elements::{
-    e621::{E621Fetcher, E621Order, E621Pool, E621PoolCategory, E621PostMetadata, FetchError},
+    e621::{E621Fetcher, E621Pool, E621PoolCategory, E621PostMetadata, FetchError},
     media::{MediaResolveError, MediaResolver, ResolvedMedia},
     post::Source,
     tag::Tag,
@@ -147,25 +147,14 @@ impl E621Fetcher for RateLimitedE621Client {
         metadata_from_raw(wrapper.post)
     }
 
-    async fn search(
-        &self,
-        tags: &[Tag],
-        order: E621Order,
-        page: u32,
-    ) -> Result<Vec<E621PostMetadata>, FetchError> {
-        let mut tag_query = tags
+    async fn search(&self, tags: &[Tag], page: u32) -> Result<Vec<E621PostMetadata>, FetchError> {
+        // Ordering is the caller's business: an `order:…` modifier arrives
+        // as an ordinary tag, and none means e621's newest-first default.
+        let tag_query = tags
             .iter()
             .map(|t| t.as_ref().to_string())
             .collect::<Vec<_>>()
             .join("+");
-        match order {
-            E621Order::Random => {
-                if !tag_query.is_empty() {
-                    tag_query.push('+');
-                }
-                tag_query.push_str("order:random");
-            }
-        }
         let url = Url::parse(&format!(
             "{E621_BASE}/posts.json?tags={tag_query}&page={page}&limit=20"
         ))
@@ -601,8 +590,11 @@ mod live_tests {
         let client = RateLimitedE621Client::new(UA).unwrap();
         let results = client
             .search(
-                &[Tag::from("canine"), Tag::from("rating:s")],
-                E621Order::Random,
+                &[
+                    Tag::from("canine"),
+                    Tag::from("rating:s"),
+                    Tag::from("order:random"),
+                ],
                 1,
             )
             .await

@@ -293,7 +293,7 @@ mod tests {
     use chrono::Utc;
     use domain::elements::{
         cadence::PostInterval,
-        e621::{E621Order, E621PostMetadata, FetchError},
+        e621::{E621PostMetadata, FetchError},
         poster::PosterId,
         user::UserId,
     };
@@ -330,7 +330,6 @@ mod tests {
         async fn search(
             &self,
             _tags: &[Tag],
-            _order: E621Order,
             _page: u32,
         ) -> Result<Vec<E621PostMetadata>, FetchError> {
             unimplemented!("not needed by selector tests")

@@ -1,14 +1,15 @@
 //! `/browse` — Moderator+ curation from e621 into the saved pool.
 //!
-//! `search` pulls a page of random e621 posts for the given tags (with the
+//! `search` pulls a page of e621 posts for the given query (with the
 //! global REQUIRED tags injected and globally forbidden posts filtered out)
-//! so the admin can pick. `save` then stores a chosen source as an
+//! so the admin can pick. Ordering is the admin's choice: `order:…`
+//! modifiers travel in the query like any tag; none means newest first. `save` then stores a chosen source as an
 //! admin-added Post: auto-`Accepted`, no submitter — this is the pool
 //! Posters draw tag-based picks from (disjoint from user submissions).
 
 use chrono::Utc;
 use domain::elements::{
-    e621::{E621Fetcher, E621Order, E621PostMetadata},
+    e621::{E621Fetcher, E621PostMetadata},
     post::{Post, PostRepository, PostStatus, Source},
     tag::Tag,
     tag_policy::{ForbiddenTagRepository, RequiredTagRepository},
@@ -56,7 +57,7 @@ where
 
     tracing::debug!(event = %Event::BrowseQueried, query = ?query, page = cmd.page, "browse: querying e621");
     let results = e621
-        .search(&query, E621Order::Random, cmd.page)
+        .search(&query, cmd.page)
         .await
         .map_err(|e| HandlerError::Fetch(e.to_string()))?;
 
@@ -216,7 +217,6 @@ mod tests {
         async fn search(
             &self,
             tags: &[Tag],
-            _order: E621Order,
             _page: u32,
         ) -> Result<Vec<E621PostMetadata>, FetchError> {
             *self.seen_query.lock().unwrap() = tags.to_vec();
