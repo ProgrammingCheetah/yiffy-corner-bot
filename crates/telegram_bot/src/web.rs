@@ -443,6 +443,66 @@ async fn feed_after(
     })))
 }
 
+/// One poster's profile: config (raw + pretty), binding, backlog, and
+/// publish stats for its bound chat.
+async fn poster_profile(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<u64>,
+) -> ApiResult {
+    use domain::elements::publisher::PublicationRepository as _;
+    use domain::elements::tag_rule::TagTerm;
+
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Owner)?;
+    let poster = state
+        .app
+        .posters
+        .find_by_id(PosterId::from(id))
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such poster"))?;
+    let config = state
+        .app
+        .publisher_configs
+        .find_by_poster(poster.id)
+        .await
+        .ok()
+        .flatten();
+    let feed_end = state
+        .app
+        .posts
+        .feed_end()
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let (published, last_published) = match config.as_ref() {
+        Some(config) => state
+            .app
+            .publications
+            .chat_stats(config.chat_id)
+            .await
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?,
+        None => (0, None),
+    };
+    Ok(Json(json!({
+        "id": poster.id.as_ref(),
+        "interval": poster.time_interval.as_ref(),
+        "cursor": poster.cursor,
+        "feed_end": feed_end,
+        "behind": feed_end.saturating_sub(poster.cursor),
+        "chat_id": config.as_ref().map(|c| c.chat_id),
+        "announcements": config.as_ref().map(|c| c.receive_announcements),
+        "subscribed": poster.subscribed_tags.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "subscribed_pretty": TagTerm::describe_list(&poster.subscribed_tags),
+        "forbidden": tags_json(&poster.forbidden_tags),
+        "rules": poster.rules.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "rules_pretty": poster.rules.iter().map(|r| r.describe()).collect::<Vec<_>>(),
+        "summary": poster_summary(&state.app, &poster, "").await,
+        "published": published,
+        "last_published": last_published.map(|at| at.to_rfc3339()),
+    })))
+}
+
 #[derive(Deserialize)]
 struct QueuePageParams {
     /// Resume position from the previous page's `next_after`.
@@ -1436,6 +1496,7 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/feed/queue", get(feed_queue))
         .route("/feed/after/{token}", get(feed_after))
         .route("/posters/{id}/queue", get(poster_queue))
+        .route("/posters/{id}/profile", get(poster_profile))
         .route("/posts/{id}", axum::routing::delete(delete_post))
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))

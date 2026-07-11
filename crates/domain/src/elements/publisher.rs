@@ -66,4 +66,10 @@ pub trait PublicationRepository: Send + Sync {
     async fn list_for(&self, post_id: PostId) -> Result<Vec<Publication>, Self::Err>;
     /// Everything ever published to one chat — the channel-scoreboard corpus.
     async fn list_for_chat(&self, chat_id: i64) -> Result<Vec<Publication>, Self::Err>;
+    /// (publication count, most recent published_at) for one chat — the
+    /// poster-profile stats, without loading the whole corpus.
+    async fn chat_stats(
+        &self,
+        chat_id: i64,
+    ) -> Result<(u64, Option<chrono::DateTime<chrono::Utc>>), Self::Err>;
 }

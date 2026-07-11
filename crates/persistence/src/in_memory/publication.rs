@@ -46,6 +46,21 @@ impl PublicationRepository for InMemoryPublicationRepository {
             .cloned()
             .collect())
     }
+
+    async fn chat_stats(
+        &self,
+        chat_id: i64,
+    ) -> Result<(u64, Option<chrono::DateTime<chrono::Utc>>), Self::Err> {
+        let publications = self.publications.read().await;
+        let mine: Vec<_> = publications
+            .iter()
+            .filter(|p| p.chat_id == chat_id)
+            .collect();
+        Ok((
+            mine.len() as u64,
+            mine.iter().map(|p| p.published_at).max(),
+        ))
+    }
 }
 
 #[cfg(test)]

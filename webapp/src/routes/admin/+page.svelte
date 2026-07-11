@@ -71,35 +71,12 @@
     <button on:click={() => run(post('/posters', np), loadPosters)}>Create & bind</button>
   </div>
   {#each posters as p (p.id)}
-    <div class="card">
-      <pre class="summary">{p.summary}</pre>
-      <label>Tags <input bind:value={edits[p.id].tags} /></label>
-      {#if p.subscribed_pretty}
-        <p class="pretty">wants: {p.subscribed_pretty}</p>
-      {/if}
-      <label>Rules <input bind:value={edits[p.id].rules} placeholder="[if…]->[then…] …" /></label>
-      {#if p.rules_pretty?.length}
-        {#each p.rules_pretty as rule}
-          <p class="pretty">rule: {rule}</p>
-        {/each}
-      {/if}
-      <div class="grid">
-        <label>Interval <input type="number" min="1" max="60" bind:value={edits[p.id].interval} /></label>
-        <label>Chat <input bind:value={edits[p.id].chat} /></label>
-      </div>
-      <div class="row-btns">
-        <button on:click={() => run(patch(`/posters/${p.id}`, {
-          tags: edits[p.id].tags,
-          rules: edits[p.id].rules,
-          interval: Number(edits[p.id].interval),
-          chat: String(edits[p.id].chat)
-        }), loadPosters)}>Save</button>
-        <button class="ghost" on:click={() => run(patch(`/posters/${p.id}`, { announcements: !(p.announcements ?? true) }), loadPosters)}>
-          {p.announcements === false ? '🔔 Unmute announcements' : '🔕 Mute announcements'}
-        </button>
-        <button class="danger" on:click={() => confirm(`Delete poster #${p.id}?`) && run(del(`/posters/${p.id}`), loadPosters)}>Delete</button>
-      </div>
-    </div>
+    <button class="card urow" on:click={() => goto(`/admin/poster/${p.id}`)}>
+      <span class="uname">Poster #{p.id}</span>
+      <span class="muted uid">{p.chat_id ?? 'unbound'} · {p.interval}m</span>
+      {#if p.announcements === false}<span class="chip">🔕</span>{/if}
+      <span class="chev">›</span>
+    </button>
   {/each}
 {:else if section === 'tags'}
   <div class="card">

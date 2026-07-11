@@ -53,6 +53,24 @@ impl PublicationRepository for SqlitePublicationRepository {
             .map_err(|e| PublicationRepositoryError::Storage(e.to_string()))?;
         Ok(rows.iter().map(row_to_publication).collect())
     }
+
+    async fn chat_stats(
+        &self,
+        chat_id: i64,
+    ) -> Result<(u64, Option<chrono::DateTime<chrono::Utc>>), Self::Err> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n, MAX(published_at) AS last
+             FROM publications WHERE chat_id = ?",
+        )
+        .bind(chat_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| PublicationRepositoryError::Storage(e.to_string()))?;
+        Ok((
+            row.get::<i64, _>("n") as u64,
+            row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("last"),
+        ))
+    }
 }
 
 fn row_to_publication(row: &sqlx::sqlite::SqliteRow) -> Publication {
