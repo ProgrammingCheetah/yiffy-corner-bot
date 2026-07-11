@@ -1,128 +1,74 @@
 <script>
-  // Submit: paste a link → live preview (media, dup check, e621 tags) →
-  // confirm. Non-e621 sources demand tags; artist:<name> credits artists.
-  import TagInput from '$lib/TagInput.svelte';
-  import Media from '$lib/Media.svelte';
-  import { post } from '$lib/api.js';
+  // Home: the front door. The bottom nav keeps only the daily drivers;
+  // everything else lives here as role-gated section cards.
+  import Icon from '$lib/Icon.svelte';
+  import { get } from '$lib/api.js';
+  import { changelog, releaseName } from '$lib/changelog.js';
+  import { onMount } from 'svelte';
 
-  let url = '';
-  let preview = null;
-  let tags = '';
-  let busy = false;
-  let message = '';
-  let error = '';
+  let me = null;
+  onMount(async () => {
+    try { me = await get('/me'); } catch { /* layout shows the boot error */ }
+  });
 
-  async function resolve() {
-    error = message = '';
-    preview = null;
-    if (!url.trim()) return;
-    busy = true;
-    try {
-      preview = await post('/resolve', { url: url.trim() });
-    } catch (e) {
-      error = e.message;
-    }
-    busy = false;
-  }
-
-  async function send() {
-    error = message = '';
-    busy = true;
-    try {
-      const res = await post('/suggest', {
-        url: url.trim(),
-        tags: tags.split(/\s+/).filter(Boolean)
-      });
-      message = res.message;
-      preview = null;
-      url = tags = '';
-    } catch (e) {
-      error = e.message;
-    }
-    busy = false;
-  }
+  $: role = (me?.role ?? 'user').toLowerCase();
+  $: cards = [
+    { href: '/submit', icon: 'upload', title: 'Submit', blurb: 'Suggest art for the channels' },
+    ...(role === 'moderator' || role === 'owner'
+      ? [
+          { href: '/review', icon: 'flame', title: 'Review', blurb: 'The moderation deck' },
+          { href: '/browse', icon: 'search', title: 'Browse', blurb: 'Curate straight from e621' },
+          { href: '/feed', icon: 'scroll', title: 'Feed', blurb: 'Poster cursors & queues' },
+          { href: '/reports', icon: 'alert', title: 'Reports', blurb: 'Open reports, who & why' }
+        ]
+      : []),
+    ...(role === 'owner'
+      ? [{ href: '/admin', icon: 'settings', title: 'Admin', blurb: 'Posters, tags, users' }]
+      : []),
+    { href: '/changelog', icon: 'sparkles', title: "What's new", blurb: releaseName(changelog[0]) }
+  ];
 </script>
 
-<h2>Submit art</h2>
-<p class="muted">e621 · FurAffinity · Twitter/X · BlueSky · DeviantArt · t.me</p>
+<h2>Yiffy Corner</h2>
+<p class="muted">
+  {#if me}Hey {me.name ?? 'there'} — {role}.{:else}Loading…{/if}
+</p>
 
-<div class="row">
-  <input placeholder="https://…" bind:value={url} on:change={resolve} />
-  <button on:click={resolve} disabled={busy}>Preview</button>
+<div class="grid">
+  {#each cards as card (card.href)}
+    <a class="tile" href={card.href}>
+      <span class="ic"><Icon name={card.icon} size={22} /></span>
+      <strong>{card.title}</strong>
+      <span class="muted blurb">{card.blurb}</span>
+    </a>
+  {/each}
 </div>
-
-{#if error}<p class="err">{error}</p>{/if}
-{#if message}<p class="ok">{message}</p>{/if}
-
-{#if preview}
-  <div class="preview">
-    <div class="pane"><Media media={preview.media} /></div>
-    {#if preview.duplicate_of}
-      <p class="err">Already in the system as post #{preview.duplicate_of}.</p>
-    {:else}
-      {#if preview.tags.length}
-        <div>{#each preview.tags.slice(0, 20) as t}<span class="chip">{t}</span>{/each}</div>
-      {/if}
-      {#if preview.artists.length}
-        <p class="muted">by {preview.artists.join(', ')}</p>
-      {/if}
-      {#if preview.needs_tags}
-        <label>
-          Tags (required) — credit with <code>artist:&lt;name&gt;</code>
-          <TagInput placeholder="wolf male solo artist:coolwolf" bind:value={tags} />
-        </label>
-      {:else}
-        <label>
-          Extra tags (optional)
-          <TagInput placeholder="extra tags…" bind:value={tags} />
-        </label>
-      {/if}
-      <button
-        class="confirm"
-        disabled={busy || (preview.needs_tags && !tags.trim())}
-        on:click={send}
-      >
-        ✅ Looks right — submit it
-      </button>
-    {/if}
-  </div>
-{/if}
 
 <style>
   h2 { margin-bottom: 2px; }
-  .row { display: flex; gap: 8px; margin: 14px 0; }
-  .preview {
-    display: flex;
-    flex-direction: column;
+  p { margin-bottom: 16px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 10px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: 12px;
-    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.25);
-    animation: pop 0.22s ease;
   }
-  @keyframes pop {
-    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  .tile {
+    display: flex; flex-direction: column; gap: 4px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 16px; padding: 14px;
+    text-decoration: none; color: inherit;
+    box-shadow: 0 3px 14px rgba(0, 0, 0, 0.18);
+    transition: transform 0.12s ease, border-color 0.15s ease;
   }
-  .pane { height: 42dvh; }
-  .confirm { padding: 14px; font-size: 1rem; }
-  .err,
-  .ok {
-    margin: 8px 0;
-    padding: 10px 14px;
-    border-radius: 12px;
-    font-size: 0.9rem;
+  .tile:active {
+    transform: scale(0.97);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   }
-  .err {
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.12);
-    border: 1px solid rgba(248, 113, 113, 0.35);
+  .ic {
+    color: var(--accent);
+    width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-radius: 12px; margin-bottom: 4px;
   }
-  .ok {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.12);
-    border: 1px solid rgba(74, 222, 128, 0.35);
-  }
-  label { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; }
+  .blurb { font-size: 0.78rem; line-height: 1.35; }
 </style>

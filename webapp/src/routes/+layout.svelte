@@ -32,18 +32,16 @@
 
   // The API sends roles in their storage form: "user" | "moderator" | "owner".
   $: role = (me?.role ?? 'user').toLowerCase();
+  // Daily drivers only — everything else is a card on the homepage.
   $: tabs = [
-    { href: '/', label: 'Submit', icon: 'upload' },
+    { href: '/', label: 'Home', icon: 'home' },
+    { href: '/submit', label: 'Submit', icon: 'upload' },
     ...(role === 'moderator' || role === 'owner'
       ? [
           { href: '/review', label: 'Review', icon: 'flame' },
-          { href: '/browse', label: 'Browse', icon: 'search' },
-          { href: '/feed', label: 'Feed', icon: 'scroll' },
-          { href: '/reports', label: 'Reports', icon: 'alert' }
+          { href: '/browse', label: 'Browse', icon: 'search' }
         ]
-      : []),
-    ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: 'settings' }] : []),
-    { href: '/changelog', label: 'News', icon: 'sparkles' }
+      : [])
   ];
 </script>
 
