@@ -6,6 +6,8 @@
   import { get, post } from '$lib/api.js';
   import { loadJson, saveJson } from '$lib/store.js';
   import { session } from '$lib/browse_session.js';
+  import { goto } from '$app/navigation';
+  import { page as route } from '$app/stores';
   import { onMount } from 'svelte';
 
   let pinned = [];
@@ -13,6 +15,12 @@
   onMount(async () => {
     pinned = await loadJson('browse_pinned', []);
     history = await loadJson('browse_history', []);
+    // A query handed over from the Saved/History page: fill and run it.
+    const handed = $route.url.searchParams.get('q');
+    if (handed && handed !== query) {
+      query = handed;
+      search(true);
+    }
   });
 
   $: isPinned = pinned.includes(query.trim());
@@ -22,21 +30,9 @@
     pinned = isPinned ? pinned.filter((p) => p !== q) : [q, ...pinned];
     saveJson('browse_pinned', pinned);
   }
-  function unpin(q) {
-    pinned = pinned.filter((p) => p !== q);
-    saveJson('browse_pinned', pinned);
-  }
   function remember(q) {
     history = [q, ...history.filter((h) => h !== q)].slice(0, 15);
     saveJson('browse_history', history);
-  }
-  function runChip(q) {
-    query = q;
-    search(true);
-  }
-  function clearHistory() {
-    history = [];
-    saveJson('browse_history', []);
   }
 
   // Restored from the module-level session, so the deck survives
@@ -117,32 +113,14 @@
 <h2>Browse e621</h2>
 <div class="row">
   <TagInput placeholder="wolf male -young …" bind:value={query} on:change={() => search(true)} />
-  <button class="pin" class:on={isPinned} title="Pin this query" on:click={togglePin}>
-    {isPinned ? '📌' : '📍'}
+  <button class="pin" class:on={isPinned} title={isPinned ? 'Unpin this query' : 'Pin this query'} on:click={togglePin}>
+    <Icon name="pin" size={18} />
+  </button>
+  <button class="pin" title="Saved & history" on:click={() => goto('/browse/queries')}>
+    <Icon name="clock" size={18} />
   </button>
   <button on:click={() => search(true)} disabled={busy}>Go</button>
 </div>
-
-{#if pinned.length}
-  <div class="qrow">
-    <span class="lbl">📌</span>
-    {#each pinned as q (q)}
-      <span class="qchip">
-        <button class="bare" on:click={() => runChip(q)}>{q}</button>
-        <button class="bare x" title="Unpin" on:click={() => unpin(q)}>✕</button>
-      </span>
-    {/each}
-  </div>
-{/if}
-{#if history.filter((h) => !pinned.includes(h)).length}
-  <div class="qrow">
-    <span class="lbl">🕘</span>
-    {#each history.filter((h) => !pinned.includes(h)) as q (q)}
-      <button class="qchip" on:click={() => runChip(q)}>{q}</button>
-    {/each}
-    <button class="bare clear" on:click={clearHistory}>clear</button>
-  </div>
-{/if}
 
 <SwipeDeck
   bind:this={deck}
@@ -176,21 +154,8 @@
 <style>
   h2 { margin-bottom: 8px; }
   .row { display: flex; gap: 8px; margin-bottom: 12px; }
-  .pin { background: transparent; padding: 6px 8px; font-size: 1.05rem; filter: grayscale(1); }
-  .pin.on { filter: none; }
-  .qrow {
-    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
-    margin: -4px 0 10px;
-  }
-  .lbl { font-size: 0.85rem; }
-  .qchip {
-    display: inline-flex; align-items: center; gap: 6px;
-    background: var(--tg-theme-secondary-bg-color, #232e3c);
-    color: inherit; padding: 4px 11px; border-radius: 999px; font-size: 0.78rem;
-  }
-  .bare { background: transparent; padding: 0; color: inherit; font-size: inherit; }
-  .bare.x { color: #f87171; }
-  .bare.clear { color: var(--tg-theme-hint-color, #7d8b99); font-size: 0.75rem; margin-left: 4px; }
+  .pin { background: transparent; padding: 6px 8px; color: var(--hint); }
+  .pin.on { color: var(--accent); }
   .round.like { color: #4ade80; }
   .round.nope { color: #f87171; }
 </style>
