@@ -11,6 +11,7 @@ use chrono::Utc;
 use domain::elements::{
     e621::{E621Fetcher, E621PostMetadata},
     post::{Post, PostRepository, PostStatus, Source},
+    skiplist::SkipListRepository,
     tag::Tag,
     tag_policy::{ForbiddenTagRepository, RequiredTagRepository},
     user::{Role, TelegramId, UserRepository},
@@ -29,17 +30,21 @@ pub struct BrowseCommand {
     pub page: u32,
 }
 
-pub async fn search<E, F, R>(
+pub async fn search<E, F, R, P, S>(
     cmd: BrowseCommand,
     users: &impl UserRepository,
     e621: &E,
     forbidden: &F,
     required: &R,
+    posts: &P,
+    skips: &S,
 ) -> HandlerResult<Vec<E621PostMetadata>>
 where
     E: E621Fetcher,
     F: ForbiddenTagRepository,
     R: RequiredTagRepository,
+    P: PostRepository,
+    S: SkipListRepository,
 {
     require_role(users, cmd.actor, Role::Moderator).await?;
 
@@ -61,8 +66,11 @@ where
         .await
         .map_err(|e| HandlerError::Fetch(e.to_string()))?;
 
-    // Never show posts that own a globally forbidden tag.
+    // Never show posts that own a globally forbidden tag — and hide what
+    // the system already knows: curated/queued sources (dedupe) and
+    // explicitly skipped ones (the skiplist verdict).
     let mut clean = Vec::with_capacity(results.len());
+    let mut dropped = 0usize;
     for metadata in results {
         let mut hit = false;
         for tag in &metadata.tags {
@@ -75,11 +83,33 @@ where
                 break;
             }
         }
+        if !hit
+            && posts
+                .find_by_source(&metadata.source)
+                .await
+                .map_err(|_| HandlerError::RepositoryError)?
+                .is_some()
+        {
+            hit = true;
+            dropped += 1;
+        }
+        if !hit
+            && skips
+                .contains(&metadata.source)
+                .await
+                .map_err(|_| HandlerError::RepositoryError)?
+        {
+            hit = true;
+            dropped += 1;
+        }
         if !hit {
             clean.push(metadata);
         }
     }
-    tracing::info!(event = %Event::BrowseResults, results = clean.len(), "browse results (after forbidden filter)");
+    tracing::info!(
+        event = %Event::BrowseResults, results = clean.len(), already_known = dropped,
+        "browse results (after forbidden/dedupe/skiplist filters)"
+    );
     Ok(clean)
 }
 
@@ -192,6 +222,32 @@ where
     Ok(SaveOutcome::Added(post))
 }
 
+/// Remember a browse result as skipped: this source is not for us, and
+/// browse must never show it again. The verdict a human takes where dedupe
+/// can't (video re-uploads have no pHash).
+pub async fn skip<S>(
+    actor: TelegramId,
+    url: Url,
+    users: &impl UserRepository,
+    skips: &S,
+) -> HandlerResult<Source>
+where
+    S: SkipListRepository,
+{
+    require_role(users, actor, Role::Moderator).await?;
+    let source =
+        Source::try_from(url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
+    skips
+        .add(&source, actor, Utc::now())
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::BrowseSkipped, source = %source.as_ref(),
+        by = actor.as_ref(), "browse result skipped for good"
+    );
+    Ok(source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +256,7 @@ mod tests {
     use domain::elements::e621::FetchError;
     use persistence::in_memory::{
         post::InMemoryPostRepository,
+        skiplist::InMemorySkipListRepository,
         tag_policy::{InMemoryForbiddenTagRepository, InMemoryRequiredTagRepository},
         user::InMemoryUserRepository,
     };
@@ -255,6 +312,7 @@ mod tests {
         posts: InMemoryPostRepository,
         forbidden: InMemoryForbiddenTagRepository,
         required: InMemoryRequiredTagRepository,
+        skips: InMemorySkipListRepository,
     }
 
     async fn fixture() -> Fixture {
@@ -272,6 +330,7 @@ mod tests {
             posts: InMemoryPostRepository::new(),
             forbidden: InMemoryForbiddenTagRepository::new(),
             required: InMemoryRequiredTagRepository::new(),
+            skips: InMemorySkipListRepository::new(),
         }
     }
 
@@ -298,6 +357,8 @@ mod tests {
             &fetcher,
             &fx.forbidden,
             &fx.required,
+            &fx.posts,
+            &fx.skips,
         )
         .await
         .unwrap();
@@ -327,10 +388,87 @@ mod tests {
             &fetcher,
             &fx.forbidden,
             &fx.required,
+            &fx.posts,
+            &fx.skips,
         )
         .await
         .unwrap_err();
         assert!(matches!(err, HandlerError::NotAuthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn search_hides_known_and_skipped_sources() {
+        use domain::elements::skiplist::SkipListRepository as _;
+
+        let fx = fixture().await;
+        // Post 1 is already curated; post 2 was skipped for good.
+        fx.posts
+            .create(
+                Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
+                vec![],
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
+            .await
+            .unwrap();
+        fx.skips
+            .add(
+                &Source::try_from(Url::parse("https://e621.net/posts/2").unwrap()).unwrap(),
+                TelegramId::from(1),
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+
+        let fetcher = RecordingFetcher {
+            results: vec![
+                metadata(1, &["wolf"]),
+                metadata(2, &["wolf"]),
+                metadata(3, &["wolf"]),
+            ],
+            seen_query: std::sync::Mutex::new(vec![]),
+        };
+        let results = search(
+            BrowseCommand {
+                actor: TelegramId::from(1),
+                tags: vec![Tag::from("wolf")],
+                page: 1,
+            },
+            &fx.users,
+            &fetcher,
+            &fx.forbidden,
+            &fx.required,
+            &fx.posts,
+            &fx.skips,
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].source.as_ref().as_str(),
+            "https://e621.net/posts/3"
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_records_the_verdict_and_needs_moderator() {
+        use domain::elements::skiplist::SkipListRepository as _;
+
+        let fx = fixture().await;
+        let url = Url::parse("https://e621.net/posts/5").unwrap();
+        let source = skip(TelegramId::from(1), url.clone(), &fx.users, &fx.skips)
+            .await
+            .unwrap();
+        assert!(fx.skips.contains(&source).await.unwrap());
+
+        assert!(matches!(
+            skip(TelegramId::from(2), url, &fx.users, &fx.skips)
+                .await
+                .unwrap_err(),
+            HandlerError::NotAuthorized(_)
+        ));
     }
 
     fn stub_fetcher() -> RecordingFetcher {

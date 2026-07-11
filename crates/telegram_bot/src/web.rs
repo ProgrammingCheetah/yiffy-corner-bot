@@ -581,6 +581,8 @@ async fn browse_e621(
         &*state.app.e621,
         &state.app.forbidden,
         &state.app.required,
+        &state.app.posts,
+        &state.app.skips,
     )
     .await
     .map_err(bad_request)?;
@@ -599,6 +601,29 @@ async fn browse_e621(
         })
         .collect();
     Ok(Json(json!({ "cards": cards, "page": params.page })))
+}
+
+#[derive(Deserialize)]
+struct SkipBody {
+    url: String,
+}
+
+/// Skip a browse result for good: dedupe can't catch video re-uploads, so
+/// the verdict is remembered and browse never shows the source again.
+async fn skip_post(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(body): Json<SkipBody>,
+) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let url = Url::parse(&body.url).map_err(bad_request)?;
+    let source = browse::skip(authed.user.telegram_id, url, &state.app.users, &state.app.skips)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({
+        "message": format!("Skipped for good — {} won't show in browse again.", source.as_ref())
+    })))
 }
 
 #[derive(Deserialize)]
@@ -1194,6 +1219,7 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/feed/after/{token}", get(feed_after))
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
+        .route("/browse/skip", post(skip_post))
         .route("/resolve", post(resolve_preview))
         .route("/suggest", post(suggest_post))
         .route("/eligibility", post(eligibility))

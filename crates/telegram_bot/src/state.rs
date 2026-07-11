@@ -17,6 +17,7 @@ use persistence::sqlite::{
     tag_policy::{
         SqliteForbiddenTagRepository, SqliteRequiredTagRepository, SqliteSpoilerTagRepository,
     },
+    skiplist::SqliteSkipListRepository,
     telegram_copy::SqliteTelegramCopyRepository,
     user::SqliteUserRepository,
 };
@@ -130,6 +131,8 @@ pub struct AppState {
     pub spoilers: SqliteSpoilerTagRepository,
     pub telegram_copies: SqliteTelegramCopyRepository,
     pub reports: SqliteReportRepository,
+    /// Browse skiplist: sources moderators waved off for good.
+    pub skips: SqliteSkipListRepository,
     pub publications: SqlitePublicationRepository,
     pub announcements: SqliteAnnouncementRepository,
     pub scoreboards: SqliteScoreboardRepository,

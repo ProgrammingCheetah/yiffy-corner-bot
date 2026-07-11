@@ -1564,7 +1564,13 @@ fn browse_keyboard(
             InlineKeyboardButton::url("Check e621 Src", e621_url.clone()),
             InlineKeyboardButton::url("Check src", src),
         ],
-        vec![InlineKeyboardButton::callback("Erase", "browse:erase")],
+        vec![
+            InlineKeyboardButton::callback("Erase", "browse:erase"),
+            // Erase forgets; Skip remembers — the source never shows in
+            // browse again (the human verdict where pHash can't reach,
+            // e.g. video re-uploads).
+            InlineKeyboardButton::callback("⏭ Skip forever", format!("browse:skip:{e621_id}")),
+        ],
     ])
 }
 
@@ -1672,6 +1678,8 @@ async fn send_browse_page(
         &*state.e621,
         &state.forbidden,
         &state.required,
+        &state.posts,
+        &state.skips,
     )
     .await
     {
@@ -3253,6 +3261,34 @@ pub async fn handle_callback(
             if let Some(message) = query.message.as_ref() {
                 let _ = bot.delete_message(message.chat().id, message.id()).await;
             }
+        }
+        // Skip = remembered: the source goes on the skiplist so browse
+        // never resurfaces it, then the preview disappears like Erase.
+        ["browse", "skip", id] => {
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            let toast = match id
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| Url::parse(&format!("https://e621.net/posts/{id}")).ok())
+            {
+                None => "Malformed callback.".to_string(),
+                Some(url) => {
+                    match browse::skip(actor, url, &state.users, &state.skips).await {
+                        Ok(_) => {
+                            if let Some(message) = query.message.as_ref() {
+                                let _ =
+                                    bot.delete_message(message.chat().id, message.id()).await;
+                            }
+                            "Skipped for good — it won't show in browse again.".to_string()
+                        }
+                        Err(e) => describe(e),
+                    }
+                }
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
         }
         ["browse", "send", id] => {
             use teloxide::payloads::AnswerCallbackQuerySetters as _;

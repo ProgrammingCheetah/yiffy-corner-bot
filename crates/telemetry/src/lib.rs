@@ -154,6 +154,7 @@ vocabulary! {
         UpstreamRequest => "upstream_request",
         UpstreamStatus => "upstream_status",
         UpstreamAuthenticated => "upstream_authenticated",
+        BrowseSkipped => "browse_skipped",
         MediaReuploaded => "media_reuploaded",
         MediaLinkFallback => "media_link_fallback",
         FaLoginWall => "fa_login_wall",

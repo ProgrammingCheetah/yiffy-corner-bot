@@ -83,6 +83,21 @@
     refill();
   }
 
+  // Skip *forever*: the source goes on the server-side skiplist so browse
+  // never shows it again — the manual verdict for video re-uploads that
+  // dedupe can't catch.
+  async function skipForever() {
+    const card = cards[0];
+    if (!card) return;
+    try {
+      const res = await post('/browse/skip', { url: card.source });
+      say(res.message);
+      deck.fly(-1);
+    } catch (e) {
+      say(e.message);
+    }
+  }
+
   function refill() {
     if (cards.length <= 2 && !busy && query) search(false);
   }
@@ -136,8 +151,9 @@
 
 {#if cards.length}
   <div class="actions">
-    <button class="round nope" on:click={() => deck.fly(-1)}>✖</button>
-    <button class="round like" on:click={() => deck.fly(1)}>💾</button>
+    <button class="round nope" on:click={() => deck.fly(-1)} title="Skip for now">✖</button>
+    <button class="round never" on:click={skipForever} title="Never show again">🚫</button>
+    <button class="round like" on:click={() => deck.fly(1)} title="Save to the feed">💾</button>
   </div>
 {/if}
 {#if toast}<div class="toast">{toast}</div>{/if}
