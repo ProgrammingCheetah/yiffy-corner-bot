@@ -190,9 +190,16 @@ where
             .await
             .map_err(|_| HandlerError::RepositoryError)?
         {
-            return Err(HandlerError::InvalidState(format!(
-                "refused: owns globally forbidden tag '{tag}'"
-            )));
+            let reason = forbidden
+                .reason_for(tag)
+                .await
+                .map_err(|_| HandlerError::RepositoryError)?;
+            return Err(HandlerError::InvalidState(match reason {
+                Some(reason) => {
+                    format!("refused: owns globally forbidden tag '{tag}' ({reason})")
+                }
+                None => format!("refused: owns globally forbidden tag '{tag}'"),
+            }));
         }
     }
     let post = posts
@@ -341,7 +348,7 @@ mod tests {
         };
         let fx = fixture().await;
         fx.required.add(Tag::from("furry")).await.unwrap();
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
 
         let fetcher = RecordingFetcher {
             results: vec![metadata(1, &["wolf"]), metadata(2, &["wolf", "gore"])],
@@ -543,7 +550,7 @@ mod tests {
     async fn save_refuses_globally_forbidden_content() {
         use domain::elements::tag_policy::ForbiddenTagRepository as _;
         let fx = fixture().await;
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
         let err = save(
             SaveCommand {
                 actor: TelegramId::from(1),

@@ -32,8 +32,8 @@
   }
 
   // Tag policies
-  let policies = { forbidden: [], required: [], spoilers: [] };
-  let newTag = { forbidden: '', required: '', spoilers: '' };
+  let policies = { forbidden: [], forbidden_with_reasons: [], required: [], spoilers: [] };
+  let newTag = { forbidden: '', forbiddenReason: '', required: '', spoilers: '' };
   async function loadPolicies() { policies = await get('/tag-policies'); }
 
   // Users
@@ -120,7 +120,21 @@
     </div>
   {/each}
 {:else if section === 'tags'}
-  {#each ['forbidden', 'required', 'spoilers'] as list}
+  <div class="card">
+    <h3>forbidden</h3>
+    {#each policies.forbidden_with_reasons ?? [] as entry (entry.tag)}
+      <div class="frow">
+        <button class="chip x" on:click={() => run(post('/tag-policies', { list: 'forbidden', tag: entry.tag, add: false }), loadPolicies)}>{entry.tag} ✕</button>
+        <span class="muted why">{entry.reason ?? 'no reason recorded — re-add with one to set it'}</span>
+      </div>
+    {/each}
+    <input bind:value={newTag.forbidden} placeholder="tag to forbid…" />
+    <div class="grid">
+      <input bind:value={newTag.forbiddenReason} placeholder="why? (optional, shown on refusals)" />
+      <button on:click={() => { run(post('/tag-policies', { list: 'forbidden', tag: newTag.forbidden, add: true, reason: newTag.forbiddenReason }), loadPolicies); newTag.forbidden = newTag.forbiddenReason = ''; }}>Add</button>
+    </div>
+  </div>
+  {#each ['required', 'spoilers'] as list}
     <div class="card">
       <h3>{list}</h3>
       <div>
@@ -210,6 +224,8 @@
     font-size: 0.78rem; color: var(--hint); margin: -4px 0 0;
     padding-left: 2px; font-style: italic;
   }
+  .frow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .why { font-size: 0.78rem; }
   .ghost { background: transparent; border: 1px solid var(--line); color: inherit; }
   .danger { background: #7f1d1d; }
   .chip.x { background: #7f1d1d; border: none; color: #fecaca; }

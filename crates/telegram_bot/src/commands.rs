@@ -1092,9 +1092,12 @@ pub(crate) async fn submit(
                 ),
             }
         }
-        Ok(SuggestOutcome::AutoBanned { .. }) => {
-            "This post contains content that is not allowed here.".to_string()
-        }
+        Ok(SuggestOutcome::AutoBanned { tag, reason, .. }) => match reason {
+            Some(reason) => format!(
+                "This post contains content that is not allowed here ({tag}: {reason})."
+            ),
+            None => format!("This post contains content that is not allowed here ({tag})."),
+        },
         Err(e) => describe(e),
     }
 }
@@ -1884,8 +1887,16 @@ async fn tag_policy_reply(
     if let Err(e) = require_role(&state.users, actor, Role::Moderator).await {
         return describe(e);
     }
-    let tag = arg.trim();
-    if tag.is_empty() || tag.contains(char::is_whitespace) {
+    // /forbidtag takes an optional trailing reason: `/forbidtag gore too
+    // graphic for our channels`. Every other action is single-tag only.
+    let (tag, reason) = match (arg.trim().split_once(char::is_whitespace), &action) {
+        (Some((tag, reason)), TagPolicyAction::Forbid) => {
+            (tag, Some(reason.trim().to_string()).filter(|r| !r.is_empty()))
+        }
+        (Some(_), _) => return "Give exactly one tag.".to_string(),
+        (None, _) => (arg.trim(), None),
+    };
+    if tag.is_empty() {
         return "Give exactly one tag.".to_string();
     }
     let tag = Tag::from(tag);
@@ -1906,7 +1917,7 @@ async fn tag_policy_reply(
     let result = match action {
         TagPolicyAction::Forbid => state
             .forbidden
-            .add(tag.clone())
+            .add(tag.clone(), reason)
             .await
             .map_err(|e| e.to_string()),
         TagPolicyAction::Unforbid => state

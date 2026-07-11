@@ -1073,8 +1073,18 @@ async fn list_tag_policies(State(state): State<Arc<WebState>>, headers: HeaderMa
         .list_all()
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let forbidden_reasons = state
+        .app
+        .forbidden
+        .list_with_reasons()
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .into_iter()
+        .map(|(tag, reason)| json!({ "tag": tag.to_string(), "reason": reason }))
+        .collect::<Vec<_>>();
     Ok(Json(json!({
         "forbidden": tags_json(&forbidden),
+        "forbidden_with_reasons": forbidden_reasons,
         "required": tags_json(&required),
         "spoilers": tags_json(&spoilers),
     })))
@@ -1087,6 +1097,9 @@ struct TagPolicyBody {
     tag: String,
     /// true = add, false = remove
     add: bool,
+    /// Why (forbidden adds only) — upserts on re-add.
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 async fn edit_tag_policy(
@@ -1101,7 +1114,12 @@ async fn edit_tag_policy(
         ("forbidden", true) => state
             .app
             .forbidden
-            .add(tag)
+            .add(
+                tag,
+                body.reason
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty()),
+            )
             .await
             .map_err(|e| e.to_string()),
         ("forbidden", false) => state

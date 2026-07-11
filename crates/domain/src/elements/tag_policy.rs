@@ -28,13 +28,20 @@ pub enum RequiredTagRepositoryError {
 
 /// Globally forbidden tags. Any Post owning at least one of these is
 /// ineligible (status flips to [`PostStatus::Banned`](crate::elements::post::PostStatus::Banned)).
+/// Each entry can carry a reason — the "why" shown wherever the ban bites.
 #[async_trait::async_trait]
 pub trait ForbiddenTagRepository: Send + Sync {
     type Err;
-    async fn add(&self, tag: Tag) -> Result<(), Self::Err>;
+    /// Forbid a tag. Re-adding updates the reason (upsert).
+    async fn add(&self, tag: Tag, reason: Option<String>) -> Result<(), Self::Err>;
     async fn remove(&self, tag: &Tag) -> Result<(), Self::Err>;
     async fn contains(&self, tag: &Tag) -> Result<bool, Self::Err>;
+    /// The stored reason for a forbidden tag (`None` when the tag isn't
+    /// forbidden OR was forbidden without a reason — pair with `contains`).
+    async fn reason_for(&self, tag: &Tag) -> Result<Option<String>, Self::Err>;
     async fn list_all(&self) -> Result<Vec<Tag>, Self::Err>;
+    /// Every forbidden tag with its reason, tag-ordered.
+    async fn list_with_reasons(&self) -> Result<Vec<(Tag, Option<String>)>, Self::Err>;
 }
 
 /// Globally required tags. Added to every outgoing e621 query as a positive

@@ -496,7 +496,7 @@ mod tests {
         let dirty = fx
             .feed_entry("https://e621.net/posts/1", &[], Some(&["wolf", "gore"]))
             .await;
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
 
         let selector = fx.selector(poster(&["wolf"], &[]));
         let pick = selector.next_post(0).await.unwrap();
@@ -511,7 +511,7 @@ mod tests {
         let mut fx = Fixture::new();
         fx.feed_entry("https://x.com/a/status/1", &["wolf", "gore"], None)
             .await;
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
 
         let selector = fx.selector(poster(&[], &[]));
         let pick = selector.next_post(0).await.unwrap();

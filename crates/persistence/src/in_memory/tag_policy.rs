@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use async_trait::async_trait;
 use domain::elements::{
@@ -12,7 +12,8 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Default)]
 pub struct InMemoryForbiddenTagRepository {
-    tags: RwLock<HashSet<Tag>>,
+    /// tag name → reason (BTreeMap for the tag-ordered listings).
+    tags: RwLock<BTreeMap<String, Option<String>>>,
 }
 
 impl InMemoryForbiddenTagRepository {
@@ -25,22 +26,51 @@ impl InMemoryForbiddenTagRepository {
 impl ForbiddenTagRepository for InMemoryForbiddenTagRepository {
     type Err = ForbiddenTagRepositoryError;
 
-    async fn add(&self, tag: Tag) -> Result<(), Self::Err> {
-        self.tags.write().await.insert(tag);
+    async fn add(&self, tag: Tag, reason: Option<String>) -> Result<(), Self::Err> {
+        self.tags
+            .write()
+            .await
+            .insert(tag.as_ref().to_string(), reason);
         Ok(())
     }
 
     async fn remove(&self, tag: &Tag) -> Result<(), Self::Err> {
-        self.tags.write().await.remove(tag);
+        self.tags.write().await.remove(tag.as_ref());
         Ok(())
     }
 
     async fn contains(&self, tag: &Tag) -> Result<bool, Self::Err> {
-        Ok(self.tags.read().await.contains(tag))
+        Ok(self.tags.read().await.contains_key(tag.as_ref()))
+    }
+
+    async fn reason_for(&self, tag: &Tag) -> Result<Option<String>, Self::Err> {
+        Ok(self
+            .tags
+            .read()
+            .await
+            .get(tag.as_ref())
+            .cloned()
+            .flatten())
     }
 
     async fn list_all(&self) -> Result<Vec<Tag>, Self::Err> {
-        Ok(self.tags.read().await.iter().cloned().collect())
+        Ok(self
+            .tags
+            .read()
+            .await
+            .keys()
+            .map(|name| Tag::from(name.as_str()))
+            .collect())
+    }
+
+    async fn list_with_reasons(&self) -> Result<Vec<(Tag, Option<String>)>, Self::Err> {
+        Ok(self
+            .tags
+            .read()
+            .await
+            .iter()
+            .map(|(name, reason)| (Tag::from(name.as_str()), reason.clone()))
+            .collect())
     }
 }
 
@@ -85,7 +115,7 @@ mod tests {
     #[tokio::test]
     async fn forbidden_add_then_contains() {
         let repo = InMemoryForbiddenTagRepository::new();
-        repo.add(Tag::from("fox")).await.unwrap();
+        repo.add(Tag::from("fox"), None).await.unwrap();
         assert!(repo.contains(&Tag::from("fox")).await.unwrap());
         assert!(!repo.contains(&Tag::from("wolf")).await.unwrap());
     }
@@ -93,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn forbidden_remove_drops_membership() {
         let repo = InMemoryForbiddenTagRepository::new();
-        repo.add(Tag::from("fox")).await.unwrap();
+        repo.add(Tag::from("fox"), None).await.unwrap();
         repo.remove(&Tag::from("fox")).await.unwrap();
         assert!(!repo.contains(&Tag::from("fox")).await.unwrap());
     }
@@ -101,16 +131,16 @@ mod tests {
     #[tokio::test]
     async fn forbidden_add_is_idempotent() {
         let repo = InMemoryForbiddenTagRepository::new();
-        repo.add(Tag::from("fox")).await.unwrap();
-        repo.add(Tag::from("fox")).await.unwrap();
+        repo.add(Tag::from("fox"), None).await.unwrap();
+        repo.add(Tag::from("fox"), None).await.unwrap();
         assert_eq!(repo.list_all().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn forbidden_list_all_returns_every_added() {
         let repo = InMemoryForbiddenTagRepository::new();
-        repo.add(Tag::from("a")).await.unwrap();
-        repo.add(Tag::from("b")).await.unwrap();
+        repo.add(Tag::from("a"), None).await.unwrap();
+        repo.add(Tag::from("b"), None).await.unwrap();
         let mut all = repo.list_all().await.unwrap();
         all.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
         assert_eq!(all, vec![Tag::from("a"), Tag::from("b")]);

@@ -48,7 +48,13 @@ pub enum SuggestOutcome {
         pool_ids: Vec<u64>,
     },
     /// Submission owned a globally forbidden tag and was auto-Banned.
-    AutoBanned { post: Post },
+    AutoBanned {
+        post: Post,
+        /// The forbidden tag that tripped the ban, with its stored reason —
+        /// the submitter learns WHY, not just that it's banned.
+        tag: Tag,
+        reason: Option<String>,
+    },
     /// Non-e621 source with no tags: nothing was created yet — the bot must
     /// ask the submitter for tags and retry with them.
     TagsNeeded,
@@ -162,19 +168,24 @@ where
     };
 
     // Tag-check at the door: a globally forbidden tag auto-Bans (cached
-    // verdict, re-validated at consume time).
-    let mut hit = false;
+    // verdict, re-validated at consume time). The hit and its stored
+    // reason ride along so the refusal can say why.
+    let mut hit: Option<(Tag, Option<String>)> = None;
     for tag in &tags {
         if forbidden
             .contains(tag)
             .await
             .map_err(|_| HandlerError::RepositoryError)?
         {
-            hit = true;
+            let reason = forbidden
+                .reason_for(tag)
+                .await
+                .map_err(|_| HandlerError::RepositoryError)?;
+            hit = Some((tag.clone(), reason));
             break;
         }
     }
-    let status = if hit {
+    let status = if hit.is_some() {
         PostStatus::Banned
     } else {
         PostStatus::AwaitingModeration
@@ -218,12 +229,14 @@ where
 
     match status {
         PostStatus::Banned => {
+            let (tag, reason) = hit.expect("Banned status implies a forbidden hit");
             tracing::warn!(
                 event = %Event::SubmissionAutoBanned,
-                post_id = %post.id, user_id = %submitter.id,
+                post_id = %post.id, user_id = %submitter.id, tag = %tag,
+                reason = reason.as_deref().unwrap_or("(none)"),
                 "submission owned a globally forbidden tag"
             );
-            Ok(SuggestOutcome::AutoBanned { post })
+            Ok(SuggestOutcome::AutoBanned { post, tag, reason })
         }
         _ => {
             let mut reviewers = users
@@ -392,12 +405,13 @@ mod tests {
     #[tokio::test]
     async fn forbidden_tag_auto_bans() {
         let fx = Fixture::new().with_e621_post("https://e621.net/posts/1", &["wolf", "gore"]);
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
 
         let outcome = fx.suggest(42, "https://e621.net/posts/1").await.unwrap();
-        let SuggestOutcome::AutoBanned { post } = outcome else {
+        let SuggestOutcome::AutoBanned { post, tag, .. } = outcome else {
             panic!("expected AutoBanned");
         };
+        assert_eq!(tag, Tag::from("gore"));
         assert_eq!(post.status, PostStatus::Banned);
     }
 
@@ -500,7 +514,7 @@ mod tests {
             .set_status_to(post.id, PostStatus::ChangesRequested)
             .await
             .unwrap();
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
 
         let outcome = handle(
             SuggestCommand {
@@ -576,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn non_e621_forbidden_curated_tag_auto_bans() {
         let fx = Fixture::new();
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
         let outcome = handle(
             SuggestCommand {
                 submitter: TelegramId::from(42),

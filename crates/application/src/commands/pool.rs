@@ -400,7 +400,7 @@ mod tests {
     async fn already_curated_and_forbidden_pages_are_skipped() {
         let mut fx = Fixture::new(&[10, 20, 30]);
         fx.fetcher.pages[2] = metadata(30, &["wolf", "gore"]);
-        fx.forbidden.add(Tag::from("gore")).await.unwrap();
+        fx.forbidden.add(Tag::from("gore"), None).await.unwrap();
         let actor = fx.moderator().await;
         let trigger = fx.pending_page(10).await;
         // Page 20 was curated some other way already.

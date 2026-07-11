@@ -614,13 +614,25 @@ mod tag_policies {
     #[tokio::test]
     async fn forbidden_add_contains_remove_list() {
         let repo = SqliteForbiddenTagRepository::new(test_pool().await);
-        repo.add(Tag::from("gore")).await.unwrap();
-        repo.add(Tag::from("gore")).await.unwrap(); // idempotent
-        repo.add(Tag::from("scat")).await.unwrap();
+        repo.add(Tag::from("gore"), None).await.unwrap();
+        // Re-adding upserts the reason.
+        repo.add(Tag::from("gore"), Some("too graphic".to_string()))
+            .await
+            .unwrap();
+        repo.add(Tag::from("scat"), None).await.unwrap();
 
         assert!(repo.contains(&Tag::from("gore")).await.unwrap());
         assert!(!repo.contains(&Tag::from("wolf")).await.unwrap());
         assert_eq!(repo.list_all().await.unwrap().len(), 2);
+        assert_eq!(
+            repo.reason_for(&Tag::from("gore")).await.unwrap().as_deref(),
+            Some("too graphic")
+        );
+        assert_eq!(repo.reason_for(&Tag::from("scat")).await.unwrap(), None);
+        let listed = repo.list_with_reasons().await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].0, Tag::from("gore"));
+        assert_eq!(listed[0].1.as_deref(), Some("too graphic"));
 
         repo.remove(&Tag::from("gore")).await.unwrap();
         assert!(!repo.contains(&Tag::from("gore")).await.unwrap());
