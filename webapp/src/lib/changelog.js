@@ -11,6 +11,23 @@ export const stage = 'Alpha';
 
 export const changelog = [
   {
+    version: '0.4.0',
+    alias: 'Fox',
+    date: '2026-07-11',
+    changes: [
+      'A homepage! The bottom bar keeps the daily drivers; everything else lives in tiles on Home.',
+      'Real icons and motion: Lucide icons everywhere, animated loading states, and a once-a-day startup splash.',
+      'Tag autocomplete on every tag field, suggested straight from e621 like its own search bar.',
+      'Poster queues got their own pages: only what the poster will actually publish, paginated, with inline media Load and remove-from-feed.',
+      'Profiles for users (stats, submitted artwork, admin actions) and posters (publish stats, taste editor, plain-language rules).',
+      'Rules read like language now: "solo AND avian REQUIRE ((NO female) OR intersex) AND bird".',
+      'Forbidden tags carry a reason, shown wherever the ban bites.',
+      'Shadowbans: silently drop reports, wishes, and submissions — they never know.',
+      'Browse remembers your deck when you leave; saved & historic queries moved to their own two-tab page; the deck buttons say what they do.',
+      'Long names no longer wreck the Users list.'
+    ]
+  },
+  {
     version: '0.3.0',
     alias: 'Wolf',
     date: '2026-07-11',
