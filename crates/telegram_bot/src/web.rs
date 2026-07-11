@@ -441,6 +441,65 @@ async fn feed_after(
     })))
 }
 
+/// One poster's upcoming queue: every feed entry ahead of its cursor with
+/// that poster's own verdict, so a moderator sees exactly what it will
+/// (and won't) pick up.
+async fn poster_queue(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<u64>,
+) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let queue = feed::poster_queue(
+        authed.user.telegram_id,
+        PosterId::from(id),
+        &state.app.users,
+        &state.app.posters,
+        &state.app.posts,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(json!({
+        "poster_id": queue.poster.id.as_ref(),
+        "cursor": queue.poster.cursor,
+        "feed_end": queue.feed_end,
+        "entries": queue.entries.iter().map(|entry| json!({
+            "post_id": entry.post.id.as_ref(),
+            "feed_position": entry.post.feed_position,
+            "status": entry.post.status.to_string(),
+            "source": entry.post.source.as_ref().as_str(),
+            "tags": tags_json(&entry.post.tags),
+            "refusal": entry.refusal,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+/// Remove a post from the feed — a global soft-delete (every consumer
+/// skips it), not a per-poster hide.
+async fn delete_post(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<u64>,
+) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let post_id = PostId::from(id);
+    moderate::delete(
+        ModerateCommand {
+            actor: authed.user.telegram_id,
+            post_id,
+        },
+        &state.app.users,
+        &state.app.posts,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(json!({
+        "message": format!("Post #{post_id} removed from the feed.")
+    })))
+}
+
 // ------------------------------------------------------------- reports ----
 
 /// The moderation overview: reported posts with who reported and why.
@@ -1218,6 +1277,8 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/reports/resolve", post(resolve_report))
         .route("/feed/queue", get(feed_queue))
         .route("/feed/after/{token}", get(feed_after))
+        .route("/posters/{id}/queue", get(poster_queue))
+        .route("/posts/{id}", axum::routing::delete(delete_post))
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
         .route("/browse/skip", post(skip_post))
