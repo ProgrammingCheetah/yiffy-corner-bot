@@ -15,7 +15,7 @@ use domain::elements::{
     cadence::PostInterval,
     post::PostId,
     tag::Tag,
-    user::{Role, TelegramId},
+    user::{Role, TelegramId, UserRepository as _},
 };
 use teloxide::{
     Bot,
@@ -289,8 +289,13 @@ async fn file_report(
             total_reports,
             reason,
         }) => {
+            // Reporters can be unregistered — fall back to the raw id.
+            let reporter_label = match state.users.find_by_telegram_id(reporter).await {
+                Ok(Some(user)) => describe_user(&Some(user)),
+                _ => format!("id {}", reporter.as_ref()),
+            };
             let text = format!(
-                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}\nReason: {}",
+                "⚠️ Post #{} was reported ({total_reports} report(s))\n{}\nBy: {reporter_label}\nReason: {}",
                 post.id,
                 post.source.as_ref(),
                 reason.as_deref().unwrap_or("(none given)")
