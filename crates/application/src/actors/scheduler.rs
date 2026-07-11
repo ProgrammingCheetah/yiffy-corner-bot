@@ -180,7 +180,9 @@ pub async fn build_caption<U: UserRepository>(
         lines.push(format!("Forwarded from channel: @{}", escape_html(channel)));
     }
     lines.push(format!(
-        "<a href=\"{}\">Source</a> · <a href=\"https://t.me/{bot_username}?start=report_{}\">Report</a>",
+        "<a href=\"{0}\">Source</a> · \
+         <a href=\"https://t.me/{bot_username}?start=more_{1}\">More like this</a> · \
+         <a href=\"https://t.me/{bot_username}?start=report_{1}\">Report</a>",
         post.source.as_ref(),
         post.id
     ));
@@ -950,8 +952,9 @@ mod tests {
         // HTML-escaped attribution.
         assert_eq!(lines[1], "Submitted by Ziel &lt;3");
         assert_eq!(lines[2], "Forwarded from channel: @somechannel");
-        // Source + Report links.
+        // Source + More + Report links.
         assert!(lines[3].contains("<a href=\"https://t.me/somechannel/42\">Source</a>"));
+        assert!(lines[3].contains("https://t.me/testbot?start=more_100\">More like this</a>"));
         assert!(lines[3].contains("https://t.me/testbot?start=report_100\">Report</a>"));
     }
 

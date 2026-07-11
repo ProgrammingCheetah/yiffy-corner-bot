@@ -184,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         pending_moderation: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         pending_reports: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        pending_more: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         browse_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     });
 

@@ -135,6 +135,7 @@ vocabulary! {
         ReportNotifyFailed => "report_notify_failed",
         PostTakenDown => "post_taken_down",
         ReportsDismissed => "reports_dismissed",
+        MoreRequested => "more_requested",
 
         // Announcements
         AnnouncementConfigChanged => "announcement_config_changed",

@@ -260,6 +260,79 @@ async fn begin_report_dialogue(
     }
 }
 
+/// Step one of the "more like this" dialogue: remember which post, ask
+/// what they want. Unanswered wishes expire silently after the same window
+/// as report reasons — there's nothing to file on timeout.
+async fn begin_more_dialogue(
+    state: &SharedState,
+    requester: TelegramId,
+    post_id: PostId,
+) -> String {
+    use domain::elements::post::PostRepository as _;
+
+    match state.posts.find_by_id(post_id).await {
+        Err(_) => describe(HandlerError::RepositoryError),
+        Ok(None) => describe(HandlerError::PostNotFound(post_id)),
+        Ok(Some(_)) => {
+            let armed_at = std::time::Instant::now();
+            state
+                .pending_more
+                .lock()
+                .await
+                .insert(*requester.as_ref(), (post_id, armed_at));
+            let state = state.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(REPORT_REASON_TIMEOUT).await;
+                let mut pending = state.pending_more.lock().await;
+                if let Some(&(_, at)) = pending.get(requester.as_ref())
+                    && at == armed_at
+                {
+                    pending.remove(requester.as_ref());
+                }
+            });
+            "What would you like more of? Reply in a few words and I'll pass \
+             it to the moderators."
+                .to_string()
+        }
+    }
+}
+
+/// Relay a completed "more like this" wish to every moderator.
+async fn relay_more_request(
+    bot: &Bot,
+    state: &SharedState,
+    requester: TelegramId,
+    post_id: PostId,
+    wish: &str,
+) -> String {
+    use application::commands::request_more::request_more;
+
+    match request_more(requester, post_id, wish, &state.posts, &state.users).await {
+        Err(e) => describe(e),
+        Ok(relay) => {
+            let requester_label = match state.users.find_by_telegram_id(requester).await {
+                Ok(Some(user)) => describe_user(&Some(user)),
+                _ => format!("id {}", requester.as_ref()),
+            };
+            let text = format!(
+                "💬 More-of request on post #{}\n{}\nFrom: {requester_label}\nThey want: {wish}",
+                relay.post.id,
+                relay.post.source.as_ref()
+            );
+            for reviewer in &relay.reviewers {
+                let chat = ChatId(*reviewer.telegram_id.as_ref());
+                if let Err(e) = bot.send_message(chat, text.clone()).await {
+                    tracing::warn!(
+                        event = %Event::ReportNotifyFailed, post_id = %relay.post.id,
+                        reviewer = %reviewer.id, error = %e, "more-of relay DM failed"
+                    );
+                }
+            }
+            "Passed along — thanks for the wish! 💜".to_string()
+        }
+    }
+}
+
 /// File a viewer report and fan the moderator DM out. Shared by the
 /// reason dialogue (deep link / legacy button) and the reasonless legacy
 /// fallback when the reporter's DMs are closed.
@@ -630,6 +703,12 @@ pub async fn handle_command(
                         .await
                         .unwrap_or_else(|e| e),
                     None => "That report link is malformed.".to_string(),
+                }
+            } else if let Some(raw_id) = payload.trim().strip_prefix("more_") {
+                // `t.me/<bot>?start=more_<id>` — the "More like this" wish.
+                match parse_post_id(raw_id) {
+                    Some(post_id) => begin_more_dialogue(&state, actor, post_id).await,
+                    None => "That link is malformed.".to_string(),
                 }
             } else {
                 match registration {
@@ -1019,6 +1098,19 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
         // Keep the moderator DM readable, whatever gets pasted in.
         let reason: String = reason.chars().take(500).collect();
         let reply = file_report(&bot, &state, actor, post_id, Some(reason)).await;
+        bot.send_message(msg.chat.id, reply)
+            .link_preview_options(no_preview())
+            .await?;
+        return Ok(());
+    }
+
+    // Then "more like this" wishes awaiting their text.
+    if let Some((post_id, _)) = state.pending_more.lock().await.remove(actor.as_ref()) {
+        let wish: String = text.trim().chars().take(500).collect();
+        if wish.is_empty() {
+            return Ok(()); // odd empty message — let the link be re-tapped
+        }
+        let reply = relay_more_request(&bot, &state, actor, post_id, &wish).await;
         bot.send_message(msg.chat.id, reply)
             .link_preview_options(no_preview())
             .await?;

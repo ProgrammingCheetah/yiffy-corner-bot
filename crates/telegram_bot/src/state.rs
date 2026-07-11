@@ -158,6 +158,12 @@ pub struct AppState {
     pub pending_reports: tokio::sync::Mutex<
         std::collections::HashMap<i64, (domain::elements::post::PostId, std::time::Instant)>,
     >,
+    /// "More like this" wishes awaiting their text, keyed by requester
+    /// Telegram id — same dialogue shape as `pending_reports`, but expiring
+    /// silently (an unanswered wish just evaporates; nothing to file).
+    pub pending_more: tokio::sync::Mutex<
+        std::collections::HashMap<i64, (domain::elements::post::PostId, std::time::Instant)>,
+    >,
     /// Last /browse query per moderator, for the "More ➡" paging button.
     pub browse_sessions: tokio::sync::Mutex<std::collections::HashMap<i64, BrowseSession>>,
 }

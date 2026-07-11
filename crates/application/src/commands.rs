@@ -8,6 +8,7 @@ pub mod phash_check;
 pub mod pool;
 pub mod post_info;
 pub mod report;
+pub mod request_more;
 pub mod scoreboard;
 pub mod set_user_role;
 pub mod start;
