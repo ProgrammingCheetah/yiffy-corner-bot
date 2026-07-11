@@ -1,6 +1,7 @@
 <script>
   // Owner panel: posters, tag policies, users, post lookup. Everything the
   // /set* command family does, with forms instead of syntax memory.
+  import TagInput from '$lib/TagInput.svelte';
   import { goto } from '$app/navigation';
   import { get, post, patch, del } from '$lib/api.js';
   import { onMount } from 'svelte';
@@ -67,7 +68,7 @@
       <input type="number" min="1" max="60" bind:value={np.interval} placeholder="minutes" />
       <input bind:value={np.chat} placeholder="@channel or -100…" />
     </div>
-    <input bind:value={np.tags} placeholder="tags… (or groups) -forbidden…" />
+    <TagInput bind:value={np.tags} placeholder="tags… (or groups) -forbidden…" />
     <button on:click={() => run(post('/posters', np), loadPosters)}>Create & bind</button>
   </div>
   {#each posters as p (p.id)}
@@ -87,7 +88,7 @@
         <span class="muted why">{entry.reason ?? 'no reason recorded — re-add with one to set it'}</span>
       </div>
     {/each}
-    <input bind:value={newTag.forbidden} placeholder="tag to forbid…" />
+    <TagInput bind:value={newTag.forbidden} placeholder="tag to forbid…" />
     <div class="grid">
       <input bind:value={newTag.forbiddenReason} placeholder="why? (optional, shown on refusals)" />
       <button on:click={() => { run(post('/tag-policies', { list: 'forbidden', tag: newTag.forbidden, add: true, reason: newTag.forbiddenReason }), loadPolicies); newTag.forbidden = newTag.forbiddenReason = ''; }}>Add</button>
@@ -102,7 +103,7 @@
         {/each}
       </div>
       <div class="grid">
-        <input bind:value={newTag[list]} placeholder="add a tag…" />
+        <TagInput bind:value={newTag[list]} placeholder="add a tag…" />
         <button on:click={() => { run(post('/tag-policies', { list, tag: newTag[list], add: true }), loadPolicies); newTag[list] = ''; }}>Add</button>
       </div>
     </div>

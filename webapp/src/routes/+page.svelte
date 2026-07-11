@@ -1,6 +1,7 @@
 <script>
   // Submit: paste a link → live preview (media, dup check, e621 tags) →
   // confirm. Non-e621 sources demand tags; artist:<name> credits artists.
+  import TagInput from '$lib/TagInput.svelte';
   import Media from '$lib/Media.svelte';
   import { post } from '$lib/api.js';
 
@@ -68,12 +69,12 @@
       {#if preview.needs_tags}
         <label>
           Tags (required) — credit with <code>artist:&lt;name&gt;</code>
-          <input placeholder="wolf male solo artist:coolwolf" bind:value={tags} />
+          <TagInput placeholder="wolf male solo artist:coolwolf" bind:value={tags} />
         </label>
       {:else}
         <label>
           Extra tags (optional)
-          <input placeholder="extra tags…" bind:value={tags} />
+          <TagInput placeholder="extra tags…" bind:value={tags} />
         </label>
       {/if}
       <button

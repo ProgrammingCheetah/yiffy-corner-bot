@@ -362,6 +362,41 @@ async fn moderate_post(
     Ok(Json(json!({ "message": message })))
 }
 
+// ---------------------------------------------------------- tag helper ----
+
+#[derive(Deserialize)]
+struct CompleteParams {
+    #[serde(default)]
+    q: String,
+}
+
+/// Tag autocomplete, proxied through the rate-limited e621 client so every
+/// tag input in the app suggests like e621's own search bar.
+async fn complete_tags(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Query(params): Query<CompleteParams>,
+) -> ApiResult {
+    authenticate(&state, &headers).await?; // any registered user may type tags
+    let prefix = params.q.trim().to_lowercase();
+    if prefix.len() < 2 {
+        return Ok(Json(json!({ "tags": [] })));
+    }
+    let suggestions = state
+        .app
+        .e621
+        .autocomplete(&prefix)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({
+        "tags": suggestions.iter().take(10).map(|s| json!({
+            "name": s.name,
+            "post_count": s.post_count,
+            "category": s.category,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
 // ---------------------------------------------------------------- feed ----
 
 /// Queue overview: the feed end plus each poster's cursor distance — how
@@ -1501,6 +1536,7 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
         .route("/browse/skip", post(skip_post))
+        .route("/tags/complete", get(complete_tags))
         .route("/resolve", post(resolve_preview))
         .route("/suggest", post(suggest_post))
         .route("/eligibility", post(eligibility))

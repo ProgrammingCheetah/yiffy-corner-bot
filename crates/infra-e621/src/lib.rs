@@ -126,6 +126,30 @@ impl RateLimitedE621Client {
             other => Err(FetchError::Network(format!("HTTP {other}"))),
         }
     }
+
+    /// Tag autocompletion, the way e621's own search bar does it: prefix
+    /// match, popular first. Inherent (not a port method) — it's a UI
+    /// convenience, and the app layer holds this concrete client anyway.
+    pub async fn autocomplete(&self, prefix: &str) -> Result<Vec<TagSuggestion>, FetchError> {
+        let url = Url::parse_with_params(
+            &format!("{E621_BASE}/tags/autocomplete.json"),
+            [("search[name_matches]", prefix), ("expiry", "7")],
+        )
+        .map_err(|e| FetchError::Parse(e.to_string()))?;
+        self.get_json(url).await
+    }
+}
+
+/// One autocomplete suggestion (subset of e621's payload we care about).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TagSuggestion {
+    pub name: String,
+    pub post_count: u64,
+    /// e621 tag category (0 general, 1 artist, 3 copyright, 4 character,
+    /// 5 species, …) — lets a UI color-code if it wants.
+    pub category: u8,
+    /// When the match is an alias, the canonical tag it points to.
+    pub antecedent_name: Option<String>,
 }
 
 #[async_trait]

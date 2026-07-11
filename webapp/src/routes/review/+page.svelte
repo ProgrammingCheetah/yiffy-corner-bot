@@ -2,6 +2,7 @@
   // The moderation deck. Swipe right = approve, left = reject; the button
   // row adds "accept with tags", "reject with reason" and "request changes",
   // exactly like the DM dialogues.
+  import TagInput from '$lib/TagInput.svelte';
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import Modal from '$lib/Modal.svelte';
   import { get, post } from '$lib/api.js';
@@ -89,7 +90,7 @@
 {#if toast}<div class="toast">{toast}</div>{/if}
 
 <Modal bind:open={tagModal} title="Accept with extra tags">
-  <input placeholder="extra tags (duplicates ignored)" bind:value={extraTags} />
+  <TagInput placeholder="extra tags (duplicates ignored)" bind:value={extraTags} />
   <button
     disabled={!extraTags.trim()}
     on:click={() => {

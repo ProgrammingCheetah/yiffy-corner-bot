@@ -1,6 +1,7 @@
 <script>
   // A poster's profile: binding, cadence, taste (raw DSL + plain reading),
   // publish stats, and every management action in one place.
+  import TagInput from '$lib/TagInput.svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { get, patch, del } from '$lib/api.js';
@@ -64,9 +65,9 @@
 
   <div class="card">
     <h3>taste</h3>
-    <label>Tags <input bind:value={edit.tags} /></label>
+    <label>Tags <TagInput bind:value={edit.tags} /></label>
     {#if p.subscribed_pretty}<p class="pretty">wants: {p.subscribed_pretty}</p>{/if}
-    <label>Rules <input bind:value={edit.rules} placeholder="[if…]->[then…] …" /></label>
+    <label>Rules <TagInput bind:value={edit.rules} placeholder="[if…]->[then…] …" /></label>
     {#each p.rules_pretty ?? [] as rule}
       <p class="pretty">rule: {rule}</p>
     {/each}

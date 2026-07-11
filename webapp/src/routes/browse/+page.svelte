@@ -1,5 +1,6 @@
 <script>
   // e621 browsing as a deck: right = save into the feed, left = skip.
+  import TagInput from '$lib/TagInput.svelte';
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import { get, post } from '$lib/api.js';
   import { loadJson, saveJson } from '$lib/store.js';
@@ -110,7 +111,7 @@
 
 <h2>Browse e621</h2>
 <div class="row">
-  <input placeholder="wolf male -young …" bind:value={query} on:change={() => search(true)} />
+  <TagInput placeholder="wolf male -young …" bind:value={query} on:change={() => search(true)} />
   <button class="pin" class:on={isPinned} title="Pin this query" on:click={togglePin}>
     {isPinned ? '📌' : '📍'}
   </button>
