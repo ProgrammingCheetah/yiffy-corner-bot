@@ -21,7 +21,7 @@ use teloxide::Bot;
 use url::Url;
 
 use application::commands::{
-    browse, manage_poster, moderate, moderate::ModerateCommand, post_info::post_info, report,
+    browse, feed, manage_poster, moderate, moderate::ModerateCommand, post_info::post_info, report,
 };
 use application::selectors::feed::refusal_for;
 use domain::elements::{
@@ -359,6 +359,86 @@ async fn moderate_post(
         other => return Err(bad_request(format!("unknown action `{other}`"))),
     };
     Ok(Json(json!({ "message": message })))
+}
+
+// ---------------------------------------------------------------- feed ----
+
+/// Queue overview: the feed end plus each poster's cursor distance — how
+/// much curated backlog every channel still has ahead of it.
+async fn feed_queue(State(state): State<Arc<WebState>>, headers: HeaderMap) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let feed_end = state
+        .app
+        .posts
+        .feed_end()
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let posters = state
+        .app
+        .posters
+        .list_all()
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let mut out = Vec::with_capacity(posters.len());
+    for poster in posters {
+        let config = state
+            .app
+            .publisher_configs
+            .find_by_poster(poster.id)
+            .await
+            .ok()
+            .flatten();
+        out.push(json!({
+            "id": poster.id.as_ref(),
+            "chat_id": config.as_ref().map(|c| c.chat_id),
+            "interval": poster.time_interval.as_ref(),
+            "cursor": poster.cursor,
+            "behind": feed_end.saturating_sub(poster.cursor),
+            "subscribed": poster.subscribed_tags.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(Json(json!({ "feed_end": feed_end, "posters": out })))
+}
+
+/// The feed after a post — everything still ahead of it, in feed order.
+/// `token` is a post id or the #CODE from a published caption.
+async fn feed_after(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    AxumPath(token): AxumPath<String>,
+) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let post_id = match crate::commands::parse_post_id(&token) {
+        Some(id) => Some(id),
+        None => resolve_publish_code(&state.app, &token).await,
+    };
+    let Some(post_id) = post_id else {
+        return Err(err(StatusCode::NOT_FOUND, "no post with that id or code"));
+    };
+    let slice = feed::after_post(
+        authed.user.telegram_id,
+        post_id,
+        &state.app.users,
+        &state.app.posts,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(json!({
+        "anchor": {
+            "post_id": slice.anchor.id.as_ref(),
+            "feed_position": slice.anchor.feed_position,
+        },
+        "feed_end": slice.feed_end,
+        "entries": slice.entries.iter().map(|post| json!({
+            "post_id": post.id.as_ref(),
+            "feed_position": post.feed_position,
+            "status": post.status.to_string(),
+            "source": post.source.as_ref().as_str(),
+            "tags": tags_json(&post.tags),
+        })).collect::<Vec<_>>(),
+    })))
 }
 
 // ------------------------------------------------------------- reports ----
@@ -1110,6 +1190,8 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/moderate", post(moderate_post))
         .route("/reports", get(list_reports))
         .route("/reports/resolve", post(resolve_report))
+        .route("/feed/queue", get(feed_queue))
+        .route("/feed/after/{token}", get(feed_after))
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
         .route("/resolve", post(resolve_preview))

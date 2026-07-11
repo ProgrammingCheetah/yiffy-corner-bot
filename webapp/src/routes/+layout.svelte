@@ -24,6 +24,7 @@
       ? [
           { href: '/review', label: 'Review', icon: '🔥' },
           { href: '/browse', label: 'Browse', icon: '🔎' },
+          { href: '/feed', label: 'Feed', icon: '📜' },
           { href: '/reports', label: 'Reports', icon: '⚠️' }
         ]
       : []),
