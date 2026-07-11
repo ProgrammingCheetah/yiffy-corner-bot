@@ -741,6 +741,20 @@ mod tests {
         ) -> Result<Vec<Post>, Self::Err> {
             unimplemented!()
         }
+        async fn list_by_submitter(
+            &self,
+            _submitter: domain::elements::user::UserId,
+            _limit: u32,
+            _offset: u32,
+        ) -> Result<Vec<Post>, Self::Err> {
+            unimplemented!()
+        }
+        async fn count_by_submitter(
+            &self,
+            _submitter: domain::elements::user::UserId,
+        ) -> Result<Vec<(PostStatus, u64)>, Self::Err> {
+            unimplemented!()
+        }
     }
 
     fn at_minute(minute: u32) -> DateTime<Utc> {

@@ -271,6 +271,47 @@ impl PostRepository for SqlitePostRepository {
             .collect())
     }
 
+    async fn list_by_submitter(
+        &self,
+        submitter: UserId,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Post>, Self::Err> {
+        let rows = sqlx::query(
+            "SELECT * FROM posts WHERE submitted_by = ?
+             ORDER BY submitted_at DESC, id DESC
+             LIMIT ? OFFSET ?",
+        )
+        .bind(*submitter.as_ref() as i64)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        rows.iter().map(row_to_post).collect()
+    }
+
+    async fn count_by_submitter(
+        &self,
+        submitter: UserId,
+    ) -> Result<Vec<(PostStatus, u64)>, Self::Err> {
+        let rows = sqlx::query(
+            "SELECT status, COUNT(*) AS n FROM posts
+             WHERE submitted_by = ? GROUP BY status ORDER BY status",
+        )
+        .bind(*submitter.as_ref() as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        rows.iter()
+            .map(|row| {
+                let status = PostStatus::from_str(&row.get::<String, _>("status"))
+                    .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+                Ok((status, row.get::<i64, _>("n") as u64))
+            })
+            .collect()
+    }
+
     async fn accept_into_feed(&self, id: PostId) -> Result<Post, Self::Err> {
         // Single statement → atomic under SQLite's single-writer model.
         // COALESCE keeps an existing position (idempotent re-accept).

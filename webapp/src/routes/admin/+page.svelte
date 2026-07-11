@@ -1,6 +1,7 @@
 <script>
   // Owner panel: posters, tag policies, users, post lookup. Everything the
   // /set* command family does, with forms instead of syntax memory.
+  import { goto } from '$app/navigation';
   import { get, post, patch, del } from '$lib/api.js';
   import { onMount } from 'svelte';
 
@@ -39,25 +40,6 @@
   // Users
   let users = [];
   async function loadUsers() { users = (await get('/users')).users; }
-  async function confirmDialog(message) {
-    const wa = window.Telegram?.WebApp;
-    if (wa?.showConfirm && wa.isVersionAtLeast?.('6.2')) {
-      return new Promise((resolve) => wa.showConfirm(message, resolve));
-    }
-    return confirm(message);
-  }
-  async function changeRole(u, role, select) {
-    if (role === 'owner') {
-      const ok = await confirmDialog(
-        `Make ${u.name ?? u.telegram_id} an OWNER? Owners have full control — posters, roles, everything. This is not easily undone.`
-      );
-      if (!ok) {
-        select.value = u.role;
-        return;
-      }
-    }
-    run(patch(`/users/${u.id}`, { role }), loadUsers);
-  }
 
   // Post lookup
   let lookup = '';
@@ -150,28 +132,14 @@
   {/each}
 {:else if section === 'users'}
   {#each users as u (u.id)}
-    <div class="card row">
-      <div>
-        <strong>{u.name ?? u.telegram_id}</strong>
-        <span class="muted">#{u.telegram_id}</span>
-        {#if u.banned}<span class="chip x">banned</span>{/if}
-        {#if u.shadow_banned}<span class="chip ghost-chip">👻 shadow</span>{/if}
-      </div>
-      <div class="row-btns">
-        <select value={u.role} on:change={(e) => changeRole(u, e.target.value, e.target)}>
-          <option value="user">User</option>
-          <option value="moderator">Moderator</option>
-          <option value="owner">Owner</option>
-        </select>
-        <button class="ghost" on:click={() => run(patch(`/users/${u.id}`, { banned: !u.banned }), loadUsers)}>
-          {u.banned ? 'Unban' : 'Ban'}
-        </button>
-        <button class="ghost" title="They keep the full flow; nothing ever lands."
-          on:click={() => run(post('/shadowban', { telegram_id: u.telegram_id, banned: !u.shadow_banned }), loadUsers)}>
-          {u.shadow_banned ? '👻 Lift' : '👻 Shadow'}
-        </button>
-      </div>
-    </div>
+    <button class="card urow" on:click={() => goto(`/admin/user/${u.id}`)}>
+      <span class="uname">{u.name ?? u.telegram_id}</span>
+      <span class="muted uid">#{u.telegram_id}</span>
+      {#if u.banned}<span class="chip x">banned</span>{/if}
+      {#if u.shadow_banned}<span class="chip ghost-chip">👻</span>{/if}
+      <span class="chip">{u.role}</span>
+      <span class="chev">›</span>
+    </button>
   {/each}
 {:else}
   <div class="card">
@@ -222,6 +190,19 @@
     letter-spacing: 0.08em; color: var(--hint);
   }
   .card.row { flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+  /* Users are one uniform tappable line: the name truncates, controls
+     live on the profile page. */
+  button.card.urow {
+    flex-direction: row; align-items: center; gap: 8px; width: 100%;
+    background: var(--surface); color: inherit; font-weight: normal;
+    text-align: left;
+  }
+  .uname {
+    font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0; flex: 0 1 auto;
+  }
+  .uid { flex-shrink: 0; }
+  .chev { margin-left: auto; color: var(--hint); font-size: 1.1rem; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .row-btns { display: flex; gap: 8px; flex-wrap: wrap; }
   .summary { white-space: pre-wrap; font-size: 0.8rem; background: rgba(0,0,0,0.25); border-radius: 10px; padding: 10px; }

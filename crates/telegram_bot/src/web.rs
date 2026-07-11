@@ -1233,6 +1233,78 @@ async fn list_users(State(state): State<Arc<WebState>>, headers: HeaderMap) -> A
 }
 
 #[derive(Deserialize)]
+struct ProfileParams {
+    #[serde(default)]
+    offset: u32,
+}
+
+/// One user's profile: identity, ban states, submission stats, and a page
+/// of their submitted artwork (newest first).
+async fn user_profile(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<u64>,
+    Query(params): Query<ProfileParams>,
+) -> ApiResult {
+    use domain::elements::shadow_ban::ShadowBanRepository as _;
+    use domain::elements::user::UserId;
+
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Owner)?;
+    let user = state
+        .app
+        .users
+        .find_by_id(UserId::from(id))
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such user"))?;
+    let shadow = state
+        .app
+        .shadow_bans
+        .contains(user.telegram_id)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let counts = state
+        .app
+        .posts
+        .count_by_submitter(user.id)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let total: u64 = counts.iter().map(|(_, n)| n).sum();
+    let submissions = state
+        .app
+        .posts
+        .list_by_submitter(user.id, 20, params.offset)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let mut entry = user_json(&Some(user));
+    entry["shadow_banned"] = json!(shadow);
+    Ok(Json(json!({
+        "user": entry,
+        "stats": {
+            "total": total,
+            "by_status": counts.iter().map(|(status, n)| json!({
+                "status": status.to_string(),
+                "count": n,
+            })).collect::<Vec<_>>(),
+        },
+        "submissions": submissions.iter().map(|post| json!({
+            "post_id": post.id.as_ref(),
+            "status": post.status.to_string(),
+            "source": post.source.as_ref().as_str(),
+            "submitted_at": post.submitted_at.to_rfc3339(),
+            "feed_position": post.feed_position,
+        })).collect::<Vec<_>>(),
+        "next_offset": if submissions.len() == 20 {
+            json!(params.offset + 20)
+        } else {
+            json!(null)
+        },
+    })))
+}
+
+#[derive(Deserialize)]
 struct PatchUserBody {
     role: Option<String>,
     banned: Option<bool>,
@@ -1383,6 +1455,7 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/users", get(list_users))
         .route("/shadowban", post(set_shadow_ban))
         .route("/users/{id}", axum::routing::patch(patch_user))
+        .route("/users/{id}/profile", get(user_profile))
         .route("/postinfo/{token}", get(postinfo))
         .with_state(state);
 

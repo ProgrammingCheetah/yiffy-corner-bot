@@ -235,6 +235,45 @@ impl PostRepository for InMemoryPostRepository {
         Ok(entries)
     }
 
+    async fn list_by_submitter(
+        &self,
+        submitter: UserId,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Post>, Self::Err> {
+        let mut mine: Vec<Post> = self
+            .posts
+            .read()
+            .await
+            .values()
+            .filter(|p| p.submitted_by == Some(submitter))
+            .cloned()
+            .collect();
+        mine.sort_by(|a, b| b.submitted_at.cmp(&a.submitted_at));
+        Ok(mine
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect())
+    }
+
+    async fn count_by_submitter(
+        &self,
+        submitter: UserId,
+    ) -> Result<Vec<(PostStatus, u64)>, Self::Err> {
+        use std::collections::BTreeMap;
+        let mut counts: BTreeMap<String, (PostStatus, u64)> = BTreeMap::new();
+        for post in self.posts.read().await.values() {
+            if post.submitted_by == Some(submitter) {
+                counts
+                    .entry(post.status.to_string())
+                    .or_insert((post.status.clone(), 0))
+                    .1 += 1;
+            }
+        }
+        Ok(counts.into_values().collect())
+    }
+
     async fn feed_after_paged(
         &self,
         cursor: u64,

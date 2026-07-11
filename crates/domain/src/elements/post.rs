@@ -335,6 +335,18 @@ pub trait PostRepository: Send + Sync {
         up_to: u64,
         limit: u32,
     ) -> Result<Vec<Post>, Self::Err>;
+    /// One user's submissions, newest first, paged — the profile view.
+    async fn list_by_submitter(
+        &self,
+        submitter: UserId,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Post>, Self::Err>;
+    /// Submission tally per status for one user (absent statuses omitted).
+    async fn count_by_submitter(
+        &self,
+        submitter: UserId,
+    ) -> Result<Vec<(PostStatus, u64)>, Self::Err>;
 }
 
 #[derive(Debug, thiserror::Error)]
