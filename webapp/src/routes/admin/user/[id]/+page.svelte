@@ -1,6 +1,7 @@
 <script>
   // A user's profile: who they are, their submission record, and every
   // administrative action (role, ban, shadowban) in one place.
+  import Loader from '$lib/Loader.svelte';
   import { page } from '$app/stores';
   import { get, post, patch } from '$lib/api.js';
   import { onMount } from 'svelte';
@@ -58,7 +59,7 @@
 </script>
 
 {#if !profile}
-  <p class="muted">Loading…</p>
+  <Loader label="Loading profile…" />
 {:else}
   <h2>
     <a class="back" href="/admin">←</a>

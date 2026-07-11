@@ -1,5 +1,7 @@
 <script>
   import Icon from '$lib/Icon.svelte';
+  import Lottie from '$lib/Lottie.svelte';
+  import splash from '$lib/lottie/splash.json';
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -10,10 +12,20 @@
   let me = null;
   let error = '';
   let showNews = false;
+  let showSplash = false;
 
   onMount(async () => {
     window.Telegram?.WebApp?.ready();
     window.Telegram?.WebApp?.expand();
+    // Startup animation, at most once a day per user (CloudStorage date).
+    const today = new Date().toISOString().slice(0, 10);
+    loadJson('splash_shown', null).then((last) => {
+      if (last !== today) {
+        showSplash = true;
+        saveJson('splash_shown', today);
+        setTimeout(() => (showSplash = false), 1700);
+      }
+    });
     // Announce the current version until THIS user dismisses THIS version
     // (CloudStorage — follows the user across devices).
     const dismissed = await loadJson('changelog_dismissed', null);
@@ -46,6 +58,12 @@
 </script>
 
 <div class="shell">
+  {#if showSplash}
+    <button class="splash" on:click={() => (showSplash = false)}>
+      <Lottie animationData={splash} loop={false} size={140} />
+      <strong>Yiffy Corner</strong>
+    </button>
+  {/if}
   {#if error}
     <div class="boot-error">
       <h2>Can't sign you in</h2>
@@ -204,6 +222,29 @@
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
+  }
+  /* Startup splash: full-bleed, tap-to-skip, fades itself away. */
+  .splash {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--tg-theme-bg-color, #17212b);
+    color: inherit;
+    border-radius: 0;
+    animation: splash-out 1.7s ease forwards;
+  }
+  .splash strong {
+    font-size: 1.1rem;
+    letter-spacing: 0.04em;
+  }
+  @keyframes splash-out {
+    0%, 82% { opacity: 1; }
+    100% { opacity: 0; visibility: hidden; }
   }
   .news {
     display: flex;

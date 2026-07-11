@@ -1,0 +1,1 @@
+import{a as l}from"./CwN-rFay.js";import{C as A,h as C}from"./DniTlFOs.js";function S(i,b,f,h,t,r){var a=i[A];if(C||a!==f||a===void 0){var o=l(f,h,r);(!C||o!==i.getAttribute("class"))&&(o==null?i.removeAttribute("class"):i.className=o),i[A]=f}else if(r&&t!==r)for(var u in r){var g=!!r[u];(t==null||g!==!!t[u])&&i.classList.toggle(u,g)}return r}export{S as s};

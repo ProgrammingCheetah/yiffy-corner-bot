@@ -1,6 +1,7 @@
 <script>
   // The report desk: every post with open reports — who flagged it, why —
   // with the same Take down / Dismiss resolution the DM buttons offer.
+  import Loader from '$lib/Loader.svelte';
   import Icon from '$lib/Icon.svelte';
   import Media from '$lib/Media.svelte';
   import { get, post } from '$lib/api.js';
@@ -70,7 +71,7 @@
 </h2>
 
 {#if loading}
-  <p class="muted">Loading…</p>
+  <Loader label="Loading reports…" />
 {:else if !cards.length}
   <div class="empty">Nothing reported. All quiet ✨</div>
 {/if}

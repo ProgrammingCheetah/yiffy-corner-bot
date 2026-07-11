@@ -2,6 +2,7 @@
   // The feed queue: where every poster's cursor sits against the feed end,
   // plus the /feedafter view — everything still ahead of a given post.
   // Tapping a poster opens its own paginated queue page.
+  import Loader from '$lib/Loader.svelte';
   import { goto } from '$app/navigation';
   import Media from '$lib/Media.svelte';
   import { get } from '$lib/api.js';
@@ -89,7 +90,7 @@
     </div>
   {/each}
 {:else}
-  <p class="muted">Loading…</p>
+  <Loader label="Loading posters…" />
 {/if}
 
 <h3>What comes after a post?</h3>

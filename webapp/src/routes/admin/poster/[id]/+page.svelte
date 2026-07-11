@@ -1,6 +1,7 @@
 <script>
   // A poster's profile: binding, cadence, taste (raw DSL + plain reading),
   // publish stats, and every management action in one place.
+  import Loader from '$lib/Loader.svelte';
   import TagInput from '$lib/TagInput.svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -41,7 +42,7 @@
 </script>
 
 {#if !p}
-  <p class="muted">Loading…</p>
+  <Loader label="Loading poster…" />
 {:else}
   <h2>
     <a class="back" href="/admin">←</a>

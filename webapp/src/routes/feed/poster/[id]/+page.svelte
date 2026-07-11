@@ -1,6 +1,7 @@
 <script>
   // One poster's upcoming queue: only what it WOULD post, page by page so
   // long backlogs never lag the device.
+  import Loader from '$lib/Loader.svelte';
   import { page } from '$app/stores';
   import Media from '$lib/Media.svelte';
   import { get, del } from '$lib/api.js';
@@ -86,7 +87,7 @@
 </h2>
 
 {#if firstLoad}
-  <p class="muted">Loading…</p>
+  <Loader label="Scanning the queue…" />
 {:else if !entries.length}
   <div class="empty">Nothing this poster would publish — it's all caught up.</div>
 {/if}

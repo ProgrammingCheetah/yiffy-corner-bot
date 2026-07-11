@@ -1,5 +1,6 @@
 <script>
   // e621 browsing as a deck: right = save into the feed, left = skip.
+  import Loader from '$lib/Loader.svelte';
   import Icon from '$lib/Icon.svelte';
   import TagInput from '$lib/TagInput.svelte';
   import SwipeDeck from '$lib/SwipeDeck.svelte';
@@ -130,7 +131,9 @@
   on:right={(e) => save(e.detail)}
   on:left={(e) => skip(e.detail)}
 >
-  <span slot="empty">{busy ? 'Searching…' : 'Search something, then swipe.'}</span>
+  <span slot="empty">
+    {#if busy}<Loader label="Searching…" />{:else}Search something, then swipe.{/if}
+  </span>
 </SwipeDeck>
 
 {#if cards.length}
