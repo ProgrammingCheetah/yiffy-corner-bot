@@ -141,6 +141,8 @@ pub struct AppState {
     pub reports: SqliteReportRepository,
     /// Browse skiplist: sources moderators waved off for good.
     pub skips: SqliteSkipListRepository,
+    /// Shadowbans: silently dropped reports/wishes/submissions.
+    pub shadow_bans: persistence::sqlite::shadow_ban::SqliteShadowBanRepository,
     pub publications: SqlitePublicationRepository,
     pub announcements: SqliteAnnouncementRepository,
     pub scoreboards: SqliteScoreboardRepository,

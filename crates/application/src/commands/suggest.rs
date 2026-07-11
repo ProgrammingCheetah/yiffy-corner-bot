@@ -11,6 +11,7 @@ use chrono::Utc;
 use domain::elements::{
     e621::E621Fetcher,
     post::{Post, PostRepository, PostStatus, Source},
+    shadow_ban::ShadowBanRepository,
     tag::Tag,
     tag_policy::ForbiddenTagRepository,
     user::{Role, TelegramId, User, UserRepository},
@@ -58,19 +59,25 @@ pub enum SuggestOutcome {
     /// Non-e621 source with no tags: nothing was created yet — the bot must
     /// ask the submitter for tags and retry with them.
     TagsNeeded,
+    /// The submitter is shadowbanned: answer exactly like `Queued`, but
+    /// nothing was stored and no reviewer hears about it. `fake_id` is a
+    /// plausible, deterministic post number for the reply.
+    ShadowDropped { fake_id: u64 },
 }
 
-pub async fn handle<P, E, F>(
+pub async fn handle<P, E, F, SB>(
     cmd: SuggestCommand,
     users: &impl UserRepository,
     posts: &P,
     e621: &E,
     forbidden: &F,
+    shadow: &SB,
 ) -> HandlerResult<SuggestOutcome>
 where
     P: PostRepository,
     E: E621Fetcher,
     F: ForbiddenTagRepository,
+    SB: ShadowBanRepository,
 {
     // Auto-register unknown submitters; refresh the cached display name for
     // known ones (it feeds published attribution).
@@ -166,6 +173,36 @@ where
         }
         _ => (extra_tags, extra_artists),
     };
+
+    // Shadowbanned submitters got every real check above (bad URLs,
+    // duplicates, the tags dialogue) — but nothing gets stored and no
+    // reviewer hears about it. The reply needs a plausible post number, so
+    // one is derived deterministically from (submitter, source).
+    if shadow
+        .contains(cmd.submitter)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+    {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x00000100000001b3;
+        let mut hash = FNV_OFFSET;
+        for byte in source
+            .as_ref()
+            .as_str()
+            .bytes()
+            .chain(cmd.submitter.as_ref().to_string().bytes())
+        {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        let fake_id = hash % 900 + 100;
+        tracing::info!(
+            event = %Event::ShadowDropped, who = cmd.submitter.as_ref(),
+            source = %source.as_ref(), flow = "suggest", fake_id,
+            "shadowbanned submission dropped"
+        );
+        return Ok(SuggestOutcome::ShadowDropped { fake_id });
+    }
 
     // Tag-check at the door: a globally forbidden tag auto-Bans (cached
     // verdict, re-validated at consume time). The hit and its stored
@@ -271,8 +308,8 @@ mod tests {
         tag::Tag,
     };
     use persistence::in_memory::{
-        post::InMemoryPostRepository, tag_policy::InMemoryForbiddenTagRepository,
-        user::InMemoryUserRepository,
+        post::InMemoryPostRepository, shadow_ban::InMemoryShadowBanRepository,
+        tag_policy::InMemoryForbiddenTagRepository, user::InMemoryUserRepository,
     };
 
     struct StubFetcher(HashMap<Url, Vec<Tag>>);
@@ -322,6 +359,7 @@ mod tests {
         posts: InMemoryPostRepository,
         forbidden: InMemoryForbiddenTagRepository,
         fetcher: StubFetcher,
+        shadow: InMemoryShadowBanRepository,
     }
 
     impl Fixture {
@@ -331,6 +369,7 @@ mod tests {
                 posts: InMemoryPostRepository::new(),
                 forbidden: InMemoryForbiddenTagRepository::new(),
                 fetcher: StubFetcher(HashMap::new()),
+                shadow: InMemoryShadowBanRepository::new(),
             }
         }
 
@@ -354,6 +393,7 @@ mod tests {
                 &self.posts,
                 &self.fetcher,
                 &self.forbidden,
+                &self.shadow,
             )
             .await
         }
@@ -504,6 +544,7 @@ mod tests {
             &fx.posts,
             &fx.fetcher,
             &fx.forbidden,
+            &fx.shadow,
         )
         .await
         .unwrap();
@@ -527,6 +568,7 @@ mod tests {
             &fx.posts,
             &fx.fetcher,
             &fx.forbidden,
+            &fx.shadow,
         )
         .await
         .unwrap();
@@ -578,6 +620,7 @@ mod tests {
             &fx.posts,
             &fx.fetcher,
             &fx.forbidden,
+            &fx.shadow,
         )
         .await
         .unwrap();
@@ -602,6 +645,7 @@ mod tests {
             &fx.posts,
             &fx.fetcher,
             &fx.forbidden,
+            &fx.shadow,
         )
         .await
         .unwrap();

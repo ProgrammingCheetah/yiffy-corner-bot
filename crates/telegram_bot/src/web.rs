@@ -1150,7 +1150,51 @@ async fn edit_tag_policy(
 
 // -------------------------------------------------------- owner: users ----
 
+#[derive(Deserialize)]
+struct ShadowBanBody {
+    telegram_id: i64,
+    banned: bool,
+}
+
+/// Set or lift a shadowban: the target keeps the full report/wish/submit
+/// flow with the same responses, but nothing they send ever lands.
+async fn set_shadow_ban(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(body): Json<ShadowBanBody>,
+) -> ApiResult {
+    use domain::elements::shadow_ban::ShadowBanRepository as _;
+
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let who = TelegramId::from(body.telegram_id);
+    if body.banned {
+        state
+            .app
+            .shadow_bans
+            .set(who, authed.user.telegram_id, chrono::Utc::now())
+            .await
+            .map_err(bad_request)?;
+    } else {
+        state.app.shadow_bans.lift(who).await.map_err(bad_request)?;
+    }
+    tracing::info!(
+        event = %Event::ShadowBanChanged, who = body.telegram_id,
+        banned = body.banned, by = authed.user.telegram_id.as_ref(),
+        "shadow ban changed"
+    );
+    Ok(Json(json!({
+        "message": if body.banned {
+            format!("{} is shadowbanned — they'll never know.", body.telegram_id)
+        } else {
+            format!("Shadowban lifted for {}.", body.telegram_id)
+        }
+    })))
+}
+
 async fn list_users(State(state): State<Arc<WebState>>, headers: HeaderMap) -> ApiResult {
+    use domain::elements::shadow_ban::ShadowBanRepository as _;
+
     let authed = authenticate(&state, &headers).await?;
     require(&authed, Role::Owner)?;
     let mut users = Vec::new();
@@ -1162,7 +1206,15 @@ async fn list_users(State(state): State<Arc<WebState>>, headers: HeaderMap) -> A
             .await
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
         {
-            users.push(user_json(&Some(user)));
+            let shadow = state
+                .app
+                .shadow_bans
+                .contains(user.telegram_id)
+                .await
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            let mut entry = user_json(&Some(user));
+            entry["shadow_banned"] = json!(shadow);
+            users.push(entry);
         }
     }
     Ok(Json(json!({ "users": users })))
@@ -1317,6 +1369,7 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
             get(list_tag_policies).post(edit_tag_policy),
         )
         .route("/users", get(list_users))
+        .route("/shadowban", post(set_shadow_ban))
         .route("/users/{id}", axum::routing::patch(patch_user))
         .route("/postinfo/{token}", get(postinfo))
         .with_state(state);

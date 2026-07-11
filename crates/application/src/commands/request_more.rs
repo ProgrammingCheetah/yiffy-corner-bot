@@ -5,6 +5,7 @@
 
 use domain::elements::{
     post::{Post, PostId, PostRepository},
+    shadow_ban::ShadowBanRepository,
     user::{Role, TelegramId, User, UserRepository},
 };
 use telemetry::Event;
@@ -20,21 +21,40 @@ pub struct MoreRequest {
 
 /// A viewer (any Telegram user — registration not required) asks for more
 /// like `post_id`. `wish` is their answer to "what would you like more of?".
-pub async fn request_more<P>(
+/// A shadowbanned requester gets the same flow back with an empty reviewer
+/// list — the wish quietly goes nowhere.
+pub async fn request_more<P, SB>(
     requester: TelegramId,
     post_id: PostId,
     wish: &str,
     posts: &P,
     users: &impl UserRepository,
+    shadow: &SB,
 ) -> HandlerResult<MoreRequest>
 where
     P: PostRepository,
+    SB: ShadowBanRepository,
 {
     let post = posts
         .find_by_id(post_id)
         .await
         .map_err(|_| HandlerError::RepositoryError)?
         .ok_or(HandlerError::PostNotFound(post_id))?;
+
+    if shadow
+        .contains(requester)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+    {
+        tracing::info!(
+            event = %Event::ShadowDropped, post_id = %post_id,
+            who = requester.as_ref(), flow = "more", "shadowbanned wish dropped"
+        );
+        return Ok(MoreRequest {
+            post,
+            reviewers: Vec::new(),
+        });
+    }
 
     let mut reviewers = users
         .list_by_role(Role::Moderator)
@@ -59,7 +79,10 @@ mod tests {
 
     use chrono::Utc;
     use domain::elements::post::{PostStatus, Source};
-    use persistence::in_memory::{post::InMemoryPostRepository, user::InMemoryUserRepository};
+    use persistence::in_memory::{
+        post::InMemoryPostRepository, shadow_ban::InMemoryShadowBanRepository,
+        user::InMemoryUserRepository,
+    };
     use url::Url;
 
     #[tokio::test]
@@ -74,6 +97,7 @@ mod tests {
             .await
             .unwrap();
         let posts = InMemoryPostRepository::new();
+        let shadow = InMemoryShadowBanRepository::new();
         let post = posts
             .create(
                 Source::try_from(Url::parse("https://e621.net/posts/1").unwrap()).unwrap(),
@@ -86,14 +110,14 @@ mod tests {
             .await
             .unwrap();
 
-        let relay = request_more(TelegramId::from(99), post.id, "more wolves", &posts, &users)
+        let relay = request_more(TelegramId::from(99), post.id, "more wolves", &posts, &users, &shadow)
             .await
             .unwrap();
         assert_eq!(relay.post.id, post.id);
         assert_eq!(relay.reviewers.len(), 2);
 
         assert!(matches!(
-            request_more(TelegramId::from(99), PostId::from(777), "?", &posts, &users)
+            request_more(TelegramId::from(99), PostId::from(777), "?", &posts, &users, &shadow)
                 .await
                 .unwrap_err(),
             HandlerError::PostNotFound(_)

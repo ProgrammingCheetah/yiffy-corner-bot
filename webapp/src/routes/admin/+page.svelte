@@ -155,6 +155,7 @@
         <strong>{u.name ?? u.telegram_id}</strong>
         <span class="muted">#{u.telegram_id}</span>
         {#if u.banned}<span class="chip x">banned</span>{/if}
+        {#if u.shadow_banned}<span class="chip ghost-chip">👻 shadow</span>{/if}
       </div>
       <div class="row-btns">
         <select value={u.role} on:change={(e) => changeRole(u, e.target.value, e.target)}>
@@ -164,6 +165,10 @@
         </select>
         <button class="ghost" on:click={() => run(patch(`/users/${u.id}`, { banned: !u.banned }), loadUsers)}>
           {u.banned ? 'Unban' : 'Ban'}
+        </button>
+        <button class="ghost" title="They keep the full flow; nothing ever lands."
+          on:click={() => run(post('/shadowban', { telegram_id: u.telegram_id, banned: !u.shadow_banned }), loadUsers)}>
+          {u.shadow_banned ? '👻 Lift' : '👻 Shadow'}
         </button>
       </div>
     </div>
@@ -225,6 +230,7 @@
     padding-left: 2px; font-style: italic;
   }
   .frow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chip.ghost-chip { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.4); }
   .why { font-size: 0.78rem; }
   .ghost { background: transparent; border: 1px solid var(--line); color: inherit; }
   .danger { background: #7f1d1d; }

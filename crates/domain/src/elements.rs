@@ -9,6 +9,7 @@ pub mod publisher;
 pub mod publisher_config;
 pub mod report;
 pub mod scoreboard;
+pub mod shadow_ban;
 pub mod skiplist;
 pub mod tag;
 pub mod tag_policy;

@@ -172,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
         telegram_copies: telegram_copies.clone(),
         reports: SqliteReportRepository::new(pool.clone()),
         skips: persistence::sqlite::skiplist::SqliteSkipListRepository::new(pool.clone()),
+        shadow_bans: persistence::sqlite::shadow_ban::SqliteShadowBanRepository::new(pool.clone()),
         publications,
         announcements: persistence::sqlite::announcement::SqliteAnnouncementRepository::new(
             pool.clone(),

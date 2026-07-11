@@ -6,6 +6,7 @@ use domain::elements::{
     post::{Post, PostId, PostRepository},
     publisher::{Publication, PublicationRepository},
     report::{Report, ReportRepository},
+    shadow_ban::ShadowBanRepository,
     user::{Role, TelegramId, User, UserRepository},
 };
 use telemetry::Event;
@@ -28,30 +29,60 @@ pub enum ReportOutcome {
     /// This viewer already reported this post (abuse dedupe) — acknowledge
     /// quietly, no re-notification.
     Duplicate,
+    /// The reporter is shadowbanned: thank them exactly like a fresh
+    /// report, but nothing was stored and nobody gets notified.
+    ShadowDropped,
 }
 
-/// A viewer (any Telegram user — registration not required) reports a post.
-/// `reason` is what they answered to "why?" — `None` only on paths that
-/// cannot collect one (legacy buttons with the reporter's DMs closed).
-/// `reporter_username` is their live @username, the contact moderators get.
-pub async fn report<P, RR>(
-    reporter: TelegramId,
-    reporter_username: Option<String>,
+/// Who is reporting: the raw Telegram id (registration not required) and
+/// their live @username — the contact moderators get.
+#[derive(Debug, Clone)]
+pub struct Reporter {
+    pub id: TelegramId,
+    pub username: Option<String>,
+}
+
+/// A viewer reports a post. `reason` is what they answered to "why?" —
+/// `None` only on paths that cannot collect one (legacy buttons with the
+/// reporter's DMs closed).
+pub async fn report<P, RR, SB>(
+    reporter: Reporter,
     post_id: PostId,
     reason: Option<String>,
     posts: &P,
     reports: &RR,
     users: &impl UserRepository,
+    shadow: &SB,
 ) -> HandlerResult<ReportOutcome>
 where
     P: PostRepository,
     RR: ReportRepository,
+    SB: ShadowBanRepository,
 {
+    let Reporter {
+        id: reporter,
+        username: reporter_username,
+    } = reporter;
     let post = posts
         .find_by_id(post_id)
         .await
         .map_err(|_| HandlerError::RepositoryError)?
         .ok_or(HandlerError::PostNotFound(post_id))?;
+
+    // Shadowbanned reporters get the full flow and the same thank-you —
+    // the report just never lands. (Checked after the post lookup so
+    // errors stay indistinguishable too.)
+    if shadow
+        .contains(reporter)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+    {
+        tracing::info!(
+            event = %Event::ShadowDropped, post_id = %post_id,
+            who = reporter.as_ref(), flow = "report", "shadowbanned report dropped"
+        );
+        return Ok(ReportOutcome::ShadowDropped);
+    }
 
     let reason = reason
         .map(|r| r.trim().to_string())
@@ -226,7 +257,8 @@ mod tests {
     use domain::elements::post::{PostStatus, Source};
     use persistence::in_memory::{
         post::InMemoryPostRepository, publication::InMemoryPublicationRepository,
-        report::InMemoryReportRepository, user::InMemoryUserRepository,
+        report::InMemoryReportRepository, shadow_ban::InMemoryShadowBanRepository,
+        user::InMemoryUserRepository,
     };
     use url::Url;
 
@@ -235,6 +267,7 @@ mod tests {
         posts: InMemoryPostRepository,
         reports: InMemoryReportRepository,
         publications: InMemoryPublicationRepository,
+        shadow: InMemoryShadowBanRepository,
     }
 
     async fn fixture() -> (Fixture, PostId) {
@@ -265,6 +298,7 @@ mod tests {
                 posts,
                 reports: InMemoryReportRepository::new(),
                 publications: InMemoryPublicationRepository::new(),
+                shadow: InMemoryShadowBanRepository::new(),
             },
             post.id,
         )
@@ -274,13 +308,16 @@ mod tests {
     async fn first_report_notifies_repeat_is_duplicate() {
         let (fx, post_id) = fixture().await;
         let outcome = report(
-            TelegramId::from(99),
-            None,
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
             post_id,
             Some("  untagged gore  ".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
+            &fx.shadow,
         )
         .await
         .unwrap();
@@ -298,13 +335,16 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("untagged gore")); // trimmed
 
         let again = report(
-            TelegramId::from(99),
-            None,
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
             post_id,
             Some("still gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
+            &fx.shadow,
         )
         .await
         .unwrap();
@@ -315,13 +355,16 @@ mod tests {
     async fn reporting_unknown_post_fails() {
         let (fx, _) = fixture().await;
         let err = report(
-            TelegramId::from(99),
-            None,
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
             PostId::from(777),
             Some("untagged gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
+            &fx.shadow,
         )
         .await
         .unwrap_err();
@@ -379,6 +422,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shadowbanned_reporter_is_thanked_but_nothing_lands() {
+        use domain::elements::shadow_ban::ShadowBanRepository as _;
+
+        let (fx, post_id) = fixture().await;
+        fx.shadow
+            .set(TelegramId::from(99), TelegramId::from(1), Utc::now())
+            .await
+            .unwrap();
+        let outcome = report(
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
+            post_id,
+            Some("spam".to_string()),
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+            &fx.shadow,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, ReportOutcome::ShadowDropped));
+        assert_eq!(fx.reports.count_for(post_id).await.unwrap(), 0);
+
+        // Lifting restores normal behavior.
+        fx.shadow.lift(TelegramId::from(99)).await.unwrap();
+        let outcome = report(
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
+            post_id,
+            Some("spam".to_string()),
+            &fx.posts,
+            &fx.reports,
+            &fx.users,
+            &fx.shadow,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, ReportOutcome::New { .. }));
+    }
+
+    #[tokio::test]
     async fn overview_groups_reports_and_drops_taken_down_posts() {
         let (fx, post_id) = fixture().await;
         let second = fx
@@ -399,13 +487,16 @@ mod tests {
             (99, second.id, "off-topic"),
         ] {
             report(
-                TelegramId::from(reporter),
-                None,
+                Reporter {
+                    id: TelegramId::from(reporter),
+                    username: None,
+                },
                 post,
                 Some(why.to_string()),
                 &fx.posts,
                 &fx.reports,
                 &fx.users,
+                &fx.shadow,
             )
             .await
             .unwrap();
@@ -447,13 +538,16 @@ mod tests {
     async fn dismiss_clears_so_fresh_reports_renotify() {
         let (fx, post_id) = fixture().await;
         report(
-            TelegramId::from(99),
-            None,
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
             post_id,
             Some("untagged gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
+            &fx.shadow,
         )
         .await
         .unwrap();
@@ -461,13 +555,16 @@ mod tests {
             .await
             .unwrap();
         let outcome = report(
-            TelegramId::from(99),
-            None,
+            Reporter {
+                id: TelegramId::from(99),
+                username: None,
+            },
             post_id,
             Some("untagged gore".to_string()),
             &fx.posts,
             &fx.reports,
             &fx.users,
+            &fx.shadow,
         )
         .await
         .unwrap();

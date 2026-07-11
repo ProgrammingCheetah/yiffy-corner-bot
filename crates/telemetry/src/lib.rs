@@ -136,6 +136,8 @@ vocabulary! {
         PostTakenDown => "post_taken_down",
         ReportsDismissed => "reports_dismissed",
         MoreRequested => "more_requested",
+        ShadowBanChanged => "shadow_ban_changed",
+        ShadowDropped => "shadow_dropped",
 
         // Announcements
         AnnouncementConfigChanged => "announcement_config_changed",

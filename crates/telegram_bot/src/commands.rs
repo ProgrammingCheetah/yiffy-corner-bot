@@ -319,7 +319,15 @@ async fn relay_more_request(
     use teloxide::types::ParseMode;
     use teloxide::utils::html::escape;
 
-    match request_more(requester, post_id, wish, &state.posts, &state.users).await {
+    match request_more(
+        requester,
+        post_id,
+        wish,
+        &state.posts,
+        &state.users,
+        &state.shadow_bans,
+    )
+    .await {
         Err(e) => describe(e),
         Ok(relay) => {
             let requester_label = contact_label(state, requester, requester_username).await;
@@ -388,22 +396,29 @@ async fn file_report(
     post_id: PostId,
     reason: Option<String>,
 ) -> String {
-    use application::commands::report::{self, ReportOutcome};
+    use application::commands::report::{self, ReportOutcome, Reporter};
     use teloxide::types::ParseMode;
     use teloxide::utils::html::escape;
 
     match report::report(
-        reporter,
-        reporter_username.clone(),
+        Reporter {
+            id: reporter,
+            username: reporter_username.clone(),
+        },
         post_id,
         reason,
         &state.posts,
         &state.reports,
         &state.users,
+        &state.shadow_bans,
     )
     .await
     {
         Ok(ReportOutcome::Duplicate) => "You already reported this post.".to_string(),
+        // Same thank-you a fresh report gets — the drop must be invisible.
+        Ok(ReportOutcome::ShadowDropped) => {
+            "Thank you — the moderators have been notified.".to_string()
+        }
         Ok(ReportOutcome::New {
             post,
             reviewers,
@@ -918,6 +933,7 @@ pub(crate) async fn submit(
         &state.posts,
         &*state.e621,
         &state.forbidden,
+        &state.shadow_bans,
     )
     .await;
     match outcome {
@@ -1097,6 +1113,18 @@ pub(crate) async fn submit(
                 "This post contains content that is not allowed here ({tag}: {reason})."
             ),
             None => format!("This post contains content that is not allowed here ({tag})."),
+        },
+        // Shadowban: word-for-word the normal queue reply — the forward
+        // arm included — with the deterministic fake id standing in.
+        Ok(SuggestOutcome::ShadowDropped { fake_id }) => match &forward {
+            Some(fwd) => format!(
+                "Submission #{fake_id} is in the moderation queue — it will be posted as a copy \
+                 credited to @{} once approved!",
+                fwd.channel_username
+            ),
+            None => format!(
+                "Submission #{fake_id} is in the moderation queue — you'll see it posted once approved!"
+            ),
         },
         Err(e) => describe(e),
     }
