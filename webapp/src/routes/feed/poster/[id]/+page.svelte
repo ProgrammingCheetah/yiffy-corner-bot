@@ -2,6 +2,7 @@
   // One poster's upcoming queue: only what it WOULD post, page by page so
   // long backlogs never lag the device.
   import { page } from '$app/stores';
+  import Media from '$lib/Media.svelte';
   import { get, del } from '$lib/api.js';
   import { onMount } from 'svelte';
 
@@ -41,6 +42,25 @@
     return confirm(message);
   }
 
+  // Single-slot media preview: loading a post unloads the previous one,
+  // so at most one media element is alive at a time.
+  let loadedId = null;
+  let loadedMedia = null;
+  async function toggleLoad(entry) {
+    if (loadedId === entry.post_id) {
+      loadedId = loadedMedia = null;
+      return;
+    }
+    loadedId = entry.post_id;
+    loadedMedia = null; // shimmer while it resolves
+    try {
+      const media = await get(`/posts/${entry.post_id}/media`);
+      if (loadedId === entry.post_id) loadedMedia = media;
+    } catch {
+      if (loadedId === entry.post_id) loadedMedia = { kind: 'link' };
+    }
+  }
+
   // Removal is feed-wide: soft-delete, every poster skips it.
   async function removePost(entry) {
     const ok = await confirmDialog(
@@ -77,6 +97,9 @@
     <div class="body">
       <div>
         <strong>#{e.post_id}</strong>
+        <button class="bare" on:click={() => toggleLoad(e)}>
+          {loadedId === e.post_id ? 'Unload' : '▶ Load'}
+        </button>
         <button class="bare" on:click={() =>
           (window.Telegram?.WebApp?.openLink ?? window.open)(e.source)}>
           Source ↗
@@ -85,6 +108,9 @@
       </div>
       {#if e.tags.length}
         <div class="tags muted">{e.tags.slice(0, 8).join(' ')}{e.tags.length > 8 ? ' …' : ''}</div>
+      {/if}
+      {#if loadedId === e.post_id}
+        <div class="pane"><Media media={loadedMedia} /></div>
       {/if}
     </div>
   </div>
@@ -128,5 +154,6 @@
   .bare { background: transparent; padding: 0; color: var(--accent); font-size: 0.85rem; }
   .remove { color: #f87171; margin-left: 10px; }
   .more { width: 100%; margin-top: 6px; }
+  .pane { height: 34dvh; margin-top: 6px; }
   .done { text-align: center; margin-top: 10px; }
 </style>

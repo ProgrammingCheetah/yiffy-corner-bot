@@ -3,6 +3,7 @@
   // plus the /feedafter view — everything still ahead of a given post.
   // Tapping a poster opens its own paginated queue page.
   import { goto } from '$app/navigation';
+  import Media from '$lib/Media.svelte';
   import { get } from '$lib/api.js';
   import { onMount } from 'svelte';
 
@@ -32,6 +33,24 @@
       say(e.message);
     }
     busy = false;
+  }
+
+  // Single-slot media preview: loading a post unloads the previous one.
+  let loadedId = null;
+  let loadedMedia = null;
+  async function toggleLoad(entry) {
+    if (loadedId === entry.post_id) {
+      loadedId = loadedMedia = null;
+      return;
+    }
+    loadedId = entry.post_id;
+    loadedMedia = null;
+    try {
+      const media = await get(`/posts/${entry.post_id}/media`);
+      if (loadedId === entry.post_id) loadedMedia = media;
+    } catch {
+      if (loadedId === entry.post_id) loadedMedia = { kind: 'link' };
+    }
   }
 
   onMount(loadQueue);
@@ -98,6 +117,9 @@
         <div>
           <strong>#{e.post_id}</strong>
           <span class="chip">{e.status}</span>
+          <button class="bare" on:click={() => toggleLoad(e)}>
+            {loadedId === e.post_id ? 'Unload' : '▶ Load'}
+          </button>
           <button class="bare" on:click={() =>
             (window.Telegram?.WebApp?.openLink ?? window.open)(e.source)}>
             Source ↗
@@ -105,6 +127,9 @@
         </div>
         {#if e.tags.length}
           <div class="tags muted">{e.tags.slice(0, 8).join(' ')}{e.tags.length > 8 ? ' …' : ''}</div>
+        {/if}
+        {#if loadedId === e.post_id}
+          <div class="pane"><Media media={loadedMedia} /></div>
         {/if}
       </div>
     </div>
@@ -162,4 +187,5 @@
   .body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .tags { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bare { background: transparent; padding: 0; color: var(--accent); font-size: 0.85rem; }
+  .pane { height: 34dvh; margin-top: 6px; }
 </style>
