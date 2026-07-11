@@ -22,7 +22,15 @@ use persistence::sqlite::{
     user::SqliteUserRepository,
 };
 
-pub const USER_AGENT: &str = "yiffy-corner-bot/0.2 (by ZieloAnima on e621)";
+/// App version — keep in step with `webapp/src/lib/changelog.js` (the
+/// changelog is the user-facing face of the same number).
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub const USER_AGENT: &str = concat!(
+    "yiffy-corner-bot/",
+    env!("CARGO_PKG_VERSION"),
+    " (by ZieloAnima on e621)"
+);
 
 /// Environment-derived configuration.
 ///

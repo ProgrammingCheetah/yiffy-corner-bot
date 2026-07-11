@@ -1,20 +1,33 @@
 <script>
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import { get } from '$lib/api.js';
+  import { loadJson, saveJson } from '$lib/store.js';
+  import { currentVersion } from '$lib/changelog.js';
 
   let me = null;
   let error = '';
+  let showNews = false;
 
   onMount(async () => {
     window.Telegram?.WebApp?.ready();
     window.Telegram?.WebApp?.expand();
+    // Announce the current version until THIS user dismisses THIS version
+    // (CloudStorage — follows the user across devices).
+    const dismissed = await loadJson('changelog_dismissed', null);
+    showNews = dismissed !== currentVersion;
     try {
       me = await get('/me');
     } catch (e) {
       error = e.message;
     }
   });
+
+  function dismissNews() {
+    showNews = false;
+    saveJson('changelog_dismissed', currentVersion);
+  }
 
   // The API sends roles in their storage form: "user" | "moderator" | "owner".
   $: role = (me?.role ?? 'user').toLowerCase();
@@ -28,7 +41,8 @@
           { href: '/reports', label: 'Reports', icon: '⚠️' }
         ]
       : []),
-    ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: '⚙️' }] : [])
+    ...(role === 'owner' ? [{ href: '/admin', label: 'Admin', icon: '⚙️' }] : []),
+    { href: '/changelog', label: 'News', icon: '✨' }
   ];
 </script>
 
@@ -43,6 +57,14 @@
       </p>
     </div>
   {:else}
+    {#if showNews}
+      <div class="news">
+        <button class="news-body" on:click={() => { dismissNews(); goto('/changelog'); }}>
+          ✨ Yiffy Corner v{currentVersion} — tap to see what's new
+        </button>
+        <button class="news-x" on:click={dismissNews}>✕</button>
+      </div>
+    {/if}
     <main><slot /></main>
     <nav>
       {#each tabs as tab}
@@ -171,6 +193,31 @@
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
+  }
+  .news {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    max-width: 640px;
+    width: calc(100% - 28px);
+    margin: 10px auto 0;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    animation: page-in 0.25s ease;
+  }
+  .news button {
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.85rem;
+    padding: 10px 12px;
+  }
+  .news-body {
+    flex: 1;
+    text-align: left;
+  }
+  .news button.news-x {
+    color: var(--hint);
   }
   main {
     flex: 1;

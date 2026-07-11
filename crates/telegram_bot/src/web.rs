@@ -229,6 +229,7 @@ async fn me(State(state): State<Arc<WebState>>, headers: HeaderMap) -> ApiResult
         "telegram_id": authed.user.telegram_id.as_ref(),
         "name": authed.user.display_name,
         "role": authed.user.role.to_string(),
+        "version": crate::state::APP_VERSION,
     })))
 }
 
