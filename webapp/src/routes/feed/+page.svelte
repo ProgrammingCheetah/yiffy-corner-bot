@@ -1,9 +1,9 @@
 <script>
   // The feed queue: where every poster's cursor sits against the feed end,
   // plus the /feedafter view — everything still ahead of a given post.
-  // Tapping a poster opens ITS queue (each entry carrying that poster's
-  // eligibility verdict), where a post can be removed from the feed.
-  import { get, del } from '$lib/api.js';
+  // Tapping a poster opens its own paginated queue page.
+  import { goto } from '$app/navigation';
+  import { get } from '$lib/api.js';
   import { onMount } from 'svelte';
 
   let queue = null;
@@ -11,50 +11,12 @@
   let slice = null;
   let busy = false;
   let toast = '';
-  let open = null; // poster id whose queue is expanded
-  let posterQueue = null;
 
   function say(t) { toast = t; setTimeout(() => (toast = ''), 3500); }
 
   async function loadQueue() {
     try {
       queue = await get('/feed/queue');
-    } catch (e) {
-      say(e.message);
-    }
-  }
-
-  async function togglePoster(p) {
-    if (open === p.id) { open = null; posterQueue = null; return; }
-    open = p.id;
-    posterQueue = null;
-    try {
-      posterQueue = await get(`/posters/${p.id}/queue`);
-    } catch (e) {
-      say(e.message);
-      open = null;
-    }
-  }
-
-  async function confirmDialog(message) {
-    const wa = window.Telegram?.WebApp;
-    if (wa?.showConfirm && wa.isVersionAtLeast?.('6.2')) {
-      return new Promise((resolve) => wa.showConfirm(message, resolve));
-    }
-    return confirm(message);
-  }
-
-  // Removal is feed-wide: the post is soft-deleted, every poster skips it.
-  async function removePost(entry) {
-    const ok = await confirmDialog(
-      `Remove post #${entry.post_id} from the feed? Every channel skips it — this is not per-poster.`
-    );
-    if (!ok) return;
-    try {
-      const res = await del(`/posts/${entry.post_id}`);
-      say(res.message);
-      posterQueue.entries = posterQueue.entries.filter((e) => e.post_id !== entry.post_id);
-      posterQueue = posterQueue;
     } catch (e) {
       say(e.message);
     }
@@ -85,8 +47,8 @@
     <p class="muted">No posters configured yet.</p>
   {/if}
   {#each queue.posters as p (p.id)}
-    <div class="poster" class:open={open === p.id}>
-      <button class="bare head-btn" on:click={() => togglePoster(p)}>
+    <div class="poster">
+      <button class="bare head-btn" on:click={() => goto(`/feed/poster/${p.id}`)}>
         <div class="line">
           <strong>Poster #{p.id}</strong>
           <span class="muted">{p.chat_id ?? 'unbound'} · every {p.interval} min</span>
@@ -105,43 +67,6 @@
           ></div>
         </div>
       </button>
-
-      {#if open === p.id}
-        {#if !posterQueue}
-          <p class="muted">Loading queue…</p>
-        {:else if !posterQueue.entries.length}
-          <p class="muted">Nothing ahead of this poster — it's at the feed end.</p>
-        {:else}
-          {#each posterQueue.entries as e (e.post_id)}
-            <div class="entry" class:refused={e.refusal}>
-              <span class="pos">{e.feed_position}</span>
-              <div class="body">
-                <div>
-                  <strong>#{e.post_id}</strong>
-                  <span class="chip">{e.status}</span>
-                  {#if e.refusal}
-                    <span class="chip skip" title={e.refusal}>won't post: {e.refusal}</span>
-                  {:else}
-                    <span class="chip ok">would post</span>
-                  {/if}
-                </div>
-                {#if e.tags.length}
-                  <div class="tags muted">{e.tags.slice(0, 8).join(' ')}{e.tags.length > 8 ? ' …' : ''}</div>
-                {/if}
-                <div>
-                  <button class="bare" on:click={() =>
-                    (window.Telegram?.WebApp?.openLink ?? window.open)(e.source)}>
-                    Source ↗
-                  </button>
-                  <button class="bare remove" on:click={() => removePost(e)}>
-                    🗑 Remove from feed
-                  </button>
-                </div>
-              </div>
-            </div>
-          {/each}
-        {/if}
-      {/if}
     </div>
   {/each}
 {:else}
@@ -202,20 +127,11 @@
     border-radius: 14px; padding: 12px; margin-bottom: 10px;
     display: flex; flex-direction: column; gap: 6px;
   }
-  .poster.open { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
   .head-btn {
     display: flex; flex-direction: column; gap: 6px; width: 100%;
     text-align: left; font-weight: normal;
     color: inherit; font-size: inherit;
   }
-  .chip.ok { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
-  .chip.skip {
-    color: var(--hint);
-    max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; vertical-align: bottom;
-  }
-  .entry.refused { opacity: 0.65; }
-  .remove { color: #f87171; margin-left: 10px; }
   .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.9rem; }
   .behind {
     margin-left: auto; font-size: 0.75rem; font-weight: 600; color: #facc15;

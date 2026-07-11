@@ -443,19 +443,32 @@ async fn feed_after(
     })))
 }
 
-/// One poster's upcoming queue: every feed entry ahead of its cursor with
-/// that poster's own verdict, so a moderator sees exactly what it will
-/// (and won't) pick up.
+#[derive(Deserialize)]
+struct QueuePageParams {
+    /// Resume position from the previous page's `next_after`.
+    #[serde(default)]
+    after: Option<u64>,
+    #[serde(default = "twenty")]
+    limit: usize,
+}
+fn twenty() -> usize {
+    20
+}
+
+/// One page of a poster's upcoming queue — only entries it WOULD post.
 async fn poster_queue(
     State(state): State<Arc<WebState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<u64>,
+    Query(params): Query<QueuePageParams>,
 ) -> ApiResult {
     let authed = authenticate(&state, &headers).await?;
     require(&authed, Role::Moderator)?;
     let queue = feed::poster_queue(
         authed.user.telegram_id,
         PosterId::from(id),
+        params.after,
+        params.limit.min(50),
         &state.app.users,
         &state.app.posters,
         &state.app.posts,
@@ -466,13 +479,12 @@ async fn poster_queue(
         "poster_id": queue.poster.id.as_ref(),
         "cursor": queue.poster.cursor,
         "feed_end": queue.feed_end,
-        "entries": queue.entries.iter().map(|entry| json!({
-            "post_id": entry.post.id.as_ref(),
-            "feed_position": entry.post.feed_position,
-            "status": entry.post.status.to_string(),
-            "source": entry.post.source.as_ref().as_str(),
-            "tags": tags_json(&entry.post.tags),
-            "refusal": entry.refusal,
+        "next_after": queue.next_after,
+        "entries": queue.entries.iter().map(|post| json!({
+            "post_id": post.id.as_ref(),
+            "feed_position": post.feed_position,
+            "source": post.source.as_ref().as_str(),
+            "tags": tags_json(&post.tags),
         })).collect::<Vec<_>>(),
     })))
 }

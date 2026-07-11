@@ -64,28 +64,31 @@ where
     })
 }
 
-/// One entry of a poster's upcoming queue, with that poster's verdict.
-#[derive(Debug)]
-pub struct PosterQueueEntry {
-    pub post: Post,
-    /// Why this poster would pass it over; `None` = it would post this
-    /// (modulo the consume-time tag re-validation for e621 entries).
-    pub refusal: Option<String>,
-}
-
-/// One poster's view of the feed ahead of its cursor.
+/// One page of a poster's upcoming queue — eligible entries only.
 #[derive(Debug)]
 pub struct PosterQueue {
     pub poster: Poster,
     pub feed_end: u64,
-    pub entries: Vec<PosterQueueEntry>,
+    /// Entries this poster WOULD post (Accepted status, subscription
+    /// matched, no forbidden tag, all rules pass), in feed order.
+    pub entries: Vec<Post>,
+    /// Where to resume: pass back as `after` for the next page. `None`
+    /// when the scan reached the feed end.
+    pub next_after: Option<u64>,
 }
 
-/// What one poster still has ahead of it: every feed entry in
-/// `(cursor, end]` with the poster's own eligibility verdict attached.
+/// How many raw feed entries one pagination call is willing to scan while
+/// hunting for eligible ones — the guard against a page request walking an
+/// arbitrarily long run of ineligible entries.
+const QUEUE_SCAN_CHUNK: u32 = 500;
+
+/// What one poster still has ahead of it, `limit` eligible entries at a
+/// time, starting after `after` (or the poster's cursor).
 pub async fn poster_queue<P, PR>(
     actor: TelegramId,
     poster_id: PosterId,
+    after: Option<u64>,
+    limit: usize,
     users: &impl UserRepository,
     posters: &PR,
     posts: &P,
@@ -96,6 +99,7 @@ where
 {
     use std::collections::HashSet;
 
+    use domain::elements::post::PostStatus;
     use domain::elements::tag::Tag;
 
     require_role(users, actor, Role::Moderator).await?;
@@ -108,21 +112,43 @@ where
         .feed_end()
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
-    let entries = posts
-        .feed_after(poster.cursor, feed_end)
-        .await
-        .map_err(|_| HandlerError::RepositoryError)?
-        .into_iter()
-        .map(|post| {
-            let tags: HashSet<Tag> = post.tags.iter().cloned().collect();
-            let refusal = refusal_for(&poster, &tags).map(|r| r.to_string());
-            PosterQueueEntry { post, refusal }
-        })
-        .collect();
+
+    let mut scan_from = after.unwrap_or(poster.cursor);
+    let mut entries = Vec::with_capacity(limit);
+    let mut scanned = 0u32;
+    let mut exhausted = scan_from >= feed_end;
+    'scan: while !exhausted && entries.len() < limit && scanned < QUEUE_SCAN_CHUNK {
+        let chunk = posts
+            .feed_after_paged(scan_from, feed_end, 100)
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?;
+        if chunk.is_empty() {
+            exhausted = true;
+            break;
+        }
+        for post in chunk {
+            scanned += 1;
+            scan_from = post.feed_position.unwrap_or(scan_from);
+            let eligible = post.status == PostStatus::Accepted && {
+                let tags: HashSet<Tag> = post.tags.iter().cloned().collect();
+                refusal_for(&poster, &tags).is_none()
+            };
+            if eligible {
+                entries.push(post);
+            }
+            if entries.len() >= limit || scanned >= QUEUE_SCAN_CHUNK {
+                continue 'scan; // re-check the loop guards
+            }
+        }
+    }
+    if scan_from >= feed_end {
+        exhausted = true;
+    }
     Ok(PosterQueue {
         poster,
         feed_end,
         entries,
+        next_after: (!exhausted).then_some(scan_from),
     })
 }
 
@@ -223,22 +249,70 @@ mod tests {
             .await
             .unwrap();
 
-        let queue = poster_queue(TelegramId::from(1), poster.id, &users, &posters, &posts)
+        // Only the wolf entry is eligible — ineligible ones never appear.
+        let queue = poster_queue(
+            TelegramId::from(1),
+            poster.id,
+            None,
+            20,
+            &users,
+            &posters,
+            &posts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(queue.entries[0].id, wolf.id);
+        assert_eq!(queue.next_after, None); // scan reached the feed end
+
+        // Pagination: limit 0-eligible pages still terminate, and a tiny
+        // limit resumes from next_after.
+        let wolf2 = posts
+            .create(
+                Source::try_from(Url::parse("https://e621.net/posts/4").unwrap()).unwrap(),
+                vec![Tag::from("wolf")],
+                vec![],
+                None,
+                Utc::now(),
+                PostStatus::Accepted,
+            )
             .await
             .unwrap();
-        assert_eq!(queue.entries.len(), 2);
-        assert!(queue.entries[0].refusal.is_none()); // the wolf entry
-        assert!(
-            queue.entries[1]
-                .refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("missing"))
-        );
+        posts.accept_into_feed(wolf2.id).await.unwrap();
+        let page = poster_queue(
+            TelegramId::from(1),
+            poster.id,
+            None,
+            1,
+            &users,
+            &posters,
+            &posts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].id, wolf.id);
+        let resume = page.next_after.expect("more to scan");
+        let page2 = poster_queue(
+            TelegramId::from(1),
+            poster.id,
+            Some(resume),
+            1,
+            &users,
+            &posters,
+            &posts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page2.entries.len(), 1);
+        assert_eq!(page2.entries[0].id, wolf2.id);
 
         assert!(matches!(
             poster_queue(
                 TelegramId::from(1),
                 domain::elements::poster::PosterId::from(99),
+                None,
+                20,
                 &users,
                 &posters,
                 &posts

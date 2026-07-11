@@ -733,6 +733,14 @@ mod tests {
         async fn feed_after(&self, _cursor: u64, _up_to: u64) -> Result<Vec<Post>, Self::Err> {
             unimplemented!()
         }
+        async fn feed_after_paged(
+            &self,
+            _cursor: u64,
+            _up_to: u64,
+            _limit: u32,
+        ) -> Result<Vec<Post>, Self::Err> {
+            unimplemented!()
+        }
     }
 
     fn at_minute(minute: u32) -> DateTime<Utc> {

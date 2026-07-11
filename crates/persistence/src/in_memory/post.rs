@@ -234,6 +234,17 @@ impl PostRepository for InMemoryPostRepository {
         entries.sort_by_key(|p| p.feed_position);
         Ok(entries)
     }
+
+    async fn feed_after_paged(
+        &self,
+        cursor: u64,
+        up_to: u64,
+        limit: u32,
+    ) -> Result<Vec<Post>, Self::Err> {
+        let mut entries = self.feed_after(cursor, up_to).await?;
+        entries.truncate(limit as usize);
+        Ok(entries)
+    }
 }
 
 #[cfg(test)]

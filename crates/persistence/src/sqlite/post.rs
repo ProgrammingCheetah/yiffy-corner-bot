@@ -313,4 +313,26 @@ impl PostRepository for SqlitePostRepository {
         .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
         rows.iter().map(row_to_post).collect()
     }
+
+    async fn feed_after_paged(
+        &self,
+        cursor: u64,
+        up_to: u64,
+        limit: u32,
+    ) -> Result<Vec<Post>, Self::Err> {
+        let rows = sqlx::query(
+            "SELECT * FROM posts
+             WHERE feed_position > ? AND feed_position <= ?
+               AND status IN ('accepted', 'banned')
+             ORDER BY feed_position
+             LIMIT ?",
+        )
+        .bind(cursor as i64)
+        .bind(up_to as i64)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        rows.iter().map(row_to_post).collect()
+    }
 }

@@ -326,6 +326,15 @@ pub trait PostRepository: Send + Sync {
     /// Includes `Accepted` and `Banned` entries — Banned is a cached verdict
     /// the consumer re-validates (and may lift) at consume time.
     async fn feed_after(&self, cursor: u64, up_to: u64) -> Result<Vec<Post>, Self::Err>;
+    /// Like [`feed_after`](Self::feed_after) but capped at `limit` entries —
+    /// the pagination primitive for queue views (the scheduler's scan keeps
+    /// using the uncapped walk).
+    async fn feed_after_paged(
+        &self,
+        cursor: u64,
+        up_to: u64,
+        limit: u32,
+    ) -> Result<Vec<Post>, Self::Err>;
 }
 
 #[derive(Debug, thiserror::Error)]
