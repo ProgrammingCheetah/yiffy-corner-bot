@@ -166,6 +166,18 @@
   :global(button.round:active) {
     transform: scale(0.88);
   }
+  :global(.action-col) {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+  }
+  :global(.action-lbl) {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--hint);
+    letter-spacing: 0.02em;
+  }
   /* Shared toast: every page pops the same pill. */
   :global(.toast) {
     position: fixed;

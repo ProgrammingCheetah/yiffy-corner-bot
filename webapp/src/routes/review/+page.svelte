@@ -80,11 +80,26 @@
 
 {#if cards.length}
   <div class="actions">
-    <button class="round nope" on:click={() => deck.fly(-1)} title="Reject"><Icon name="x" /></button>
-    <button class="round reason" on:click={() => { reason = ''; reasonModal = true; }} title="Reject with reason"><Icon name="message" /></button>
-    <button class="round changes" on:click={() => { changes = ''; changesModal = true; }} title="Request changes"><Icon name="pencil" /></button>
-    <button class="round tags" on:click={() => { extraTags = ''; tagModal = true; }} title="Accept with tags"><Icon name="tag" /></button>
-    <button class="round like" on:click={() => deck.fly(1)} title="Approve"><Icon name="check" /></button>
+    <div class="action-col">
+      <button class="round nope" on:click={() => deck.fly(-1)}><Icon name="x" /></button>
+      <span class="action-lbl">Reject</span>
+    </div>
+    <div class="action-col">
+      <button class="round reason" on:click={() => { reason = ''; reasonModal = true; }}><Icon name="message" /></button>
+      <span class="action-lbl">Reason</span>
+    </div>
+    <div class="action-col">
+      <button class="round changes" on:click={() => { changes = ''; changesModal = true; }}><Icon name="pencil" /></button>
+      <span class="action-lbl">Changes</span>
+    </div>
+    <div class="action-col">
+      <button class="round tags" on:click={() => { extraTags = ''; tagModal = true; }}><Icon name="tag" /></button>
+      <span class="action-lbl">+Tags</span>
+    </div>
+    <div class="action-col">
+      <button class="round like" on:click={() => deck.fly(1)}><Icon name="check" /></button>
+      <span class="action-lbl">Approve</span>
+    </div>
   </div>
 {/if}
 

@@ -153,9 +153,18 @@
 
 {#if cards.length}
   <div class="actions">
-    <button class="round nope" on:click={() => deck.fly(-1)} title="Skip for now"><Icon name="x" /></button>
-    <button class="round never" on:click={skipForever} title="Never show again"><Icon name="ban" /></button>
-    <button class="round like" on:click={() => deck.fly(1)} title="Save to the feed"><Icon name="save" /></button>
+    <div class="action-col">
+      <button class="round nope" on:click={() => deck.fly(-1)}><Icon name="x" /></button>
+      <span class="action-lbl">Skip</span>
+    </div>
+    <div class="action-col">
+      <button class="round never" on:click={skipForever}><Icon name="ban" /></button>
+      <span class="action-lbl">Never</span>
+    </div>
+    <div class="action-col">
+      <button class="round like" on:click={() => deck.fly(1)}><Icon name="save" /></button>
+      <span class="action-lbl">Save</span>
+    </div>
   </div>
 {/if}
 {#if toast}<div class="toast">{toast}</div>{/if}
