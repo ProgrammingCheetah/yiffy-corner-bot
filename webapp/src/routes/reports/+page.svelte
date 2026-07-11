@@ -94,6 +94,14 @@
       {#each card.reports as r}
         <li>
           <span class="who">{r.reporter_name ?? `id ${r.reporter_telegram_id}`}</span>
+          {#if r.reporter_username}
+            <button class="bare handle" on:click={() =>
+              (window.Telegram?.WebApp?.openTelegramLink ?? window.open)(
+                `https://t.me/${r.reporter_username}`
+              )}>
+              @{r.reporter_username}
+            </button>
+          {/if}
           <span class="muted">· {when(r.at)}</span>
           <div class="why">{r.reason ?? 'no reason given'}</div>
         </li>
@@ -142,6 +150,7 @@
   .pane { height: 34dvh; }
   .reports { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .who { font-weight: 600; font-size: 0.88rem; }
+  .handle { margin-left: 6px; font-size: 0.85rem; }
   .why {
     margin-top: 2px; font-size: 0.9rem;
     background: rgba(0, 0, 0, 0.22); border-radius: 10px; padding: 8px 11px;

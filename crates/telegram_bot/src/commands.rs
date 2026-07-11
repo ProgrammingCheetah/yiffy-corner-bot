@@ -213,6 +213,7 @@ async fn begin_report_dialogue(
     bot: &Bot,
     state: &SharedState,
     reporter: TelegramId,
+    reporter_username: Option<String>,
     post_id: PostId,
 ) -> Result<String, String> {
     use domain::elements::post::PostRepository as _;
@@ -222,11 +223,16 @@ async fn begin_report_dialogue(
         Ok(None) => Err(describe(HandlerError::PostNotFound(post_id))),
         Ok(Some(_)) => {
             let armed_at = std::time::Instant::now();
-            state
-                .pending_reports
-                .lock()
-                .await
-                .insert(*reporter.as_ref(), (post_id, armed_at));
+            // The username is captured at arming so even a timeout filing
+            // carries the reporter's contact.
+            state.pending_reports.lock().await.insert(
+                *reporter.as_ref(),
+                crate::state::PendingReport {
+                    post_id,
+                    armed_at,
+                    username: reporter_username.clone(),
+                },
+            );
 
             let bot = bot.clone();
             let state = state.clone();
@@ -238,11 +244,14 @@ async fn begin_report_dialogue(
                     // may have answered (entry gone) or re-pressed Report
                     // (fresh entry, its own timeout task).
                     match pending.get(reporter.as_ref()) {
-                        Some(&(_, at)) if at == armed_at => pending.remove(reporter.as_ref()),
+                        Some(entry) if entry.armed_at == armed_at => {
+                            pending.remove(reporter.as_ref())
+                        }
                         _ => return,
                     };
                 }
-                let outcome = file_report(&bot, &state, reporter, post_id, None).await;
+                let outcome =
+                    file_report(&bot, &state, reporter, reporter_username, post_id, None).await;
                 let _ = bot
                     .send_message(
                         ChatId(*reporter.as_ref()),
@@ -302,26 +311,32 @@ async fn relay_more_request(
     bot: &Bot,
     state: &SharedState,
     requester: TelegramId,
+    requester_username: Option<&str>,
     post_id: PostId,
     wish: &str,
 ) -> String {
     use application::commands::request_more::request_more;
+    use teloxide::types::ParseMode;
+    use teloxide::utils::html::escape;
 
     match request_more(requester, post_id, wish, &state.posts, &state.users).await {
         Err(e) => describe(e),
         Ok(relay) => {
-            let requester_label = match state.users.find_by_telegram_id(requester).await {
-                Ok(Some(user)) => describe_user(&Some(user)),
-                _ => format!("id {}", requester.as_ref()),
-            };
+            let requester_label = contact_label(state, requester, requester_username).await;
             let text = format!(
-                "💬 More-of request on post #{}\n{}\nFrom: {requester_label}\nThey want: {wish}",
+                "💬 More-of request on post #{}\n{}\nFrom: {requester_label}\nThey want: {}",
                 relay.post.id,
-                relay.post.source.as_ref()
+                escape(relay.post.source.as_ref().as_str()),
+                escape(wish)
             );
             for reviewer in &relay.reviewers {
                 let chat = ChatId(*reviewer.telegram_id.as_ref());
-                if let Err(e) = bot.send_message(chat, text.clone()).await {
+                if let Err(e) = bot
+                    .send_message(chat, text.clone())
+                    .parse_mode(ParseMode::Html)
+                    .link_preview_options(no_preview())
+                    .await
+                {
                     tracing::warn!(
                         event = %Event::ReportNotifyFailed, post_id = %relay.post.id,
                         reviewer = %reviewer.id, error = %e, "more-of relay DM failed"
@@ -333,6 +348,35 @@ async fn relay_more_request(
     }
 }
 
+/// HTML attribution with a working contact: a `tg://user` mention (opens
+/// their profile even without a public @username), the @username when
+/// there is one, and the raw id.
+async fn contact_label(state: &SharedState, who: TelegramId, username: Option<&str>) -> String {
+    use teloxide::utils::html::escape;
+
+    let name = state
+        .users
+        .find_by_telegram_id(who)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|user| user.display_name)
+        .unwrap_or_else(|| "Unregistered viewer".to_string());
+    let mut label = format!(
+        "<a href=\"tg://user?id={}\">{}</a>",
+        who.as_ref(),
+        escape(&name)
+    );
+    if let Some(handle) = username
+        .map(|u| u.trim_start_matches('@'))
+        .filter(|u| !u.is_empty())
+    {
+        label.push_str(&format!(" (@{})", escape(handle)));
+    }
+    label.push_str(&format!(" · id {}", who.as_ref()));
+    label
+}
+
 /// File a viewer report and fan the moderator DM out. Shared by the
 /// reason dialogue (deep link / legacy button) and the reasonless legacy
 /// fallback when the reporter's DMs are closed.
@@ -340,13 +384,17 @@ async fn file_report(
     bot: &Bot,
     state: &SharedState,
     reporter: TelegramId,
+    reporter_username: Option<String>,
     post_id: PostId,
     reason: Option<String>,
 ) -> String {
     use application::commands::report::{self, ReportOutcome};
+    use teloxide::types::ParseMode;
+    use teloxide::utils::html::escape;
 
     match report::report(
         reporter,
+        reporter_username.clone(),
         post_id,
         reason,
         &state.posts,
@@ -362,16 +410,13 @@ async fn file_report(
             total_reports,
             reason,
         }) => {
-            // Reporters can be unregistered — fall back to the raw id.
-            let reporter_label = match state.users.find_by_telegram_id(reporter).await {
-                Ok(Some(user)) => describe_user(&Some(user)),
-                _ => format!("id {}", reporter.as_ref()),
-            };
+            let reporter_label =
+                contact_label(state, reporter, reporter_username.as_deref()).await;
             let text = format!(
                 "⚠️ Post #{} was reported ({total_reports} report(s))\n{}\nBy: {reporter_label}\nReason: {}",
                 post.id,
-                post.source.as_ref(),
-                reason.as_deref().unwrap_or("(none given)")
+                escape(post.source.as_ref().as_str()),
+                escape(reason.as_deref().unwrap_or("(none given)"))
             );
             let keyboard = InlineKeyboardMarkup::new([[
                 InlineKeyboardButton::callback("🗑 Take down", format!("repmod:take:{}", post.id)),
@@ -381,6 +426,8 @@ async fn file_report(
                 let chat = ChatId(*reviewer.telegram_id.as_ref());
                 if let Err(e) = bot
                     .send_message(chat, text.clone())
+                    .parse_mode(ParseMode::Html)
+                    .link_preview_options(no_preview())
                     .reply_markup(keyboard.clone())
                     .await
                 {
@@ -699,9 +746,11 @@ pub async fn handle_command(
             if let Some(raw_id) = payload.trim().strip_prefix("report_") {
                 match parse_post_id(raw_id) {
                     // The prompt and the error are both just the DM reply.
-                    Some(post_id) => begin_report_dialogue(&bot, &state, actor, post_id)
-                        .await
-                        .unwrap_or_else(|e| e),
+                    Some(post_id) => {
+                        begin_report_dialogue(&bot, &state, actor, from.username.clone(), post_id)
+                            .await
+                            .unwrap_or_else(|e| e)
+                    }
                     None => "That report link is malformed.".to_string(),
                 }
             } else if let Some(raw_id) = payload.trim().strip_prefix("more_") {
@@ -1082,7 +1131,7 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
     }
 
     // Then viewer reports awaiting their reason.
-    if let Some((post_id, armed_at)) = state.pending_reports.lock().await.remove(actor.as_ref()) {
+    if let Some(pending_report) = state.pending_reports.lock().await.remove(actor.as_ref()) {
         let reason = text.trim();
         if reason.is_empty() {
             // Re-arm as-is: the original timeout keeps governing.
@@ -1090,14 +1139,22 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
                 .pending_reports
                 .lock()
                 .await
-                .insert(*actor.as_ref(), (post_id, armed_at));
+                .insert(*actor.as_ref(), pending_report);
             bot.send_message(msg.chat.id, "I need a reason — a few words is fine.")
                 .await?;
             return Ok(());
         }
         // Keep the moderator DM readable, whatever gets pasted in.
         let reason: String = reason.chars().take(500).collect();
-        let reply = file_report(&bot, &state, actor, post_id, Some(reason)).await;
+        let reply = file_report(
+            &bot,
+            &state,
+            actor,
+            pending_report.username,
+            pending_report.post_id,
+            Some(reason),
+        )
+        .await;
         bot.send_message(msg.chat.id, reply)
             .link_preview_options(no_preview())
             .await?;
@@ -1110,7 +1167,9 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
         if wish.is_empty() {
             return Ok(()); // odd empty message — let the link be re-tapped
         }
-        let reply = relay_more_request(&bot, &state, actor, post_id, &wish).await;
+        let reply =
+            relay_more_request(&bot, &state, actor, from.username.as_deref(), post_id, &wish)
+                .await;
         bot.send_message(msg.chat.id, reply)
             .link_preview_options(no_preview())
             .await?;
@@ -3181,19 +3240,27 @@ pub async fn handle_callback(
 
             let toast = match parse_post_id(id) {
                 None => "Malformed report.".to_string(),
-                Some(post_id) => match begin_report_dialogue(&bot, &state, actor, post_id).await {
-                    Err(msg) => msg,
-                    Ok(prompt) => {
-                        match bot.send_message(ChatId(*actor.as_ref()), prompt).await {
-                            Ok(_) => "Check your DM with me — tell me why you're reporting it."
-                                .to_string(),
-                            Err(_) => {
-                                state.pending_reports.lock().await.remove(actor.as_ref());
-                                file_report(&bot, &state, actor, post_id, None).await
+                Some(post_id) => {
+                    let username = query.from.username.clone();
+                    match begin_report_dialogue(&bot, &state, actor, username.clone(), post_id)
+                        .await
+                    {
+                        Err(msg) => msg,
+                        Ok(prompt) => {
+                            match bot.send_message(ChatId(*actor.as_ref()), prompt).await {
+                                Ok(_) => {
+                                    "Check your DM with me — tell me why you're reporting it."
+                                        .to_string()
+                                }
+                                Err(_) => {
+                                    state.pending_reports.lock().await.remove(actor.as_ref());
+                                    file_report(&bot, &state, actor, username, post_id, None)
+                                        .await
+                                }
                             }
                         }
                     }
-                },
+                }
             };
             bot.answer_callback_query(query.id.clone())
                 .text(toast)

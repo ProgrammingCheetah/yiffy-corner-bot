@@ -67,6 +67,7 @@ mod tests {
             reporter: TelegramId::from(reporter),
             reported_at: Utc::now(),
             reason: Some("test reason".to_string()),
+            reporter_username: None,
         }
     }
 

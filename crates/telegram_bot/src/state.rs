@@ -151,16 +151,9 @@ pub struct AppState {
     /// their next message completes the action.
     pub pending_moderation: tokio::sync::Mutex<std::collections::HashMap<i64, ModerationDialogue>>,
     /// Viewer reports awaiting their reason, keyed by reporter Telegram id:
-    /// their next message files the report. The [`Instant`] is when the
-    /// dialogue was armed — after `REPORT_REASON_TIMEOUT` the report files
-    /// without a reason (the Instant tells the timeout task whether the
-    /// entry is still *its* dialogue). In-memory like `pending` — a restart
-    /// just means pressing Report again.
-    ///
-    /// [`Instant`]: std::time::Instant
-    pub pending_reports: tokio::sync::Mutex<
-        std::collections::HashMap<i64, (domain::elements::post::PostId, std::time::Instant)>,
-    >,
+    /// their next message files the report. In-memory like `pending` — a
+    /// restart just means pressing Report again.
+    pub pending_reports: tokio::sync::Mutex<std::collections::HashMap<i64, PendingReport>>,
     /// "More like this" wishes awaiting their text, keyed by requester
     /// Telegram id — same dialogue shape as `pending_reports`, but expiring
     /// silently (an unanswered wish just evaporates; nothing to file).
@@ -178,6 +171,19 @@ pub struct BrowseSession {
     /// The NEXT e621 page to fetch.
     pub next_page: u32,
     pub count: usize,
+}
+
+/// A viewer report awaiting its reason.
+#[derive(Debug, Clone)]
+pub struct PendingReport {
+    pub post_id: domain::elements::post::PostId,
+    /// When the dialogue was armed — after `REPORT_REASON_TIMEOUT` the
+    /// report files reasonless, and this Instant tells the timeout task
+    /// whether the entry is still *its* dialogue.
+    pub armed_at: std::time::Instant,
+    /// The reporter's live @username, captured at arming so the filed
+    /// report always carries a contact.
+    pub username: Option<String>,
 }
 
 /// What a moderator's next message means.

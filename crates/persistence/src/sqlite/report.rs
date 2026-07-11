@@ -22,14 +22,16 @@ impl ReportRepository for SqliteReportRepository {
 
     async fn add(&self, report: Report) -> Result<bool, Self::Err> {
         let result = sqlx::query(
-            "INSERT INTO reports (post_id, reporter_telegram_id, reported_at, reason)
-             VALUES (?, ?, ?, ?)
+            "INSERT INTO reports
+                 (post_id, reporter_telegram_id, reported_at, reason, reporter_username)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT (post_id, reporter_telegram_id) DO NOTHING",
         )
         .bind(*report.post_id.as_ref() as i64)
         .bind(*report.reporter.as_ref())
         .bind(report.reported_at)
         .bind(&report.reason)
+        .bind(&report.reporter_username)
         .execute(&self.pool)
         .await
         .map_err(|e| ReportRepositoryError::Storage(e.to_string()))?;
@@ -38,7 +40,7 @@ impl ReportRepository for SqliteReportRepository {
 
     async fn list_all(&self) -> Result<Vec<Report>, Self::Err> {
         let rows = sqlx::query(
-            "SELECT post_id, reporter_telegram_id, reported_at, reason
+            "SELECT post_id, reporter_telegram_id, reported_at, reason, reporter_username
              FROM reports ORDER BY reported_at DESC",
         )
         .fetch_all(&self.pool)
@@ -53,6 +55,7 @@ impl ReportRepository for SqliteReportRepository {
                 ),
                 reported_at: row.get("reported_at"),
                 reason: row.get("reason"),
+                reporter_username: row.get("reporter_username"),
             })
             .collect())
     }
@@ -120,6 +123,7 @@ mod tests {
             reporter: TelegramId::from(reporter),
             reported_at: Utc::now(),
             reason: Some("gore, not tagged".to_string()),
+            reporter_username: Some("reporterwolf".to_string()),
         };
         assert!(repo.add(report(42)).await.unwrap());
         assert!(!repo.add(report(42)).await.unwrap());

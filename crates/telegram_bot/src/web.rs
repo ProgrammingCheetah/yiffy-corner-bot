@@ -471,6 +471,7 @@ async fn list_reports(State(state): State<Arc<WebState>>, headers: HeaderMap) ->
             reports.push(json!({
                 "reporter_telegram_id": r.reporter.as_ref(),
                 "reporter_name": name,
+                "reporter_username": r.reporter_username,
                 "reason": r.reason,
                 "at": r.reported_at.to_rfc3339(),
             }));

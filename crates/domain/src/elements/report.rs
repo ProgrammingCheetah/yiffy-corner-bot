@@ -22,6 +22,10 @@ pub struct Report {
     /// Why the reporter flagged the post. `None` only on paths that cannot
     /// collect one (legacy report buttons when the reporter's DMs are closed).
     pub reason: Option<String>,
+    /// The reporter's Telegram @username at report time (without the `@`),
+    /// when they have one — the contact handle for moderators. Reporters
+    /// aren't registered Users, so this is captured live from the update.
+    pub reporter_username: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

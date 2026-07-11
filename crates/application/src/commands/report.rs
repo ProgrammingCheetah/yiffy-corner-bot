@@ -33,8 +33,10 @@ pub enum ReportOutcome {
 /// A viewer (any Telegram user — registration not required) reports a post.
 /// `reason` is what they answered to "why?" — `None` only on paths that
 /// cannot collect one (legacy buttons with the reporter's DMs closed).
+/// `reporter_username` is their live @username, the contact moderators get.
 pub async fn report<P, RR>(
     reporter: TelegramId,
+    reporter_username: Option<String>,
     post_id: PostId,
     reason: Option<String>,
     posts: &P,
@@ -60,6 +62,9 @@ where
             reporter,
             reported_at: Utc::now(),
             reason: reason.clone(),
+            reporter_username: reporter_username
+                .map(|u| u.trim_start_matches('@').to_string())
+                .filter(|u| !u.is_empty()),
         })
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
@@ -270,6 +275,7 @@ mod tests {
         let (fx, post_id) = fixture().await;
         let outcome = report(
             TelegramId::from(99),
+            None,
             post_id,
             Some("  untagged gore  ".to_string()),
             &fx.posts,
@@ -293,6 +299,7 @@ mod tests {
 
         let again = report(
             TelegramId::from(99),
+            None,
             post_id,
             Some("still gore".to_string()),
             &fx.posts,
@@ -309,6 +316,7 @@ mod tests {
         let (fx, _) = fixture().await;
         let err = report(
             TelegramId::from(99),
+            None,
             PostId::from(777),
             Some("untagged gore".to_string()),
             &fx.posts,
@@ -392,6 +400,7 @@ mod tests {
         ] {
             report(
                 TelegramId::from(reporter),
+                None,
                 post,
                 Some(why.to_string()),
                 &fx.posts,
@@ -439,6 +448,7 @@ mod tests {
         let (fx, post_id) = fixture().await;
         report(
             TelegramId::from(99),
+            None,
             post_id,
             Some("untagged gore".to_string()),
             &fx.posts,
@@ -452,6 +462,7 @@ mod tests {
             .unwrap();
         let outcome = report(
             TelegramId::from(99),
+            None,
             post_id,
             Some("untagged gore".to_string()),
             &fx.posts,
