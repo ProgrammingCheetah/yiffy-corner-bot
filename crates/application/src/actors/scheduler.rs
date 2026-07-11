@@ -97,6 +97,27 @@ pub fn needs_spoiler(tags: &[Tag], spoiler_tags: &[Tag]) -> bool {
     })
 }
 
+/// The human labels behind the blur, for the caption: `cw_*`/`cw:*` keep
+/// only the subject, listed spoiler tags appear as themselves; underscores
+/// read as spaces. A bare `cw` blurs but names nothing, so it contributes
+/// no label.
+pub fn content_warnings(tags: &[Tag], spoiler_tags: &[Tag]) -> Vec<String> {
+    let mut labels = Vec::new();
+    for tag in tags {
+        let name = tag.as_ref().to_ascii_lowercase();
+        let label = match name.strip_prefix("cw_").or_else(|| name.strip_prefix("cw:")) {
+            Some(subject) if !subject.is_empty() => subject.replace('_', " "),
+            Some(_) => continue,
+            None if spoiler_tags.contains(tag) => name.replace('_', " "),
+            None => continue,
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
 /// Fixed-size publication code shown at the top of every published caption:
 /// 8 base-36 chars derived (FNV-1a) from the source URL and the consuming
 /// Poster's id. Deterministic, so the same (post, channel) pair always shows
@@ -142,12 +163,16 @@ fn escape_html(raw: &str) -> String {
 ///
 /// "Report" is a deep link (`t.me/<bot>?start=report_<post id>`) — no bulky
 /// inline button on the message.
+///
+/// `content_warnings` (see [`content_warnings`]) names what's behind a
+/// spoiler blur right under the header.
 pub async fn build_caption<U: UserRepository>(
     post: &Post,
     poster_id: domain::elements::poster::PosterId,
     users: &U,
     bot_username: &str,
     media: &domain::elements::media::ResolvedMedia,
+    content_warnings: &[String],
 ) -> String {
     use domain::elements::media::ResolvedMedia;
 
@@ -156,6 +181,15 @@ pub async fn build_caption<U: UserRepository>(
         header.push_str(" #video");
     }
     let mut lines = vec![header];
+
+    if !content_warnings.is_empty() {
+        let labels = content_warnings
+            .iter()
+            .map(|label| escape_html(label))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("⚠️ CW: {labels}"));
+    }
 
     if !post.artists.is_empty() {
         let names = post
@@ -255,14 +289,25 @@ where
     ST: SpoilerTagRepository,
     ST::Err: std::fmt::Display,
 {
-    let caption = build_caption(post, poster.id, &*deps.users, &deps.bot_username, &media).await;
-    let spoiler = match deps.spoilers.list_all().await {
-        Ok(spoiler_tags) => needs_spoiler(&post.tags, &spoiler_tags),
+    let (spoiler, warnings) = match deps.spoilers.list_all().await {
+        Ok(spoiler_tags) => (
+            needs_spoiler(&post.tags, &spoiler_tags),
+            content_warnings(&post.tags, &spoiler_tags),
+        ),
         Err(e) => {
             tracing::warn!(post_id = %post.id, error = %e, "spoiler list read failed; publishing unspoilered");
-            false
+            (false, Vec::new())
         }
     };
+    let caption = build_caption(
+        post,
+        poster.id,
+        &*deps.users,
+        &deps.bot_username,
+        &media,
+        &warnings,
+    )
+    .await;
     let item = PublishItem {
         post_id: post.id,
         media,
@@ -943,6 +988,7 @@ mod tests {
             &users,
             "testbot",
             &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+            &[],
         )
         .await;
         let lines: Vec<&str> = caption.lines().collect();
@@ -976,6 +1022,44 @@ mod tests {
         assert!(!needs_spoiler(&[Tag::from("cwhatever")], &[]));
     }
 
+    #[test]
+    fn content_warnings_strip_the_cw_prefix_and_name_listed_tags() {
+        let listed = vec![Tag::from("questionable_consent")];
+        let labels = content_warnings(
+            &[
+                Tag::from("wolf"),
+                Tag::from("cw_blood_and_gore"),
+                Tag::from("CW:knife"),
+                Tag::from("questionable_consent"),
+                Tag::from("cw"),           // blurs, but names nothing
+                Tag::from("cw_blood_and_gore"), // duplicate label collapses
+            ],
+            &listed,
+        );
+        assert_eq!(
+            labels,
+            vec!["blood and gore", "knife", "questionable consent"]
+        );
+        assert!(content_warnings(&[Tag::from("wolf")], &listed).is_empty());
+    }
+
+    #[tokio::test]
+    async fn caption_names_the_content_warnings() {
+        use domain::elements::poster::PosterId;
+        let users = InMemoryUserRepository::new();
+        let caption = build_caption(
+            &make_post(100, 1),
+            PosterId::from(1),
+            &users,
+            "testbot",
+            &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+            &["blood and gore".to_string(), "knife <3".to_string()],
+        )
+        .await;
+        let lines: Vec<&str> = caption.lines().collect();
+        assert_eq!(lines[1], "⚠️ CW: blood and gore, knife &lt;3");
+    }
+
     #[tokio::test]
     async fn admin_added_post_has_no_attribution_line() {
         use domain::elements::poster::PosterId;
@@ -986,6 +1070,7 @@ mod tests {
             &users,
             "testbot",
             &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+            &[],
         )
         .await;
         assert!(!caption.contains("Submitted by"), "caption: {caption}");
@@ -1007,6 +1092,7 @@ mod tests {
             &users,
             "testbot",
             &ResolvedMedia::Video(Url::parse("https://x/v.webm").unwrap()),
+            &[],
         )
         .await;
         let lines: Vec<&str> = caption.lines().collect();
@@ -1020,6 +1106,7 @@ mod tests {
             &users,
             "testbot",
             &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+            &[],
         )
         .await;
         assert!(!caption.contains("#video"), "caption: {caption}");
