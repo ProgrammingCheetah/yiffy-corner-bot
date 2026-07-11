@@ -105,17 +105,21 @@
     inset: 0;
     display: flex;
     flex-direction: column;
-    border-radius: 18px;
-    background: var(--tg-theme-secondary-bg-color, #232e3c);
-    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+    border-radius: 20px;
+    background: var(--surface, #232e3c);
+    border: 1px solid var(--line, rgba(128, 128, 128, 0.22));
+    box-shadow:
+      0 2px 8px rgba(0, 0, 0, 0.25),
+      0 14px 38px rgba(0, 0, 0, 0.4);
     overflow: hidden;
   }
   .card.animate {
-    transition: transform 0.24s ease;
+    transition: transform 0.26s cubic-bezier(0.22, 0.9, 0.36, 1.08);
   }
   .card.under {
-    transform: scale(0.94) translateY(12px);
-    filter: brightness(0.6);
+    transform: scale(0.95) translateY(10px);
+    filter: brightness(0.72);
+    transition: transform 0.26s ease, filter 0.26s ease;
   }
   .media {
     flex: 1;
@@ -144,31 +148,38 @@
   .stamp {
     position: absolute;
     top: 26px;
-    font-size: 1.6rem;
-    font-weight: 800;
-    letter-spacing: 2px;
-    padding: 4px 14px;
+    font-size: 1.65rem;
+    font-weight: 900;
+    letter-spacing: 3px;
+    padding: 4px 16px;
     border: 4px solid;
-    border-radius: 10px;
+    border-radius: 12px;
     transform: rotate(-14deg);
     pointer-events: none;
+    background: rgba(0, 0, 0, 0.35);
+    text-shadow: 0 0 14px currentColor;
   }
   .stamp.like {
     left: 18px;
     color: #4ade80;
     border-color: #4ade80;
+    box-shadow: 0 0 22px rgba(74, 222, 128, 0.35);
   }
   .stamp.nope {
     right: 18px;
     color: #f87171;
     border-color: #f87171;
     transform: rotate(14deg);
+    box-shadow: 0 0 22px rgba(248, 113, 113, 0.35);
   }
   .empty {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: var(--tg-theme-hint-color, #7d8b99);
+    color: var(--hint, #7d8b99);
+    font-size: 0.95rem;
+    border: 2px dashed var(--line, rgba(128, 128, 128, 0.22));
+    border-radius: 20px;
   }
 </style>

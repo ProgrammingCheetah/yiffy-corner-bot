@@ -33,10 +33,18 @@
     justify-content: center;
     color: var(--tg-theme-hint-color, #7d8b99);
     font-size: 0.85rem;
+    background: color-mix(in srgb, var(--surface, #232e3c) 60%, black);
+    border: 2px dashed var(--line, rgba(128, 128, 128, 0.22));
   }
   .shimmer {
+    border: none;
     animation: shimmer 1.2s infinite;
-    background: linear-gradient(100deg, #1b2735 40%, #24344a 50%, #1b2735 60%);
+    background: linear-gradient(
+      100deg,
+      color-mix(in srgb, var(--surface, #1b2735) 88%, black) 40%,
+      color-mix(in srgb, var(--surface, #24344a) 82%, white) 50%,
+      color-mix(in srgb, var(--surface, #1b2735) 88%, black) 60%
+    );
     background-size: 200% 100%;
   }
   @keyframes shimmer {

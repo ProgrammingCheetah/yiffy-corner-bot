@@ -170,26 +170,41 @@
 {/if}
 
 <style>
-  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-  .tabs button { background: var(--tg-theme-secondary-bg-color, #232e3c); color: inherit; padding: 8px 14px; }
-  .tabs button.on { background: var(--tg-theme-button-color, #5288c1); color: #fff; }
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 14px; padding: 4px;
+  }
+  .tabs button {
+    flex: 1; background: transparent; color: var(--hint);
+    padding: 8px 10px; border-radius: 10px; font-size: 0.88rem;
+  }
+  .tabs button.on {
+    background: var(--accent); color: var(--tg-theme-button-text-color, #fff);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  }
   .card {
-    background: var(--tg-theme-secondary-bg-color, #232e3c);
-    border-radius: 14px; padding: 14px; margin-bottom: 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px; padding: 14px; margin-bottom: 12px;
     display: flex; flex-direction: column; gap: 8px;
+    box-shadow: 0 3px 14px rgba(0, 0, 0, 0.18);
+  }
+  .card h3 {
+    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--hint);
   }
   .card.row { flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .row-btns { display: flex; gap: 8px; flex-wrap: wrap; }
   .summary { white-space: pre-wrap; font-size: 0.8rem; background: rgba(0,0,0,0.25); border-radius: 10px; padding: 10px; }
-  .ghost { background: transparent; border: 1px solid rgba(128,128,128,0.4); color: inherit; }
+  .ghost { background: transparent; border: 1px solid var(--line); color: inherit; }
   .danger { background: #7f1d1d; }
   .chip.x { background: #7f1d1d; border: none; color: #fecaca; }
-  select { font: inherit; border-radius: 10px; padding: 8px; background: var(--tg-theme-bg-color, #17212b); color: inherit; }
-  label { font-size: 0.8rem; display: flex; flex-direction: column; gap: 4px; }
-  .toast {
-    position: fixed; bottom: 86px; left: 50%; transform: translateX(-50%);
-    background: rgba(0,0,0,0.85); color: #fff; padding: 10px 16px;
-    border-radius: 12px; font-size: 0.85rem; max-width: 90vw; z-index: 50;
+  select {
+    font: inherit; border-radius: 10px; padding: 8px;
+    border: 1px solid var(--line);
+    background: var(--tg-theme-bg-color, #17212b); color: inherit;
   }
+  label { font-size: 0.8rem; display: flex; flex-direction: column; gap: 4px; }
 </style>

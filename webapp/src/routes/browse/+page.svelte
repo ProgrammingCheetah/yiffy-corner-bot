@@ -160,17 +160,6 @@
   .bare { background: transparent; padding: 0; color: inherit; font-size: inherit; }
   .bare.x { color: #f87171; }
   .bare.clear { color: var(--tg-theme-hint-color, #7d8b99); font-size: 0.75rem; margin-left: 4px; }
-  .actions { display: flex; justify-content: center; gap: 24px; margin-top: 16px; }
-  .round {
-    width: 58px; height: 58px; border-radius: 50%; font-size: 1.3rem;
-    background: var(--tg-theme-secondary-bg-color, #232e3c);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  }
   .round.like { color: #4ade80; }
   .round.nope { color: #f87171; }
-  .toast {
-    position: fixed; bottom: 86px; left: 50%; transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.85); color: #fff; padding: 10px 16px;
-    border-radius: 12px; font-size: 0.85rem; max-width: 90vw; z-index: 50;
-  }
 </style>

@@ -63,7 +63,7 @@
   onMount(load);
 </script>
 
-<h2>Review queue <span class="muted">{cards.length} waiting</span></h2>
+<h2>Review queue <span class="count">{cards.length} waiting</span></h2>
 
 <SwipeDeck
   bind:this={deck}
@@ -122,37 +122,19 @@
 </Modal>
 
 <style>
-  h2 { margin-bottom: 10px; display: flex; justify-content: space-between; align-items: baseline; }
-  .actions {
-    display: flex;
-    justify-content: center;
-    gap: 18px;
-    margin-top: 16px;
-  }
-  .round {
-    width: 58px;
-    height: 58px;
-    border-radius: 50%;
-    font-size: 1.3rem;
-    background: var(--tg-theme-secondary-bg-color, #232e3c);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  h2 { margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .count {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    padding: 3px 11px;
+    border-radius: 999px;
   }
   .round.like { color: #4ade80; }
   .round.nope { color: #f87171; }
   .round.tags { color: #facc15; }
   .round.reason { color: #93c5fd; }
   .round.changes { color: #c4b5fd; }
-  .toast {
-    position: fixed;
-    bottom: 86px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.85);
-    color: #fff;
-    padding: 10px 16px;
-    border-radius: 12px;
-    font-size: 0.85rem;
-    max-width: 90vw;
-    z-index: 50;
-  }
 </style>

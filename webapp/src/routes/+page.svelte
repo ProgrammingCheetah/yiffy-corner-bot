@@ -90,10 +90,38 @@
 <style>
   h2 { margin-bottom: 2px; }
   .row { display: flex; gap: 8px; margin: 14px 0; }
-  .preview { display: flex; flex-direction: column; gap: 10px; }
+  .preview {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 12px;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.25);
+    animation: pop 0.22s ease;
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  }
   .pane { height: 42dvh; }
   .confirm { padding: 14px; font-size: 1rem; }
-  .err { color: #f87171; margin: 8px 0; }
-  .ok { color: #4ade80; margin: 8px 0; }
+  .err,
+  .ok {
+    margin: 8px 0;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 0.9rem;
+  }
+  .err {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+  }
+  .ok {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.35);
+  }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; }
 </style>
