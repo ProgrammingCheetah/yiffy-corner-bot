@@ -96,7 +96,7 @@
         </div>
         <div class="line muted">
           cursor {p.cursor}
-          {#if p.subscribed.length} · wants: {p.subscribed.join(' ')}{/if}
+          {#if p.subscribed_pretty} · wants: {p.subscribed_pretty}{/if}
         </div>
         <div class="bar">
           <div

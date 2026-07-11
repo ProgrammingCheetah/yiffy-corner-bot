@@ -45,6 +45,17 @@ impl std::fmt::Display for TagLiteral {
     }
 }
 
+impl TagLiteral {
+    /// The natural-language reading: `solo` / `NO female` (parenthesized
+    /// inside OR-groups by [`TagTerm::describe`]).
+    fn describe(&self) -> String {
+        match self {
+            TagLiteral::Has(tag) => tag.to_string(),
+            TagLiteral::Lacks(tag) => format!("NO {tag}"),
+        }
+    }
+}
+
 impl std::str::FromStr for TagLiteral {
     type Err = TagRuleParseError;
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
@@ -102,6 +113,38 @@ impl TagTerm {
             }
         }
         Ok(terms)
+    }
+}
+
+impl TagTerm {
+    /// The natural-language reading of one term: a bare literal reads as
+    /// itself (`solo`, `NO male`); an OR-group reads as
+    /// `((NO female) OR intersex)` — negations parenthesized so the OR
+    /// binds visibly.
+    pub fn describe(&self) -> String {
+        match self.0.as_slice() {
+            [single] => single.describe(),
+            many => {
+                let joined = many
+                    .iter()
+                    .map(|literal| match literal {
+                        TagLiteral::Has(_) => literal.describe(),
+                        TagLiteral::Lacks(_) => format!("({})", literal.describe()),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                format!("({joined})")
+            }
+        }
+    }
+
+    /// A whole conjunction of terms: `solo AND avian`.
+    pub fn describe_list(terms: &[TagTerm]) -> String {
+        terms
+            .iter()
+            .map(TagTerm::describe)
+            .collect::<Vec<_>>()
+            .join(" AND ")
     }
 }
 
@@ -187,6 +230,17 @@ impl TagRule {
             rest = after_arrow[close2 + 1..].trim_start();
         }
         Ok(rules)
+    }
+
+    /// The natural-language reading of the whole rule:
+    /// `[solo avian]->[(-female intersex) bird]` reads as
+    /// `solo AND avian REQUIRE ((NO female) OR intersex) AND bird`.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} REQUIRE {}",
+            TagTerm::describe_list(&self.if_all),
+            TagTerm::describe_list(&self.then_all)
+        )
     }
 }
 
@@ -316,6 +370,23 @@ mod tests {
         assert_eq!(
             TagTerm::parse_list("((a b))"),
             Err(TagRuleParseError::NestedGroup)
+        );
+    }
+
+    #[test]
+    fn describe_reads_as_mechanical_natural_language() {
+        let rule: TagRule = "[solo avian]->[(-female intersex) bird]".parse().unwrap();
+        assert_eq!(
+            rule.describe(),
+            "solo AND avian REQUIRE ((NO female) OR intersex) AND bird"
+        );
+        let simple: TagRule = "[solo]->[-male]".parse().unwrap();
+        assert_eq!(simple.describe(), "solo REQUIRE NO male");
+        // Terms describe on their own too (poster subscriptions).
+        let terms = TagTerm::parse_list("wolf (male female)").unwrap();
+        assert_eq!(
+            TagTerm::describe_list(&terms),
+            "wolf AND (male OR female)"
         );
     }
 

@@ -397,6 +397,7 @@ async fn feed_queue(State(state): State<Arc<WebState>>, headers: HeaderMap) -> A
             "cursor": poster.cursor,
             "behind": feed_end.saturating_sub(poster.cursor),
             "subscribed": poster.subscribed_tags.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "subscribed_pretty": domain::elements::tag_rule::TagTerm::describe_list(&poster.subscribed_tags),
         }));
     }
     Ok(Json(json!({ "feed_end": feed_end, "posters": out })))
@@ -849,8 +850,10 @@ async fn list_posters(State(state): State<Arc<WebState>>, headers: HeaderMap) ->
             "interval": poster.time_interval.as_ref(),
             "cursor": poster.cursor,
             "subscribed": poster.subscribed_tags.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "subscribed_pretty": domain::elements::tag_rule::TagTerm::describe_list(&poster.subscribed_tags),
             "forbidden": tags_json(&poster.forbidden_tags),
             "rules": poster.rules.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "rules_pretty": poster.rules.iter().map(|r| r.describe()).collect::<Vec<_>>(),
             "chat_id": config.as_ref().map(|c| c.chat_id),
             "announcements": config.as_ref().map(|c| c.receive_announcements),
             "summary": poster_summary(&state.app, &poster, "").await,
