@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod ban_user;
 pub mod browse;
+pub mod feed;
 pub mod manage_poster;
 pub mod moderate;
 pub mod phash_check;

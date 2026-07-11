@@ -48,6 +48,8 @@ pub enum Command {
     Delete(String),
     #[command(description = "full data for a post: /postinfo <post-id> (mods)")]
     Postinfo(String),
+    #[command(description = "feed entries after a post: /feedafter <post-id> (mods)")]
+    Feedafter(String),
     #[command(description = "ban a user from submitting (mods)")]
     Ban(String),
     #[command(description = "lift a submission ban (mods)")]
@@ -149,6 +151,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Reject(_) => "reject",
         Command::Delete(_) => "delete",
         Command::Postinfo(_) => "postinfo",
+        Command::Feedafter(_) => "feedafter",
         Command::Ban(_) => "ban",
         Command::Unban(_) => "unban",
         Command::Browse(_) => "browse",
@@ -660,6 +663,7 @@ pub async fn handle_command(
             None => "Usage: /delete <post-id>".to_string(),
         },
         Command::Postinfo(arg) => handle_postinfo(&state, actor, &arg).await,
+        Command::Feedafter(arg) => handle_feedafter(&state, actor, &arg).await,
         Command::Ban(arg) => ban_reply(&bot, &state, actor, &arg, true).await,
         Command::Unban(arg) => ban_reply(&bot, &state, actor, &arg, false).await,
         Command::Browse(arg) => handle_browse(&bot, msg.chat.id, &state, actor, &arg).await,
@@ -1092,6 +1096,61 @@ pub(crate) async fn resolve_publish_code(state: &SharedState, raw: &str) -> Opti
         }
     }
     None
+}
+
+/// `/feedafter <post-id>` — the to-be-posted backlog from that post on:
+/// the post's feed position is the cursor, everything after it is listed
+/// in feed order (before any per-Poster tag filter).
+async fn handle_feedafter(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    use application::commands::feed::after_post;
+
+    /// Keep the reply comfortably inside Telegram's 4096-char limit.
+    const SHOWN: usize = 25;
+
+    let Some(post_id) = parse_post_id(arg) else {
+        return "Usage: /feedafter <post-id> — lists the feed entries still \
+                ahead of that post."
+            .to_string();
+    };
+    match after_post(actor, post_id, &state.users, &state.posts).await {
+        Err(e) => describe(e),
+        Ok(slice) => {
+            let cursor = slice
+                .anchor
+                .feed_position
+                .expect("after_post rejects positionless anchors");
+            if slice.entries.is_empty() {
+                return format!(
+                    "Post #{post_id} (feed position {cursor}) is at the feed \
+                     end — nothing queued after it."
+                );
+            }
+            let mut lines = vec![format!(
+                "{} entr{} after post #{post_id} (feed position {cursor}, end {}):",
+                slice.entries.len(),
+                if slice.entries.len() == 1 { "y" } else { "ies" },
+                slice.feed_end
+            )];
+            for post in slice.entries.iter().take(SHOWN) {
+                lines.push(format!(
+                    "{} #{} [{}] — {}",
+                    post.feed_position
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    post.id,
+                    post.status,
+                    post.source.as_ref()
+                ));
+            }
+            if slice.entries.len() > SHOWN {
+                lines.push(format!(
+                    "…and {} more up to the feed end.",
+                    slice.entries.len() - SHOWN
+                ));
+            }
+            lines.join("\n")
+        }
+    }
 }
 
 async fn handle_postinfo(state: &SharedState, actor: TelegramId, arg: &str) -> String {
