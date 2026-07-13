@@ -11,6 +11,14 @@ export const stage = 'Alpha';
 
 export const changelog = [
   {
+    version: '0.4.1',
+    alias: 'Fox',
+    date: '2026-07-13',
+    changes: [
+      '“Fulfilling request”: /fulfilling <text> (or the toggle above the browse deck) stamps every save with the viewer’s wish — its publication says so — until you turn it off.'
+    ]
+  },
+  {
     version: '0.4.0',
     alias: 'Fox',
     date: '2026-07-11',
