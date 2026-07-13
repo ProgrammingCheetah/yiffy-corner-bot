@@ -1,6 +1,7 @@
 pub mod announcement;
 pub mod cadence;
 pub mod e621;
+pub mod fulfilling;
 pub mod media;
 pub mod phash;
 pub mod post;

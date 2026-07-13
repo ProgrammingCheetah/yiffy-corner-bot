@@ -69,8 +69,12 @@ mod tests {
         let repo = SqliteShadowBanRepository::new(test_pool().await);
         let who = TelegramId::from(99);
         assert!(!repo.contains(who).await.unwrap());
-        repo.set(who, TelegramId::from(1), Utc::now()).await.unwrap();
-        repo.set(who, TelegramId::from(2), Utc::now()).await.unwrap(); // idempotent
+        repo.set(who, TelegramId::from(1), Utc::now())
+            .await
+            .unwrap();
+        repo.set(who, TelegramId::from(2), Utc::now())
+            .await
+            .unwrap(); // idempotent
         assert!(repo.contains(who).await.unwrap());
         repo.lift(who).await.unwrap();
         assert!(!repo.contains(who).await.unwrap());

@@ -13,9 +13,21 @@
 
   let pinned = [];
   let history = [];
+  // The "fulfilling request" toggle: while armed (server-side, survives
+  // restarts), every save is stamped and the publication caption reads
+  // "Fulfilling request <text>" — until it's turned off here or via
+  // /fulfilling off in the bot.
+  let fulfilling = null;
+  let wishOpen = false;
+  let wishInput = '';
   onMount(async () => {
     pinned = await loadJson('browse_pinned', []);
     history = await loadJson('browse_history', []);
+    try {
+      fulfilling = (await get('/browse/fulfilling')).request;
+    } catch {
+      // Non-moderators (or a flaky start) just don't see the toggle state.
+    }
     // A query handed over from the Saved/History page: fill and run it.
     const handed = $route.url.searchParams.get('q');
     if (handed && handed !== query) {
@@ -105,6 +117,30 @@
     if (cards.length <= 2 && !busy && query) search(false);
   }
 
+  async function armFulfilling() {
+    const text = wishInput.trim();
+    if (!text) return;
+    try {
+      const res = await post('/browse/fulfilling', { request: text });
+      fulfilling = res.request;
+      wishOpen = false;
+      wishInput = '';
+      say(res.message);
+    } catch (e) {
+      say(e.message);
+    }
+  }
+
+  async function disarmFulfilling() {
+    try {
+      const res = await post('/browse/fulfilling', { request: '' });
+      fulfilling = null;
+      say(res.message);
+    } catch (e) {
+      say(e.message);
+    }
+  }
+
   function say(text) {
     toast = text;
     setTimeout(() => (toast = ''), 3000);
@@ -122,6 +158,34 @@
   </button>
   <button on:click={() => search(true)} disabled={busy}>Go</button>
 </div>
+
+{#if fulfilling !== null}
+  <div class="fulfilling on">
+    <Icon name="sparkles" size={16} />
+    <span class="wish">Fulfilling request <b>“{fulfilling}”</b> — every save gets stamped.</span>
+    <button class="ghosty" title="Stop fulfilling" on:click={disarmFulfilling}>
+      <Icon name="x" size={16} />
+    </button>
+  </div>
+{:else if wishOpen}
+  <div class="fulfilling">
+    <!-- svelte-ignore a11y-autofocus -->
+    <input
+      placeholder="what did they wish for…"
+      bind:value={wishInput}
+      autofocus
+      on:keydown={(e) => e.key === 'Enter' && armFulfilling()}
+    />
+    <button on:click={armFulfilling} disabled={!wishInput.trim()}>On</button>
+    <button class="ghosty" title="Never mind" on:click={() => (wishOpen = false)}>
+      <Icon name="x" size={16} />
+    </button>
+  </div>
+{:else}
+  <button class="fulfill-hint" on:click={() => (wishOpen = true)}>
+    <Icon name="sparkles" size={14} /> Fulfilling a request?
+  </button>
+{/if}
 
 <SwipeDeck
   bind:this={deck}
@@ -161,4 +225,27 @@
   .pin.on { color: var(--accent); }
   .round.like { color: #4ade80; }
   .round.nope { color: #f87171; }
+  .fulfilling {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: -4px 0 12px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .fulfilling.on { color: var(--accent); }
+  .fulfilling .wish { flex: 1; font-size: 0.9em; }
+  .fulfilling input { flex: 1; min-width: 0; }
+  .ghosty { background: transparent; padding: 4px 6px; color: var(--hint); }
+  .fulfill-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: -4px 0 12px;
+    background: transparent;
+    padding: 4px 6px;
+    color: var(--hint);
+    font-size: 0.9em;
+  }
 </style>

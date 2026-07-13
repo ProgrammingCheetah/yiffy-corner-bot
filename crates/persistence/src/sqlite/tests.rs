@@ -625,7 +625,10 @@ mod tag_policies {
         assert!(!repo.contains(&Tag::from("wolf")).await.unwrap());
         assert_eq!(repo.list_all().await.unwrap().len(), 2);
         assert_eq!(
-            repo.reason_for(&Tag::from("gore")).await.unwrap().as_deref(),
+            repo.reason_for(&Tag::from("gore"))
+                .await
+                .unwrap()
+                .as_deref(),
             Some("too graphic")
         );
         assert_eq!(repo.reason_for(&Tag::from("scat")).await.unwrap(), None);

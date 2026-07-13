@@ -8,16 +8,17 @@ use domain::elements::user::TelegramId;
 use infra_e621::RateLimitedE621Client;
 use persistence::sqlite::{
     announcement::SqliteAnnouncementRepository,
+    fulfilling::SqliteFulfillingRequestRepository,
     post::SqlitePostRepository,
     poster::SqlitePosterRepository,
     publication::SqlitePublicationRepository,
     publisher_config::SqlitePublisherConfigRepository,
     report::SqliteReportRepository,
     scoreboard::SqliteScoreboardRepository,
+    skiplist::SqliteSkipListRepository,
     tag_policy::{
         SqliteForbiddenTagRepository, SqliteRequiredTagRepository, SqliteSpoilerTagRepository,
     },
-    skiplist::SqliteSkipListRepository,
     telegram_copy::SqliteTelegramCopyRepository,
     user::SqliteUserRepository,
 };
@@ -141,6 +142,9 @@ pub struct AppState {
     pub reports: SqliteReportRepository,
     /// Browse skiplist: sources moderators waved off for good.
     pub skips: SqliteSkipListRepository,
+    /// Per-curator "fulfilling request" toggles: browse saves are stamped
+    /// with the active request text until the curator turns theirs off.
+    pub fulfilling: SqliteFulfillingRequestRepository,
     /// Shadowbans: silently dropped reports/wishes/submissions.
     pub shadow_bans: persistence::sqlite::shadow_ban::SqliteShadowBanRepository,
     pub publications: SqlitePublicationRepository,

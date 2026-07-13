@@ -44,13 +44,7 @@ impl ForbiddenTagRepository for InMemoryForbiddenTagRepository {
     }
 
     async fn reason_for(&self, tag: &Tag) -> Result<Option<String>, Self::Err> {
-        Ok(self
-            .tags
-            .read()
-            .await
-            .get(tag.as_ref())
-            .cloned()
-            .flatten())
+        Ok(self.tags.read().await.get(tag.as_ref()).cloned().flatten())
     }
 
     async fn list_all(&self) -> Result<Vec<Tag>, Self::Err> {

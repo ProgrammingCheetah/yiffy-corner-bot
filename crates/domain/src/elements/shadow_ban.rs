@@ -21,8 +21,12 @@ pub enum ShadowBanRepositoryError {
 pub trait ShadowBanRepository: Send + Sync {
     type Err;
     /// Shadowban an id. Idempotent.
-    async fn set(&self, who: TelegramId, by: TelegramId, at: DateTime<Utc>)
-    -> Result<(), Self::Err>;
+    async fn set(
+        &self,
+        who: TelegramId,
+        by: TelegramId,
+        at: DateTime<Utc>,
+    ) -> Result<(), Self::Err>;
     /// Lift a shadowban. Idempotent.
     async fn lift(&self, who: TelegramId) -> Result<(), Self::Err>;
     async fn contains(&self, who: TelegramId) -> Result<bool, Self::Err>;

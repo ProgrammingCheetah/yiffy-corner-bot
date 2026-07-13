@@ -110,16 +110,30 @@ mod tests {
             .await
             .unwrap();
 
-        let relay = request_more(TelegramId::from(99), post.id, "more wolves", &posts, &users, &shadow)
-            .await
-            .unwrap();
+        let relay = request_more(
+            TelegramId::from(99),
+            post.id,
+            "more wolves",
+            &posts,
+            &users,
+            &shadow,
+        )
+        .await
+        .unwrap();
         assert_eq!(relay.post.id, post.id);
         assert_eq!(relay.reviewers.len(), 2);
 
         assert!(matches!(
-            request_more(TelegramId::from(99), PostId::from(777), "?", &posts, &users, &shadow)
-                .await
-                .unwrap_err(),
+            request_more(
+                TelegramId::from(99),
+                PostId::from(777),
+                "?",
+                &posts,
+                &users,
+                &shadow
+            )
+            .await
+            .unwrap_err(),
             HandlerError::PostNotFound(_)
         ));
     }

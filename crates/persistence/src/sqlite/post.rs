@@ -54,6 +54,7 @@ fn row_to_post(row: &sqlx::sqlite::SqliteRow) -> Result<Post, PostRepositoryErro
             .map(|id| UserId::from(id as u64)),
         moderated_at: row.get::<Option<DateTime<Utc>>, _>("moderated_at"),
         phash: row.get::<Option<i64>, _>("phash").map(|h| h as u64),
+        fulfills: row.get::<Option<String>, _>("fulfills"),
     })
 }
 
@@ -193,6 +194,19 @@ impl PostRepository for SqlitePostRepository {
             .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?
             .ok_or(PostRepositoryError::NotFound(id))?;
         row_to_post(&row)
+    }
+
+    async fn set_fulfills(&self, id: PostId, request: Option<&str>) -> Result<(), Self::Err> {
+        let result = sqlx::query("UPDATE posts SET fulfills = ? WHERE id = ?")
+            .bind(request)
+            .bind(*id.as_ref() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PostRepositoryError::NotCreated(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(PostRepositoryError::NotFound(id));
+        }
+        Ok(())
     }
 
     async fn set_phash(&self, id: PostId, phash: Option<u64>) -> Result<(), Self::Err> {

@@ -787,11 +787,73 @@ async fn skip_post(
     let authed = authenticate(&state, &headers).await?;
     require(&authed, Role::Moderator)?;
     let url = Url::parse(&body.url).map_err(bad_request)?;
-    let source = browse::skip(authed.user.telegram_id, url, &state.app.users, &state.app.skips)
-        .await
-        .map_err(bad_request)?;
+    let source = browse::skip(
+        authed.user.telegram_id,
+        url,
+        &state.app.users,
+        &state.app.skips,
+    )
+    .await
+    .map_err(bad_request)?;
     Ok(Json(json!({
         "message": format!("Skipped for good — {} won't show in browse again.", source.as_ref())
+    })))
+}
+
+#[derive(Deserialize)]
+struct FulfillingBody {
+    /// The request text; empty or missing turns the toggle OFF.
+    #[serde(default)]
+    request: String,
+}
+
+/// Where the curator's "fulfilling request" toggle stands.
+async fn fulfilling_status(State(state): State<Arc<WebState>>, headers: HeaderMap) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let request = browse::fulfilling_status(
+        authed.user.telegram_id,
+        &state.app.users,
+        &state.app.fulfilling,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(json!({ "request": request })))
+}
+
+/// Toggle the "fulfilling request" stamp: non-empty text arms it (every
+/// browse save is stamped until turned off), empty text disarms it.
+async fn set_fulfilling(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(body): Json<FulfillingBody>,
+) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let request = body.request.trim();
+    let message = if request.is_empty() {
+        browse::clear_fulfilling(
+            authed.user.telegram_id,
+            &state.app.users,
+            &state.app.fulfilling,
+        )
+        .await
+        .map_err(bad_request)?;
+        "Fulfilling OFF — saves are plain again.".to_string()
+    } else {
+        browse::set_fulfilling(
+            authed.user.telegram_id,
+            request,
+            &state.app.users,
+            &state.app.fulfilling,
+        )
+        .await
+        .map_err(bad_request)?;
+        format!("Fulfilling ON — every save is stamped “{request}” until turned off.")
+    };
+    Ok(Json(json!({
+        "message": message,
+        "request": if request.is_empty() { None } else { Some(request) },
     })))
 }
 
@@ -820,6 +882,7 @@ async fn save_post(
         &state.app.posts,
         &*state.app.e621,
         &state.app.forbidden,
+        &state.app.fulfilling,
     )
     .await
     .map_err(bad_request)?
@@ -828,7 +891,13 @@ async fn save_post(
             Err(err(StatusCode::UNPROCESSABLE_ENTITY, "tags_needed"))
         }
         browse::SaveOutcome::Added(post) => Ok(Json(json!({
-            "message": format!("Post #{} entered the feed.", post.id),
+            "message": match &post.fulfills {
+                Some(request) => format!(
+                    "Post #{} entered the feed — fulfilling request “{request}”.",
+                    post.id
+                ),
+                None => format!("Post #{} entered the feed.", post.id),
+            },
             "post_id": post.id.as_ref(),
         }))),
     }
@@ -908,6 +977,7 @@ async fn suggest_post(
             &state.app.posts,
             &*state.app.e621,
             &state.app.forbidden,
+            &state.app.fulfilling,
         )
         .await
         .map_err(bad_request)?
@@ -1536,6 +1606,10 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
         .route("/browse/skip", post(skip_post))
+        .route(
+            "/browse/fulfilling",
+            get(fulfilling_status).post(set_fulfilling),
+        )
         .route("/tags/complete", get(complete_tags))
         .route("/resolve", post(resolve_preview))
         .route("/suggest", post(suggest_post))

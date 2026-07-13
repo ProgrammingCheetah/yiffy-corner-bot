@@ -22,7 +22,12 @@ impl SqliteSkipListRepository {
 impl SkipListRepository for SqliteSkipListRepository {
     type Err = SkipListRepositoryError;
 
-    async fn add(&self, source: &Source, by: TelegramId, at: DateTime<Utc>) -> Result<(), Self::Err> {
+    async fn add(
+        &self,
+        source: &Source,
+        by: TelegramId,
+        at: DateTime<Utc>,
+    ) -> Result<(), Self::Err> {
         sqlx::query(
             "INSERT INTO browse_skips (source, skipped_by, skipped_at) VALUES (?, ?, ?)
              ON CONFLICT (source) DO NOTHING",
@@ -55,8 +60,7 @@ mod tests {
     #[tokio::test]
     async fn add_is_idempotent_and_contains_finds_it() {
         let repo = SqliteSkipListRepository::new(test_pool().await);
-        let source =
-            Source::try_from(Url::parse("https://e621.net/posts/9").unwrap()).unwrap();
+        let source = Source::try_from(Url::parse("https://e621.net/posts/9").unwrap()).unwrap();
         assert!(!repo.contains(&source).await.unwrap());
         repo.add(&source, TelegramId::from(1), Utc::now())
             .await

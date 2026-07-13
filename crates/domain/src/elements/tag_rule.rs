@@ -384,10 +384,7 @@ mod tests {
         assert_eq!(simple.describe(), "solo REQUIRE NO male");
         // Terms describe on their own too (poster subscriptions).
         let terms = TagTerm::parse_list("wolf (male female)").unwrap();
-        assert_eq!(
-            TagTerm::describe_list(&terms),
-            "wolf AND (male OR female)"
-        );
+        assert_eq!(TagTerm::describe_list(&terms), "wolf AND (male OR female)");
     }
 
     #[test]

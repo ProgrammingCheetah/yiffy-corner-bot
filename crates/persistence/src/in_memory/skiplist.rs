@@ -38,10 +38,6 @@ impl SkipListRepository for InMemorySkipListRepository {
     }
 
     async fn contains(&self, source: &Source) -> Result<bool, Self::Err> {
-        Ok(self
-            .sources
-            .read()
-            .await
-            .contains(source.as_ref().as_str()))
+        Ok(self.sources.read().await.contains(source.as_ref().as_str()))
     }
 }

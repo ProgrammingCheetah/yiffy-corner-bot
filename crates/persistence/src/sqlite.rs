@@ -4,13 +4,14 @@
 //! schema lives in `migrations/` and is embedded via [`sqlx::migrate!`].
 
 pub mod announcement;
+pub mod fulfilling;
 pub mod post;
 pub mod poster;
 pub mod publication;
 pub mod publisher_config;
 pub mod report;
-pub mod shadow_ban;
 pub mod scoreboard;
+pub mod shadow_ban;
 pub mod skiplist;
 pub mod tag_policy;
 pub mod telegram_copy;

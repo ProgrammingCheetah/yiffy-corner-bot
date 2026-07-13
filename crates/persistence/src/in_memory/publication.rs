@@ -56,10 +56,7 @@ impl PublicationRepository for InMemoryPublicationRepository {
             .iter()
             .filter(|p| p.chat_id == chat_id)
             .collect();
-        Ok((
-            mine.len() as u64,
-            mine.iter().map(|p| p.published_at).max(),
-        ))
+        Ok((mine.len() as u64, mine.iter().map(|p| p.published_at).max()))
     }
 }
 

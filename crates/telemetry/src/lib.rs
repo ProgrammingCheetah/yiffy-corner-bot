@@ -85,6 +85,7 @@ vocabulary! {
         BrowseResults => "browse_results",
         BrowseAlbumFailed => "browse_album_failed",
         PoolSaved => "pool_saved",
+        FulfillingChanged => "fulfilling_changed",
 
         // e621 pools (whole-pool submission)
         PoolInspected => "pool_inspected",
@@ -136,6 +137,7 @@ vocabulary! {
         PostTakenDown => "post_taken_down",
         ReportsDismissed => "reports_dismissed",
         MoreRequested => "more_requested",
+        MoreAcknowledged => "more_acknowledged",
         ShadowBanChanged => "shadow_ban_changed",
         ShadowDropped => "shadow_dropped",
 

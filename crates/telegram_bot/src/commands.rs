@@ -58,6 +58,10 @@ pub enum Command {
     Browse(String),
     #[command(description = "add any source straight to the feed: /save <url> [tags…] (mods)")]
     Save(String),
+    #[command(
+        description = "stamp browse saves with a viewer request: /fulfilling <text> — stays on until /fulfilling off (mods)"
+    )]
+    Fulfilling(String),
     #[command(description = "globally forbid a tag (mods)")]
     Forbidtag(String),
     #[command(description = "lift a global tag ban (mods)")]
@@ -156,6 +160,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Unban(_) => "unban",
         Command::Browse(_) => "browse",
         Command::Save(_) => "save",
+        Command::Fulfilling(_) => "fulfilling",
         Command::Forbidtag(_) => "forbidtag",
         Command::Unforbidtag(_) => "unforbidtag",
         Command::Requiretag(_) => "requiretag",
@@ -327,7 +332,8 @@ async fn relay_more_request(
         &state.users,
         &state.shadow_bans,
     )
-    .await {
+    .await
+    {
         Err(e) => describe(e),
         Ok(relay) => {
             let requester_label = contact_label(state, requester, requester_username).await;
@@ -337,12 +343,17 @@ async fn relay_more_request(
                 escape(relay.post.source.as_ref().as_str()),
                 escape(wish)
             );
+            let keyboard = InlineKeyboardMarkup::new([[InlineKeyboardButton::callback(
+                "👋 Acknowledge",
+                format!("more:ack:{}:{}", relay.post.id, requester.as_ref()),
+            )]]);
             for reviewer in &relay.reviewers {
                 let chat = ChatId(*reviewer.telegram_id.as_ref());
                 if let Err(e) = bot
                     .send_message(chat, text.clone())
                     .parse_mode(ParseMode::Html)
                     .link_preview_options(no_preview())
+                    .reply_markup(keyboard.clone())
                     .await
                 {
                     tracing::warn!(
@@ -425,8 +436,7 @@ async fn file_report(
             total_reports,
             reason,
         }) => {
-            let reporter_label =
-                contact_label(state, reporter, reporter_username.as_deref()).await;
+            let reporter_label = contact_label(state, reporter, reporter_username.as_deref()).await;
             let text = format!(
                 "⚠️ Post #{} was reported ({total_reports} report(s))\n{}\nBy: {reporter_label}\nReason: {}",
                 post.id,
@@ -816,6 +826,7 @@ pub async fn handle_command(
         Command::Unban(arg) => ban_reply(&bot, &state, actor, &arg, false).await,
         Command::Browse(arg) => handle_browse(&bot, msg.chat.id, &state, actor, &arg).await,
         Command::Save(arg) => handle_save(&state, actor, &arg).await,
+        Command::Fulfilling(arg) => handle_fulfilling(&state, actor, &arg).await,
         Command::Forbidtag(arg) => {
             tag_policy_reply(&state, actor, &arg, TagPolicyAction::Forbid).await
         }
@@ -1109,9 +1120,9 @@ pub(crate) async fn submit(
             }
         }
         Ok(SuggestOutcome::AutoBanned { tag, reason, .. }) => match reason {
-            Some(reason) => format!(
-                "This post contains content that is not allowed here ({tag}: {reason})."
-            ),
+            Some(reason) => {
+                format!("This post contains content that is not allowed here ({tag}: {reason}).")
+            }
             None => format!("This post contains content that is not allowed here ({tag})."),
         },
         // Shadowban: word-for-word the normal queue reply — the forward
@@ -1198,9 +1209,15 @@ pub async fn handle_pending_tags(bot: Bot, msg: Message, state: SharedState) -> 
         if wish.is_empty() {
             return Ok(()); // odd empty message — let the link be re-tapped
         }
-        let reply =
-            relay_more_request(&bot, &state, actor, from.username.as_deref(), post_id, &wish)
-                .await;
+        let reply = relay_more_request(
+            &bot,
+            &state,
+            actor,
+            from.username.as_deref(),
+            post_id,
+            &wish,
+        )
+        .await;
         bot.send_message(msg.chat.id, reply)
             .link_preview_options(no_preview())
             .await?;
@@ -1676,6 +1693,37 @@ async fn handle_save(state: &SharedState, actor: TelegramId, arg: &str) -> Strin
     complete_direct_save(state, actor, url, tags).await
 }
 
+/// The "fulfilling request" toggle: `/fulfilling <text>` arms it, every
+/// browse save is stamped with the text until `/fulfilling off`, and a bare
+/// `/fulfilling` shows where the toggle stands.
+async fn handle_fulfilling(state: &SharedState, actor: TelegramId, arg: &str) -> String {
+    match arg.trim() {
+        "" => match browse::fulfilling_status(actor, &state.users, &state.fulfilling).await {
+            Err(e) => describe(e),
+            Ok(Some(request)) => format!(
+                "ON — every browse save is stamped “Fulfilling request {request}”. \
+                 /fulfilling off to stop, or /fulfilling <text> to change the request."
+            ),
+            Ok(None) => "OFF — browse saves are plain. /fulfilling <text> to start \
+                         stamping them with a viewer request."
+                .to_string(),
+        },
+        "off" => match browse::clear_fulfilling(actor, &state.users, &state.fulfilling).await {
+            Err(e) => describe(e),
+            Ok(()) => "OFF — browse saves are plain again.".to_string(),
+        },
+        request => {
+            match browse::set_fulfilling(actor, request, &state.users, &state.fulfilling).await {
+                Err(e) => describe(e),
+                Ok(()) => format!(
+                    "ON — every browse save now gets “Fulfilling request {request}” on its \
+                     publication, until /fulfilling off."
+                ),
+            }
+        }
+    }
+}
+
 async fn complete_direct_save(
     state: &SharedState,
     actor: TelegramId,
@@ -1692,14 +1740,22 @@ async fn complete_direct_save(
         &state.posts,
         &*state.e621,
         &state.forbidden,
+        &state.fulfilling,
     )
     .await
     {
-        Ok(browse::SaveOutcome::Added(post)) => format!(
-            "Added to the feed as #{} (position {}).",
-            post.id,
-            post.feed_position.unwrap_or_default()
-        ),
+        Ok(browse::SaveOutcome::Added(post)) => match &post.fulfills {
+            Some(request) => format!(
+                "Added to the feed as #{} (position {}) — fulfilling request “{request}”.",
+                post.id,
+                post.feed_position.unwrap_or_default()
+            ),
+            None => format!(
+                "Added to the feed as #{} (position {}).",
+                post.id,
+                post.feed_position.unwrap_or_default()
+            ),
+        },
         Ok(browse::SaveOutcome::TagsNeeded) => {
             state.pending.lock().await.insert(
                 *actor.as_ref(),
@@ -1918,9 +1974,10 @@ async fn tag_policy_reply(
     // /forbidtag takes an optional trailing reason: `/forbidtag gore too
     // graphic for our channels`. Every other action is single-tag only.
     let (tag, reason) = match (arg.trim().split_once(char::is_whitespace), &action) {
-        (Some((tag, reason)), TagPolicyAction::Forbid) => {
-            (tag, Some(reason.trim().to_string()).filter(|r| !r.is_empty()))
-        }
+        (Some((tag, reason)), TagPolicyAction::Forbid) => (
+            tag,
+            Some(reason.trim().to_string()).filter(|r| !r.is_empty()),
+        ),
         (Some(_), _) => return "Give exactly one tag.".to_string(),
         (None, _) => (arg.trim(), None),
     };
@@ -3287,14 +3344,11 @@ pub async fn handle_callback(
                         Err(msg) => msg,
                         Ok(prompt) => {
                             match bot.send_message(ChatId(*actor.as_ref()), prompt).await {
-                                Ok(_) => {
-                                    "Check your DM with me — tell me why you're reporting it."
-                                        .to_string()
-                                }
+                                Ok(_) => "Check your DM with me — tell me why you're reporting it."
+                                    .to_string(),
                                 Err(_) => {
                                     state.pending_reports.lock().await.remove(actor.as_ref());
-                                    file_report(&bot, &state, actor, username, post_id, None)
-                                        .await
+                                    file_report(&bot, &state, actor, username, post_id, None).await
                                 }
                             }
                         }
@@ -3360,6 +3414,58 @@ pub async fn handle_callback(
                 reflect_outcome_on_dm(&bot, message, &outcome).await;
             }
         }
+        // A moderator acknowledges a "more like this" wish: the requester
+        // hears back, and the DM records the answer (which also retires
+        // the button on this moderator's copy).
+        ["more", "ack", id, requester] => {
+            use teloxide::payloads::AnswerCallbackQuerySetters as _;
+
+            let toast = match (parse_post_id(id), requester.parse::<i64>().ok()) {
+                (Some(post_id), Some(requester_id)) => {
+                    match application::commands::auth::require_role(
+                        &state.users,
+                        actor,
+                        Role::Moderator,
+                    )
+                    .await
+                    {
+                        Err(e) => describe(e),
+                        Ok(_) => {
+                            let heard = bot
+                                .send_message(
+                                    ChatId(requester_id),
+                                    format!(
+                                        "💜 A moderator saw your wish for more like \
+                                         post #{post_id} — thanks for it!"
+                                    ),
+                                )
+                                .await
+                                .is_ok();
+                            tracing::info!(
+                                event = %Event::MoreAcknowledged, post_id = %post_id,
+                                requester = requester_id, telegram_id = actor.as_ref(),
+                                notified = heard, "more-of request acknowledged"
+                            );
+                            let outcome = if heard {
+                                "👋 Acknowledged — the requester was told.".to_string()
+                            } else {
+                                "👋 Acknowledged. (Couldn't DM the requester — they may \
+                                 not have a chat open with the bot.)"
+                                    .to_string()
+                            };
+                            if let Some(message) = query.message.as_ref() {
+                                reflect_outcome_on_dm(&bot, message, &outcome).await;
+                            }
+                            outcome
+                        }
+                    }
+                }
+                _ => "Malformed callback.".to_string(),
+            };
+            bot.answer_callback_query(query.id.clone())
+                .text(toast)
+                .await?;
+        }
         // Legacy browse buttons: any press dismisses the preview message;
         // Send additionally saves the post into the pool.
         ["browse", "erase"] => {
@@ -3379,18 +3485,15 @@ pub async fn handle_callback(
                 .and_then(|id| Url::parse(&format!("https://e621.net/posts/{id}")).ok())
             {
                 None => "Malformed callback.".to_string(),
-                Some(url) => {
-                    match browse::skip(actor, url, &state.users, &state.skips).await {
-                        Ok(_) => {
-                            if let Some(message) = query.message.as_ref() {
-                                let _ =
-                                    bot.delete_message(message.chat().id, message.id()).await;
-                            }
-                            "Skipped for good — it won't show in browse again.".to_string()
+                Some(url) => match browse::skip(actor, url, &state.users, &state.skips).await {
+                    Ok(_) => {
+                        if let Some(message) = query.message.as_ref() {
+                            let _ = bot.delete_message(message.chat().id, message.id()).await;
                         }
-                        Err(e) => describe(e),
+                        "Skipped for good — it won't show in browse again.".to_string()
                     }
-                }
+                    Err(e) => describe(e),
+                },
             };
             bot.answer_callback_query(query.id.clone())
                 .text(toast)
@@ -3415,12 +3518,17 @@ pub async fn handle_callback(
                         &state.posts,
                         &*state.e621,
                         &state.forbidden,
+                        &state.fulfilling,
                     )
                     .await
                     {
-                        Ok(browse::SaveOutcome::Added(post)) => {
-                            format!("Saved to the feed as #{}.", post.id)
-                        }
+                        Ok(browse::SaveOutcome::Added(post)) => match &post.fulfills {
+                            Some(request) => format!(
+                                "Saved to the feed as #{} — fulfilling request “{request}”.",
+                                post.id
+                            ),
+                            None => format!("Saved to the feed as #{}.", post.id),
+                        },
                         Ok(browse::SaveOutcome::TagsNeeded) => {
                             "This source needs tags — use /save <url> <tags…>.".to_string()
                         }

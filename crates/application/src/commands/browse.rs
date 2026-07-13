@@ -10,6 +10,7 @@
 use chrono::Utc;
 use domain::elements::{
     e621::{E621Fetcher, E621PostMetadata},
+    fulfilling::FulfillingRequestRepository,
     post::{Post, PostRepository, PostStatus, Source},
     skiplist::SkipListRepository,
     tag::Tag,
@@ -136,17 +137,23 @@ pub enum SaveOutcome {
 /// extras merged); every other source needs tags (`TagsNeeded` otherwise).
 /// Content owning a globally forbidden tag is refused outright — a direct
 /// add should fail loudly, not silently auto-ban.
-pub async fn save<P, E, F>(
+///
+/// While the curator's "fulfilling request" toggle is ON (see
+/// [`set_fulfilling`]), the saved post is stamped with the request text and
+/// its publication caption will read `Fulfilling request <text>`.
+pub async fn save<P, E, F, FR>(
     cmd: SaveCommand,
     users: &impl UserRepository,
     posts: &P,
     e621: &E,
     forbidden: &F,
+    fulfilling: &FR,
 ) -> HandlerResult<SaveOutcome>
 where
     P: PostRepository,
     E: E621Fetcher,
     F: ForbiddenTagRepository,
+    FR: FulfillingRequestRepository,
 {
     let curator = require_role(users, cmd.actor, Role::Moderator).await?;
     let source =
@@ -213,7 +220,7 @@ where
         )
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
-    let post = posts
+    let mut post = posts
         .accept_into_feed(post.id)
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
@@ -221,12 +228,85 @@ where
         .record_moderation(post.id, curator.id, Utc::now())
         .await
         .map_err(|_| HandlerError::RepositoryError)?;
+    if let Some(request) = fulfilling
+        .active(cmd.actor)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+    {
+        posts
+            .set_fulfills(post.id, Some(&request))
+            .await
+            .map_err(|_| HandlerError::RepositoryError)?;
+        post.fulfills = Some(request);
+    }
     tracing::info!(
         event = %Event::AcceptedIntoFeed, post_id = %post.id,
         source = %post.source.as_ref(), position = post.feed_position,
+        fulfills = post.fulfills.as_deref().unwrap_or(""),
         "saved directly into the feed"
     );
     Ok(SaveOutcome::Added(post))
+}
+
+/// Turn the curator's "fulfilling request" toggle ON with the request text
+/// (replacing any previous one). Every browse save from here on is stamped
+/// with the text until [`clear_fulfilling`] turns the toggle OFF.
+pub async fn set_fulfilling<FR>(
+    actor: TelegramId,
+    request: &str,
+    users: &impl UserRepository,
+    fulfilling: &FR,
+) -> HandlerResult<()>
+where
+    FR: FulfillingRequestRepository,
+{
+    require_role(users, actor, Role::Moderator).await?;
+    fulfilling
+        .set(actor, request, Utc::now())
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::FulfillingChanged, by = actor.as_ref(), request,
+        "fulfilling-request toggle ON"
+    );
+    Ok(())
+}
+
+/// Turn the curator's "fulfilling request" toggle OFF. Idempotent.
+pub async fn clear_fulfilling<FR>(
+    actor: TelegramId,
+    users: &impl UserRepository,
+    fulfilling: &FR,
+) -> HandlerResult<()>
+where
+    FR: FulfillingRequestRepository,
+{
+    require_role(users, actor, Role::Moderator).await?;
+    fulfilling
+        .clear(actor)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::FulfillingChanged, by = actor.as_ref(),
+        "fulfilling-request toggle OFF"
+    );
+    Ok(())
+}
+
+/// The curator's active request text, if their toggle is ON.
+pub async fn fulfilling_status<FR>(
+    actor: TelegramId,
+    users: &impl UserRepository,
+    fulfilling: &FR,
+) -> HandlerResult<Option<String>>
+where
+    FR: FulfillingRequestRepository,
+{
+    require_role(users, actor, Role::Moderator).await?;
+    fulfilling
+        .active(actor)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)
 }
 
 /// Remember a browse result as skipped: this source is not for us, and
@@ -242,8 +322,7 @@ where
     S: SkipListRepository,
 {
     require_role(users, actor, Role::Moderator).await?;
-    let source =
-        Source::try_from(url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
+    let source = Source::try_from(url).map_err(|e| HandlerError::InvalidSource(e.to_string()))?;
     skips
         .add(&source, actor, Utc::now())
         .await
@@ -262,6 +341,7 @@ mod tests {
     use async_trait::async_trait;
     use domain::elements::e621::FetchError;
     use persistence::in_memory::{
+        fulfilling::InMemoryFulfillingRequestRepository,
         post::InMemoryPostRepository,
         skiplist::InMemorySkipListRepository,
         tag_policy::{InMemoryForbiddenTagRepository, InMemoryRequiredTagRepository},
@@ -320,6 +400,7 @@ mod tests {
         forbidden: InMemoryForbiddenTagRepository,
         required: InMemoryRequiredTagRepository,
         skips: InMemorySkipListRepository,
+        fulfilling: InMemoryFulfillingRequestRepository,
     }
 
     async fn fixture() -> Fixture {
@@ -338,6 +419,7 @@ mod tests {
             forbidden: InMemoryForbiddenTagRepository::new(),
             required: InMemoryRequiredTagRepository::new(),
             skips: InMemorySkipListRepository::new(),
+            fulfilling: InMemoryFulfillingRequestRepository::new(),
         }
     }
 
@@ -498,6 +580,7 @@ mod tests {
             &fx.posts,
             &stub_fetcher(),
             &fx.forbidden,
+            &fx.fulfilling,
         )
         .await
         .unwrap() else {
@@ -507,6 +590,85 @@ mod tests {
         assert!(post.submitted_by.is_none());
         assert_eq!(post.feed_position, Some(1));
         assert_eq!(post.tags, vec![Tag::from("wolf"), Tag::from("male")]);
+        assert_eq!(post.fulfills, None, "toggle OFF → no stamp");
+    }
+
+    #[tokio::test]
+    async fn save_stamps_the_active_fulfilling_request_until_cleared() {
+        let fx = fixture().await;
+        let actor = TelegramId::from(1);
+        set_fulfilling(actor, "more wolves", &fx.users, &fx.fulfilling)
+            .await
+            .unwrap();
+        assert_eq!(
+            fulfilling_status(actor, &fx.users, &fx.fulfilling)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("more wolves")
+        );
+
+        // Every save while the toggle is ON carries the stamp…
+        for id in 1..=2u64 {
+            let SaveOutcome::Added(post) = save(
+                SaveCommand {
+                    actor,
+                    url: Url::parse(&format!("https://e621.net/posts/{id}")).unwrap(),
+                    tags: vec![],
+                },
+                &fx.users,
+                &fx.posts,
+                &stub_fetcher(),
+                &fx.forbidden,
+                &fx.fulfilling,
+            )
+            .await
+            .unwrap() else {
+                panic!("expected Added");
+            };
+            assert_eq!(post.fulfills.as_deref(), Some("more wolves"));
+            let stored = fx.posts.find_by_id(post.id).await.unwrap().unwrap();
+            assert_eq!(stored.fulfills.as_deref(), Some("more wolves"));
+        }
+
+        // …and none after it's turned OFF.
+        clear_fulfilling(actor, &fx.users, &fx.fulfilling)
+            .await
+            .unwrap();
+        let SaveOutcome::Added(post) = save(
+            SaveCommand {
+                actor,
+                url: Url::parse("https://e621.net/posts/3").unwrap(),
+                tags: vec![],
+            },
+            &fx.users,
+            &fx.posts,
+            &stub_fetcher(),
+            &fx.forbidden,
+            &fx.fulfilling,
+        )
+        .await
+        .unwrap() else {
+            panic!("expected Added");
+        };
+        assert_eq!(post.fulfills, None);
+    }
+
+    #[tokio::test]
+    async fn fulfilling_toggle_needs_moderator() {
+        let fx = fixture().await;
+        assert!(matches!(
+            set_fulfilling(TelegramId::from(2), "wish", &fx.users, &fx.fulfilling)
+                .await
+                .unwrap_err(),
+            HandlerError::NotAuthorized(_)
+        ));
+        assert!(matches!(
+            clear_fulfilling(TelegramId::from(2), &fx.users, &fx.fulfilling)
+                .await
+                .unwrap_err(),
+            HandlerError::NotAuthorized(_)
+        ));
     }
 
     #[tokio::test]
@@ -522,6 +684,7 @@ mod tests {
             &fx.posts,
             &stub_fetcher(),
             &fx.forbidden,
+            &fx.fulfilling,
         )
         .await
         .unwrap();
@@ -537,6 +700,7 @@ mod tests {
             &fx.posts,
             &stub_fetcher(),
             &fx.forbidden,
+            &fx.fulfilling,
         )
         .await
         .unwrap() else {
@@ -561,6 +725,7 @@ mod tests {
             &fx.posts,
             &stub_fetcher(),
             &fx.forbidden,
+            &fx.fulfilling,
         )
         .await
         .unwrap_err();
@@ -575,12 +740,26 @@ mod tests {
             url: Url::parse("https://e621.net/posts/1").unwrap(),
             tags: vec![],
         };
-        save(cmd(), &fx.users, &fx.posts, &stub_fetcher(), &fx.forbidden)
-            .await
-            .unwrap();
-        let err = save(cmd(), &fx.users, &fx.posts, &stub_fetcher(), &fx.forbidden)
-            .await
-            .unwrap_err();
+        save(
+            cmd(),
+            &fx.users,
+            &fx.posts,
+            &stub_fetcher(),
+            &fx.forbidden,
+            &fx.fulfilling,
+        )
+        .await
+        .unwrap();
+        let err = save(
+            cmd(),
+            &fx.users,
+            &fx.posts,
+            &stub_fetcher(),
+            &fx.forbidden,
+            &fx.fulfilling,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, HandlerError::DuplicateSubmission(_)));
     }
 }

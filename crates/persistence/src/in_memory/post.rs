@@ -52,6 +52,7 @@ impl PostRepository for InMemoryPostRepository {
             moderated_by: None,
             moderated_at: None,
             phash: None,
+            fulfills: None,
         };
         posts.insert(raw_id, post.clone());
         Ok(post)
@@ -103,6 +104,15 @@ impl PostRepository for InMemoryPostRepository {
         // Media may have changed: stale hash cleared, recomputed downstream.
         post.phash = None;
         Ok(post.clone())
+    }
+
+    async fn set_fulfills(&self, id: PostId, request: Option<&str>) -> Result<(), Self::Err> {
+        let mut posts = self.posts.write().await;
+        let post = posts
+            .get_mut(id.as_ref())
+            .ok_or(PostRepositoryError::NotFound(id))?;
+        post.fulfills = request.map(str::to_string);
+        Ok(())
     }
 
     async fn set_phash(&self, id: PostId, phash: Option<u64>) -> Result<(), Self::Err> {

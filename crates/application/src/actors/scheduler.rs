@@ -105,7 +105,10 @@ pub fn content_warnings(tags: &[Tag], spoiler_tags: &[Tag]) -> Vec<String> {
     let mut labels = Vec::new();
     for tag in tags {
         let name = tag.as_ref().to_ascii_lowercase();
-        let label = match name.strip_prefix("cw_").or_else(|| name.strip_prefix("cw:")) {
+        let label = match name
+            .strip_prefix("cw_")
+            .or_else(|| name.strip_prefix("cw:"))
+        {
             Some(subject) if !subject.is_empty() => subject.replace('_', " "),
             Some(_) => continue,
             None if spoiler_tags.contains(tag) => name.replace('_', " "),
@@ -156,6 +159,7 @@ fn escape_html(raw: &str) -> String {
 ///
 /// ```text
 /// #<8-char code>                       (source id × poster id, fixed size)
+/// Fulfilling request “<text>”          (browse saves answering a wish only)
 /// Submitted by <name>                  (user submissions only)
 /// Forwarded from channel: @chan        (channel forwards only)
 /// Source · Report                      (hyperlinks)
@@ -199,6 +203,10 @@ pub async fn build_caption<U: UserRepository>(
             .collect::<Vec<_>>()
             .join(", ");
         lines.push(format!("By {names}"));
+    }
+
+    if let Some(request) = &post.fulfills {
+        lines.push(format!("Fulfilling request “{}”", escape_html(request)));
     }
 
     if let Some(user_id) = post.submitted_by {
@@ -548,6 +556,7 @@ mod tests {
             moderated_by: None,
             moderated_at: None,
             phash: None,
+            fulfills: None,
         }
     }
 
@@ -698,6 +707,9 @@ mod tests {
             unimplemented!()
         }
         async fn set_phash(&self, _id: PostId, _phash: Option<u64>) -> Result<(), Self::Err> {
+            unimplemented!()
+        }
+        async fn set_fulfills(&self, _id: PostId, _request: Option<&str>) -> Result<(), Self::Err> {
             unimplemented!()
         }
         async fn top_submitters(
@@ -1026,6 +1038,25 @@ mod tests {
         assert!(lines[3].contains("https://t.me/testbot?start=report_100\">Report</a>"));
     }
 
+    #[tokio::test]
+    async fn caption_names_the_fulfilled_request() {
+        use domain::elements::poster::PosterId;
+        let users = InMemoryUserRepository::new();
+        let mut post = make_post(100, 1);
+        post.fulfills = Some("more wolves <3".to_string());
+        let caption = build_caption(
+            &post,
+            PosterId::from(1),
+            &users,
+            "testbot",
+            &ResolvedMedia::Photo(Url::parse("https://x/p.png").unwrap()),
+            &[],
+        )
+        .await;
+        let lines: Vec<&str> = caption.lines().collect();
+        assert_eq!(lines[1], "Fulfilling request “more wolves &lt;3”");
+    }
+
     #[test]
     fn spoiler_rule_matches_listed_and_cw_tags() {
         let listed = vec![Tag::from("watersports"), Tag::from("questionable_consent")];
@@ -1053,7 +1084,7 @@ mod tests {
                 Tag::from("cw_blood_and_gore"),
                 Tag::from("CW:knife"),
                 Tag::from("questionable_consent"),
-                Tag::from("cw"),           // blurs, but names nothing
+                Tag::from("cw"),                // blurs, but names nothing
                 Tag::from("cw_blood_and_gore"), // duplicate label collapses
             ],
             &listed,

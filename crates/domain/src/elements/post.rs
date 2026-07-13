@@ -236,6 +236,10 @@ pub struct Post {
     /// 64-bit dHash of the resolved media (see `elements::phash`). `None`
     /// until computed, and stays `None` for non-image media.
     pub phash: Option<u64>,
+    /// The viewer request this post was curated to answer — stamped at
+    /// browse-save time while the curator's "fulfilling request" toggle is
+    /// ON. Publication captions render it as `Fulfilling request <text>`.
+    pub fulfills: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -295,6 +299,9 @@ pub trait PostRepository: Send + Sync {
         by: UserId,
         at: DateTime<Utc>,
     ) -> Result<(), Self::Err>;
+    /// Stamp (or clear) the viewer request this post fulfills. Set at
+    /// browse-save time while the curator's toggle is ON.
+    async fn set_fulfills(&self, id: PostId, request: Option<&str>) -> Result<(), Self::Err>;
     /// Store the perceptual hash of this Post's media (or clear it back to
     /// unknown with `None` when the media changed).
     async fn set_phash(&self, id: PostId, phash: Option<u64>) -> Result<(), Self::Err>;

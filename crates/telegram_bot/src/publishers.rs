@@ -110,7 +110,10 @@ impl TelegramPublisher {
     ) -> Result<MessageId, teloxide::RequestError> {
         match kind {
             MediaKind::Photo => {
-                let mut request = self.bot.send_photo(self.chat_id, input).has_spoiler(spoiler);
+                let mut request = self
+                    .bot
+                    .send_photo(self.chat_id, input)
+                    .has_spoiler(spoiler);
                 if let Some(caption) = caption {
                     request = request
                         .caption(caption.to_owned())
@@ -119,7 +122,10 @@ impl TelegramPublisher {
                 request.await.map(|message| message.id)
             }
             MediaKind::Video => {
-                let mut request = self.bot.send_video(self.chat_id, input).has_spoiler(spoiler);
+                let mut request = self
+                    .bot
+                    .send_video(self.chat_id, input)
+                    .has_spoiler(spoiler);
                 if let Some(caption) = caption {
                     request = request
                         .caption(caption.to_owned())
@@ -243,11 +249,21 @@ impl Publisher for TelegramPublisher {
         };
         let message_id = match &item.media {
             ResolvedMedia::Photo(url) => self
-                .send_media_with_fallback(MediaKind::Photo, url, item.caption.as_deref(), item.spoiler)
+                .send_media_with_fallback(
+                    MediaKind::Photo,
+                    url,
+                    item.caption.as_deref(),
+                    item.spoiler,
+                )
                 .await
                 .map_err(send)?,
             ResolvedMedia::Video(url) => self
-                .send_media_with_fallback(MediaKind::Video, url, item.caption.as_deref(), item.spoiler)
+                .send_media_with_fallback(
+                    MediaKind::Video,
+                    url,
+                    item.caption.as_deref(),
+                    item.spoiler,
+                )
                 .await
                 .map_err(send)?,
             ResolvedMedia::Animation(url) => self
