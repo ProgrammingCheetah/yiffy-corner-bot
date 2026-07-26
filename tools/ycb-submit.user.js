@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.3
+// @version      2.4
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -450,14 +450,26 @@
     }
     if (e621) {
       post(url, []);
+      refocusPost();
       return;
     }
     const read = readTags(panelBody);
     if (read.error) {
       flash(`persistent tags: ${read.error}`);
-      return;
+      return; // keep focus in the panel — it's what needs fixing
     }
     post(url, read.tags);
+    refocusPost();
+  }
+
+  // ctrl+s from the panel's extra-tags input would otherwise leave focus
+  // there, turning the next j/k into typing. Hand focus back to the
+  // selected post once the submit is on its way.
+  function refocusPost() {
+    if (panelBody?.contains(document.activeElement)) document.activeElement.blur();
+    if (!currentPost || !document.contains(currentPost)) return;
+    if (!currentPost.hasAttribute('tabindex')) currentPost.setAttribute('tabindex', '-1');
+    currentPost.focus({ preventScroll: true });
   }
 
   function togglePanelField(name, value) {
