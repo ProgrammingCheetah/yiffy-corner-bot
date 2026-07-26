@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.4
+// @version      2.5
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -489,6 +489,15 @@
     flash(`characters: ${next}`);
   }
 
+  // Ratings are radios: the shortcut selects, it doesn't toggle.
+  function setPanelRating(value) {
+    if (!panelBody) return;
+    const input = panelBody.querySelector(`input[name="rating"][value="${value}"]`);
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    flash(`rating: ${value}`);
+  }
+
   const SEQUENCES = {
     gm: () => togglePanelField('gender', 'male'),
     gf: () => togglePanelField('gender', 'female'),
@@ -498,6 +507,9 @@
     ps: () => togglePanelField('pairing', 'male/female'),
     pl: () => togglePanelField('pairing', 'female/female'),
     r: () => togglePanelField('irl', 'irl'),
+    n: () => setPanelRating('NSFW'),
+    s: () => setPanelRating('SFW'),
+    q: () => setPanelRating('Questionable'),
     et: () => panelBody?.querySelector('input[type="text"]').focus()
   };
 
@@ -512,7 +524,10 @@
       ['pairing', 'male/male', `${L}pg`],
       ['pairing', 'male/female', `${L}ps`],
       ['pairing', 'female/female', `${L}pl`],
-      ['irl', 'irl', `${L}r`]
+      ['irl', 'irl', `${L}r`],
+      ['rating', 'NSFW', `${L}n`],
+      ['rating', 'SFW', `${L}s`],
+      ['rating', 'Questionable', `${L}q`]
     ];
     for (const [name, value, keys] of hints) {
       const label = root.querySelector(`input[name="${name}"][value="${value}"]`)?.closest('label');
@@ -539,6 +554,7 @@
         ['ctrl+a / ctrl+x', 'characters + / −'],
         [`${L}gm ${L}gf ${L}gi ${L}gu`, 'genders'],
         [`${L}pg ${L}ps ${L}pl`, 'pairings'],
+        [`${L}n ${L}s ${L}q`, 'rating'],
         [`${L}r`, 'irl'],
         [`${L}et`, 'extra tags']
       );
