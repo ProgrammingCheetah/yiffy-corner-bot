@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.5
+// @version      2.6
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -489,6 +489,36 @@
     flash(`characters: ${next}`);
   }
 
+  // Like/repost the selected post via its own action buttons. X's native
+  // "l" acts on X's internal focus, not our cursor — and we mute their
+  // handlers for keys we take anyway.
+  function xAction(kind) {
+    if (!currentPost || !document.contains(currentPost)) {
+      flash('no post selected — j/k to pick one');
+      return;
+    }
+    if (kind === 'like') {
+      currentPost.querySelector('[data-testid="like"], [data-testid="unlike"]')?.click();
+      return;
+    }
+    const rt = currentPost.querySelector('[data-testid="retweet"], [data-testid="unretweet"]');
+    if (!rt) return;
+    rt.click();
+    // The confirm button lives in a menu that mounts async — poll briefly.
+    let tries = 20;
+    const timer = setInterval(() => {
+      const btn = document.querySelector(
+        '[data-testid="retweetConfirm"], [data-testid="unretweetConfirm"]'
+      );
+      if (btn) {
+        btn.click();
+        clearInterval(timer);
+      } else if (--tries <= 0) {
+        clearInterval(timer);
+      }
+    }, 50);
+  }
+
   // Ratings are radios: the shortcut selects, it doesn't toggle.
   function setPanelRating(value) {
     if (!panelBody) return;
@@ -548,6 +578,7 @@
       ['click', 'select post'],
       ['ctrl+s', 'submit selected']
     ];
+    if (SITE === 'x') rows.push(['l', 'like'], [';', 'repost']);
     // The rest drive the panel, which e621 doesn't have.
     if (SITE !== 'e6') {
       rows.push(
@@ -662,6 +693,12 @@
         } else if (e.key === 'k') {
           swallow(e);
           movePost(-1);
+        } else if (SITE === 'x' && e.key === 'l') {
+          swallow(e);
+          xAction('like');
+        } else if (SITE === 'x' && e.key === ';') {
+          swallow(e);
+          xAction('repost');
         }
       },
       true
