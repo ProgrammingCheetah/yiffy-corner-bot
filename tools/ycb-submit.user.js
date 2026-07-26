@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.10
+// @version      1.11
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel for form-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -264,7 +264,112 @@
     // Same shortcut-swallowing the form needs: feeds bind single keys.
     panelBody.addEventListener('keydown', (e) => e.stopPropagation());
 
+    panelBody.appendChild(buildStatsSection(false));
     return panelBody;
+  }
+
+  // --- session stats ------------------------------------------------------
+  // Counted at submit time, persisted via GM values so the numbers span
+  // pages AND sites; "session" = since the last reset. e621 submits carry
+  // no client-side tags (the server fetches them), so they count toward
+  // posted/per-site but not the tag chart.
+
+  function defaultStats() {
+    return { since: Date.now(), posted: 0, failed: 0, sites: {}, tags: {} };
+  }
+  let stats = (() => {
+    try {
+      return JSON.parse(GM_getValue('ycb_stats', '')) ?? defaultStats();
+    } catch {
+      return defaultStats();
+    }
+  })();
+
+  const statsBoxes = [];
+
+  function recordResult(ok, tags) {
+    if (ok) {
+      stats.posted += 1;
+      if (SITE) stats.sites[SITE] = (stats.sites[SITE] ?? 0) + 1;
+      for (const t of tags) stats.tags[t] = (stats.tags[t] ?? 0) + 1;
+    } else {
+      stats.failed += 1;
+    }
+    GM_setValue('ycb_stats', JSON.stringify(stats));
+    renderStats();
+  }
+
+  function renderStats() {
+    const topN = GM_getValue('ycb_stats_topn', 5);
+    const top = Object.entries(stats.tags)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topN);
+    for (const box of statsBoxes) {
+      box.querySelector('[data-s="line"]').textContent =
+        `${stats.posted} posted · ${stats.failed} failed`;
+      box.querySelector('[data-s="sites"]').textContent = Object.entries(stats.sites)
+        .map(([site, count]) => `${site} ${count}`)
+        .join(' · ');
+      box.querySelector('[data-s="tags"]').textContent = top.length
+        ? top.map(([tag, count]) => `${tag} ×${count}`).join(', ')
+        : 'no tags yet';
+      box.querySelector('[data-s="since"]').textContent =
+        `since ${new Date(stats.since).toLocaleString()}`;
+    }
+  }
+
+  // In the panel where there is one, its own small box on e621.
+  function buildStatsSection(standalone) {
+    const box = document.createElement('div');
+    if (standalone) {
+      Object.assign(box.style, {
+        position: 'fixed',
+        bottom: '18px',
+        left: '18px',
+        zIndex: 99998,
+        background: '#1b1e23',
+        color: '#fff',
+        borderRadius: '12px',
+        padding: '10px 12px',
+        font: '12px system-ui, sans-serif',
+        boxShadow: '0 4px 14px rgba(0,0,0,.4)',
+        maxWidth: '230px'
+      });
+    } else {
+      Object.assign(box.style, {
+        borderTop: '1px solid #333',
+        paddingTop: '10px',
+        fontSize: '12px'
+      });
+    }
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:6px;font-weight:600">
+        📊 Session stats
+        <button type="button" data-s="reset" style="margin-left:auto;border:none;background:transparent;color:#f87171;cursor:pointer;font:inherit">reset</button>
+      </div>
+      <div data-s="line" style="opacity:.85;margin-top:4px"></div>
+      <div data-s="sites" style="opacity:.6;margin-top:2px"></div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:6px;opacity:.85;cursor:pointer">top
+        <input data-s="n" type="number" min="1" max="50" style="width:48px;background:#2a2e35;color:#fff;border:1px solid #444;border-radius:6px;padding:2px 4px;font:inherit"> tags
+      </label>
+      <div data-s="tags" style="margin-top:4px;line-height:1.5;overflow-wrap:anywhere"></div>
+      <div data-s="since" style="opacity:.45;margin-top:4px"></div>`;
+    const n = box.querySelector('[data-s="n"]');
+    n.value = GM_getValue('ycb_stats_topn', 5);
+    n.addEventListener('change', () => {
+      GM_setValue('ycb_stats_topn', Math.min(50, Math.max(1, parseInt(n.value, 10) || 5)));
+      n.value = GM_getValue('ycb_stats_topn', 5);
+      renderStats();
+    });
+    box.querySelector('[data-s="reset"]').addEventListener('click', () => {
+      stats = defaultStats();
+      GM_setValue('ycb_stats', JSON.stringify(stats));
+      renderStats();
+    });
+    box.addEventListener('keydown', (e) => e.stopPropagation());
+    statsBoxes.push(box);
+    renderStats();
+    return box;
   }
 
   // e621 has authoritative tags server-side; everything else gets the form —
@@ -300,6 +405,7 @@
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       data: JSON.stringify({ url, tags }),
       onload: (res) => {
+        recordResult(res.status >= 200 && res.status < 300, tags);
         try {
           const body = JSON.parse(res.responseText);
           flash(body.message ?? body.error ?? `HTTP ${res.status}`);
@@ -307,7 +413,10 @@
           flash(`HTTP ${res.status}`);
         }
       },
-      onerror: () => flash('Network error — is the tunnel up?')
+      onerror: () => {
+        recordResult(false, tags);
+        flash('Network error — is the tunnel up?');
+      }
     });
   }
 
@@ -501,8 +610,9 @@
     document.body.appendChild(floating);
     document.body.appendChild(floatingForm);
     // e621 tags are authoritative server-side — the panel only makes sense
-    // where the form would have appeared.
+    // where the form would have appeared. Stats still deserve a home there.
     if (SITE && SITE !== 'e6') document.body.appendChild(buildPanel());
+    else if (SITE === 'e6') document.body.appendChild(buildStatsSection(true));
     scan();
     // Feeds render as you scroll: rescan on DOM churn, debounced.
     let pending = null;
