@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.11
-// @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel for form-free submitting.
+// @version      2.0
+// @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
 // @match        https://www.furaffinity.net/*
@@ -34,6 +34,10 @@
   GM_registerMenuCommand('Toggle persistent tags', () => {
     GM_setValue('ycb_panel_on', !GM_getValue('ycb_panel_on', false));
     location.reload();
+  });
+  GM_registerMenuCommand('Set keyboard leader key', () => {
+    const leader = prompt('Leader key for shortcuts (single character):', GM_getValue('ycb_leader', '\\'));
+    if (leader) GM_setValue('ycb_leader', leader[0]);
   });
 
   const SITE = (() => {
@@ -255,6 +259,7 @@
     });
     syncEnabled();
     restorePanelState();
+    annotateShortcuts(panelBody);
     panelBody.addEventListener('change', (e) => {
       if (e.target !== enable) savePanelState();
     });
@@ -372,32 +377,216 @@
     return box;
   }
 
+  // --- vim-style keyboard shortcuts ---------------------------------------
+  // j/k walk the page's posts (centered + highlighted), ctrl+a / ctrl+x
+  // step the character count up/down, <leader> sequences toggle panel
+  // fields (gm/gf/gi/gu genders, pg/ps/pl pairings, r irl, et focuses the
+  // extra-tags input), and ctrl+s submits the highlighted post with the
+  // panel's current tags — no form, no mouse. Leader defaults to vim's
+  // "\" (Tampermonkey menu to change it). Keys are ignored while typing,
+  // except ctrl+s from inside our own panel.
+
+  const POST_SELECTOR = {
+    x: 'article[data-testid="tweet"]',
+    bsky: '[data-testid^="feedItem-by-"], [data-testid^="postThreadItem-by-"]',
+    e6: 'article.post-preview',
+    fa: 'figure'
+  }[SITE];
+
+  let currentPost = null;
+
+  function highlightPost(el) {
+    if (currentPost) {
+      currentPost.style.outline = '';
+      currentPost.style.outlineOffset = '';
+    }
+    currentPost = el;
+    el.style.outline = '2px solid #5288c1';
+    el.style.outlineOffset = '2px';
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function movePost(dir) {
+    const posts = [...document.querySelectorAll(POST_SELECTOR)];
+    if (!posts.length) return;
+    let i = posts.indexOf(currentPost);
+    // Nothing highlighted yet (or the feed recycled the node): start from
+    // the first post still visible instead of stepping from the DOM top.
+    if (i === -1) i = Math.max(0, posts.findIndex((p) => p.getBoundingClientRect().bottom > 0));
+    else i += dir;
+    highlightPost(posts[Math.max(0, Math.min(posts.length - 1, i))]);
+  }
+
+  function postUrl(el) {
+    if (SITE === 'x') {
+      const a = el.querySelector('a[href*="/status/"] time')?.closest('a');
+      return a ? clean(a.getAttribute('href')) : null;
+    }
+    const a = el.querySelector(
+      { bsky: 'a[href*="/post/"]', e6: 'a[href^="/posts/"]', fa: 'a[href^="/view/"]' }[SITE]
+    );
+    return a ? clean(a.getAttribute('href')) : null;
+  }
+
+  function submitCurrent() {
+    let url = null;
+    let e621 = SITE === 'e6';
+    if (currentPost && document.contains(currentPost)) {
+      url = postUrl(currentPost);
+    } else {
+      const page = DETAIL.find((d) => d.re.test(location.href));
+      if (page) {
+        url = clean(location.origin + location.pathname);
+        e621 = page.e621;
+      }
+    }
+    if (!url) {
+      flash('nothing to submit — j/k to pick a post');
+      return;
+    }
+    if (e621) {
+      post(url, []);
+      return;
+    }
+    const read = readTags(panelBody);
+    if (read.error) {
+      flash(`persistent tags: ${read.error}`);
+      return;
+    }
+    post(url, read.tags);
+  }
+
+  function togglePanelField(name, value) {
+    if (!panelBody) return; // e621: server-side tags, no panel
+    const input = panelBody.querySelector(`input[name="${name}"][value="${value}"]`);
+    input.checked = !input.checked;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    flash(`${value}: ${input.checked ? 'on' : 'off'}`);
+  }
+
+  function cycleCount(dir) {
+    if (!panelBody) return;
+    const sel = panelBody.querySelector('select');
+    const next = COUNTS[Math.max(0, Math.min(COUNTS.length - 1, COUNTS.indexOf(sel.value) + dir))];
+    sel.value = next;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    flash(`characters: ${next}`);
+  }
+
+  const SEQUENCES = {
+    gm: () => togglePanelField('gender', 'male'),
+    gf: () => togglePanelField('gender', 'female'),
+    gi: () => togglePanelField('gender', 'intersex'),
+    gu: () => togglePanelField('gender', 'unknown'),
+    pg: () => togglePanelField('pairing', 'male/male'),
+    ps: () => togglePanelField('pairing', 'male/female'),
+    pl: () => togglePanelField('pairing', 'female/female'),
+    r: () => togglePanelField('irl', 'irl'),
+    et: () => panelBody?.querySelector('input[type="text"]').focus()
+  };
+
+  // Hover hints on the panel so the shortcuts stay discoverable.
+  function annotateShortcuts(root) {
+    const L = GM_getValue('ycb_leader', '\\');
+    const hints = [
+      ['gender', 'male', `${L}gm`],
+      ['gender', 'female', `${L}gf`],
+      ['gender', 'intersex', `${L}gi`],
+      ['gender', 'unknown', `${L}gu`],
+      ['pairing', 'male/male', `${L}pg`],
+      ['pairing', 'male/female', `${L}ps`],
+      ['pairing', 'female/female', `${L}pl`],
+      ['irl', 'irl', `${L}r`]
+    ];
+    for (const [name, value, keys] of hints) {
+      const label = root.querySelector(`input[name="${name}"][value="${value}"]`)?.closest('label');
+      if (label) label.title = keys;
+    }
+    root.querySelector('select').closest('label').title = 'ctrl+a / ctrl+x';
+    root.querySelector('input[type="text"]').closest('label').title = `${L}et`;
+    root.querySelector('[data-p="enable"]').closest('label').title =
+      'ctrl+s submits the highlighted post (j/k to pick) with these tags';
+  }
+
+  let seq = null; // null = idle; '' = leader pressed, collecting keys
+  let seqTimer = null;
+
+  function endSeq() {
+    seq = null;
+    clearTimeout(seqTimer);
+  }
+
+  function installKeys() {
+    // Capture phase: beat the feeds' own single-key bindings (X uses j/k
+    // too) and the panel's keydown-swallowing.
+    const swallow = (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    document.addEventListener(
+      'keydown',
+      (e) => {
+        const typing =
+          e.target instanceof Element &&
+          e.target.closest('input, textarea, select, [contenteditable="true"]');
+        if (e.ctrlKey && !e.altKey && !e.metaKey) {
+          endSeq();
+          const key = e.key.toLowerCase();
+          if (key === 's' && (!typing || panelBody?.contains(e.target))) {
+            swallow(e);
+            submitCurrent();
+          } else if (!typing && key === 'a') {
+            swallow(e);
+            cycleCount(1);
+          } else if (!typing && key === 'x') {
+            swallow(e);
+            cycleCount(-1);
+          }
+          return;
+        }
+        if (typing || e.altKey || e.metaKey) return;
+        if (seq !== null) {
+          if (e.key.length !== 1) return; // bare modifier mid-sequence
+          swallow(e);
+          seq += e.key;
+          const hit = SEQUENCES[seq];
+          if (hit) {
+            endSeq();
+            hit();
+          } else if (!Object.keys(SEQUENCES).some((s) => s.startsWith(seq))) {
+            endSeq();
+          }
+          return;
+        }
+        if (e.key === GM_getValue('ycb_leader', '\\')) {
+          swallow(e);
+          seq = '';
+          seqTimer = setTimeout(endSeq, 1500);
+        } else if (e.key === 'j') {
+          swallow(e);
+          movePost(1);
+        } else if (e.key === 'k') {
+          swallow(e);
+          movePost(-1);
+        }
+      },
+      true
+    );
+  }
+
   // e621 has authoritative tags server-side; everything else gets the form —
   // unless the persistent panel is on, which submits its tags form-free.
   // `forceForm` (the 📝 buttons) always opens the form, toggle be damned.
-  async function submitUrl(url, e621, forceForm = false) {
-    const base = GM_getValue('ycb_base', DEFAULT_BASE);
+  function apiToken() {
     const token = GM_getValue('ycb_token', '');
-    if (!token) {
-      alert('Yiffy Corner: set your API token first (Tampermonkey menu → Set API token).');
-      return;
-    }
-    let tags = [];
-    if (!e621) {
-      if (!forceForm && panelBody && GM_getValue('ycb_panel_on', false)) {
-        const read = readTags(panelBody);
-        if (read.error) {
-          flash(`persistent tags: ${read.error} — opening the form`);
-          tags = await tagForm();
-          if (!tags) return; // cancelled
-        } else {
-          tags = read.tags;
-        }
-      } else {
-        tags = await tagForm();
-        if (!tags) return; // cancelled
-      }
-    }
+    if (!token) alert('Yiffy Corner: set your API token first (Tampermonkey menu → Set API token).');
+    return token;
+  }
+
+  function post(url, tags) {
+    const base = GM_getValue('ycb_base', DEFAULT_BASE);
+    const token = apiToken();
+    if (!token) return;
     flash('Submitting…');
     GM_xmlhttpRequest({
       method: 'POST',
@@ -418,6 +607,27 @@
         flash('Network error — is the tunnel up?');
       }
     });
+  }
+
+  async function submitUrl(url, e621, forceForm = false) {
+    if (!apiToken()) return;
+    let tags = [];
+    if (!e621) {
+      if (!forceForm && panelBody && GM_getValue('ycb_panel_on', false)) {
+        const read = readTags(panelBody);
+        if (read.error) {
+          flash(`persistent tags: ${read.error} — opening the form`);
+          tags = await tagForm();
+          if (!tags) return; // cancelled
+        } else {
+          tags = read.tags;
+        }
+      } else {
+        tags = await tagForm();
+        if (!tags) return; // cancelled
+      }
+    }
+    post(url, tags);
   }
 
   function pawButton(getUrl, e621, styles, forceForm = false) {
@@ -613,6 +823,7 @@
     // where the form would have appeared. Stats still deserve a home there.
     if (SITE && SITE !== 'e6') document.body.appendChild(buildPanel());
     else if (SITE === 'e6') document.body.appendChild(buildStatsSection(true));
+    installKeys();
     scan();
     // Feeds render as you scroll: rescan on DOM churn, debounced.
     let pending = null;
