@@ -11,6 +11,15 @@ export const stage = 'Alpha';
 
 export const changelog = [
   {
+    version: '0.4.2',
+    alias: 'Fox',
+    date: '2026-07-25',
+    changes: [
+      'Edit a post’s tags right where you check them: inline editors on the feed queue and poster queue pages, and the review deck’s tag modal is now a full editor — save only, or save & accept.',
+      'Userscript v1.9: a persistent-tags panel docked on the right — flip it on and 🐾 submits with the panel’s tags instantly, no form.'
+    ]
+  },
+  {
     version: '0.4.1',
     alias: 'Fox',
     date: '2026-07-13',
