@@ -584,6 +584,37 @@ async fn poster_queue(
     })))
 }
 
+#[derive(Deserialize)]
+struct RetagBody {
+    tags: Vec<String>,
+}
+
+/// Replace a post's tags — the edit affordance on the queue and feed views.
+async fn set_post_tags(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<u64>,
+    Json(body): Json<RetagBody>,
+) -> ApiResult {
+    let authed = authenticate(&state, &headers).await?;
+    require(&authed, Role::Moderator)?;
+    let post = moderate::retag(
+        ModerateCommand {
+            actor: authed.user.telegram_id,
+            post_id: PostId::from(id),
+        },
+        parse_tags(&body.tags),
+        &state.app.users,
+        &state.app.posts,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(json!({
+        "message": format!("Post #{} retagged.", post.id),
+        "tags": tags_json(&post.tags),
+    })))
+}
+
 /// Remove a post from the feed — a global soft-delete (every consumer
 /// skips it), not a per-poster hide.
 async fn delete_post(
@@ -1603,6 +1634,7 @@ pub fn router(state: Arc<WebState>, webapp_dir: Option<std::path::PathBuf>) -> a
         .route("/posters/{id}/queue", get(poster_queue))
         .route("/posters/{id}/profile", get(poster_profile))
         .route("/posts/{id}", axum::routing::delete(delete_post))
+        .route("/posts/{id}/tags", axum::routing::put(set_post_tags))
         .route("/browse", get(browse_e621))
         .route("/save", post(save_post))
         .route("/browse/skip", post(skip_post))

@@ -74,6 +74,7 @@ vocabulary! {
         ChangeListRequested => "change_list_requested",
         SubmitterNotified => "submitter_notified",
         ModerationInvalidState => "moderation_invalid_state",
+        PostRetagged => "post_retagged",
         PostDeleted => "post_deleted",
         ReviewDmSent => "review_dm_sent",
         ReviewDmFailed => "review_dm_failed",

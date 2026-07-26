@@ -6,7 +6,7 @@
   import TagInput from '$lib/TagInput.svelte';
   import SwipeDeck from '$lib/SwipeDeck.svelte';
   import Modal from '$lib/Modal.svelte';
-  import { get, post } from '$lib/api.js';
+  import { get, post, put } from '$lib/api.js';
   import { onMount } from 'svelte';
 
   let cards = [];
@@ -62,6 +62,23 @@
     setTimeout(() => (toast = ''), 3000);
   }
 
+  // Full tag replacement (the modal is prefilled with the card's tags);
+  // optionally accept into the feed right after.
+  async function saveTags(card, thenApprove = false) {
+    tagModal = false;
+    try {
+      const res = await put(`/posts/${card.post_id}/tags`, {
+        tags: extraTags.split(/\s+/).filter(Boolean)
+      });
+      card.tags = res.tags;
+      cards = cards;
+      if (thenApprove) act(card, 'approve');
+      else say(res.message);
+    } catch (e) {
+      say(e.message);
+    }
+  }
+
   onMount(load);
 </script>
 
@@ -93,8 +110,8 @@
       <span class="action-lbl">Changes</span>
     </div>
     <div class="action-col">
-      <button class="round tags" on:click={() => { extraTags = ''; tagModal = true; }}><Icon name="tag" /></button>
-      <span class="action-lbl">+Tags</span>
+      <button class="round tags" on:click={() => { extraTags = cards[0].tags.join(' '); tagModal = true; }}><Icon name="tag" /></button>
+      <span class="action-lbl">Tags</span>
     </div>
     <div class="action-col">
       <button class="round like" on:click={() => deck.fly(1)}><Icon name="check" /></button>
@@ -105,15 +122,16 @@
 
 {#if toast}<div class="toast">{toast}</div>{/if}
 
-<Modal bind:open={tagModal} title="Accept with extra tags">
-  <TagInput placeholder="extra tags (duplicates ignored)" bind:value={extraTags} />
-  <button
-    disabled={!extraTags.trim()}
-    on:click={() => {
-      const card = cards[0];
-      tagModal = false;
-      act(card, 'approve', { extra_tags: extraTags.split(/\s+/).filter(Boolean) });
-    }}>Accept into the feed</button>
+<Modal bind:open={tagModal} title="Edit tags">
+  <TagInput placeholder="tags, space-separated" bind:value={extraTags} />
+  <div class="modal-row">
+    <button class="ghost" disabled={!extraTags.trim()} on:click={() => saveTags(cards[0])}>
+      Save tags
+    </button>
+    <button disabled={!extraTags.trim()} on:click={() => saveTags(cards[0], true)}>
+      Save & accept
+    </button>
+  </div>
 </Modal>
 
 <Modal bind:open={changesModal} title="Request changes">
@@ -149,6 +167,9 @@
     padding: 3px 11px;
     border-radius: 999px;
   }
+  .modal-row { display: flex; gap: 8px; }
+  .modal-row button { flex: 1; }
+  .ghost { background: transparent; border: 1px solid var(--line); color: inherit; }
   .round.like { color: #4ade80; }
   .round.nope { color: #f87171; }
   .round.tags { color: #facc15; }

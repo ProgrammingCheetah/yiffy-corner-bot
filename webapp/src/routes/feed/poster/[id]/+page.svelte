@@ -4,7 +4,8 @@
   import Loader from '$lib/Loader.svelte';
   import { page } from '$app/stores';
   import Media from '$lib/Media.svelte';
-  import { get, del } from '$lib/api.js';
+  import TagInput from '$lib/TagInput.svelte';
+  import { get, del, put } from '$lib/api.js';
   import { onMount } from 'svelte';
 
   const posterId = $page.params.id;
@@ -77,6 +78,31 @@
     }
   }
 
+  // Single-slot tag editor: opening an entry's editor closes the previous.
+  let editingId = null;
+  let draft = '';
+  function toggleEdit(entry) {
+    if (editingId === entry.post_id) {
+      editingId = null;
+      return;
+    }
+    editingId = entry.post_id;
+    draft = entry.tags.join(' ');
+  }
+  async function saveTags(entry) {
+    try {
+      const res = await put(`/posts/${entry.post_id}/tags`, {
+        tags: draft.split(/\s+/).filter(Boolean)
+      });
+      entry.tags = res.tags;
+      entries = entries;
+      editingId = null;
+      say(res.message);
+    } catch (e) {
+      say(e.message);
+    }
+  }
+
   onMount(loadPage);
 </script>
 
@@ -105,9 +131,17 @@
           (window.Telegram?.WebApp?.openLink ?? window.open)(e.source)}>
           Source ↗
         </button>
+        <button class="bare" on:click={() => toggleEdit(e)}>
+          {editingId === e.post_id ? 'Close' : '✎ Tags'}
+        </button>
         <button class="bare remove" on:click={() => removePost(e)}>🗑 Remove from feed</button>
       </div>
-      {#if e.tags.length}
+      {#if editingId === e.post_id}
+        <div class="edit-row">
+          <TagInput placeholder="tags, space-separated" bind:value={draft} />
+          <button on:click={() => saveTags(e)} disabled={!draft.trim()}>Save</button>
+        </div>
+      {:else if e.tags.length}
         <div class="tags muted">{e.tags.slice(0, 8).join(' ')}{e.tags.length > 8 ? ' …' : ''}</div>
       {/if}
       {#if loadedId === e.post_id}
@@ -154,6 +188,7 @@
   .tags { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bare { background: transparent; padding: 0; color: var(--accent); font-size: 0.85rem; }
   .remove { color: #f87171; margin-left: 10px; }
+  .edit-row { display: flex; gap: 8px; margin-top: 4px; }
   .more { width: 100%; margin-top: 6px; }
   .pane { height: 34dvh; margin-top: 6px; }
   .done { text-align: center; margin-top: 10px; }

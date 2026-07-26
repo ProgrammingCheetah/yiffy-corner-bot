@@ -158,6 +158,50 @@ pub async fn request_changes<P: PostRepository>(
     })
 }
 
+/// Replace a post's tags wholesale — the edit path from the queue and feed
+/// views. Any live status qualifies; `Deleted` posts are gone from every
+/// consumer and stay untouchable.
+pub async fn retag<P: PostRepository>(
+    cmd: ModerateCommand,
+    tags: Vec<domain::elements::tag::Tag>,
+    users: &impl UserRepository,
+    posts: &P,
+) -> HandlerResult<Post> {
+    let moderator = require_role(users, cmd.actor, Role::Moderator).await?;
+    let post = posts
+        .find_by_id(cmd.post_id)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?
+        .ok_or(HandlerError::PostNotFound(cmd.post_id))?;
+    if post.status == PostStatus::Deleted {
+        return Err(HandlerError::InvalidState(format!(
+            "post {} is deleted",
+            post.id
+        )));
+    }
+    let mut deduped: Vec<domain::elements::tag::Tag> = Vec::with_capacity(tags.len());
+    for tag in tags {
+        if !deduped.contains(&tag) {
+            deduped.push(tag);
+        }
+    }
+    if deduped.is_empty() {
+        return Err(HandlerError::InvalidState(
+            "a post needs at least one tag".to_string(),
+        ));
+    }
+    let post = posts
+        .set_tags(post.id, deduped)
+        .await
+        .map_err(|_| HandlerError::RepositoryError)?;
+    tracing::info!(
+        event = %Event::PostRetagged, post_id = %post.id,
+        moderator_id = %moderator.id, tags = post.tags.len(),
+        "tags replaced"
+    );
+    Ok(post)
+}
+
 /// Soft-delete from any status (takedowns, queue cleanup). Moderator+.
 pub async fn delete<P: PostRepository>(
     cmd: ModerateCommand,
@@ -280,6 +324,75 @@ mod tests {
         );
         assert_eq!(approved.status, PostStatus::Accepted);
         assert!(approved.feed_position.is_some());
+    }
+
+    #[tokio::test]
+    async fn retag_replaces_tags_dedup_on_any_live_status() {
+        use domain::elements::tag::Tag;
+        let fx = Fixture::new().await;
+        let post = fx.awaiting_post(1).await;
+        fx.posts
+            .set_tags(post.id, vec![Tag::from("wolf"), Tag::from("male")])
+            .await
+            .unwrap();
+
+        // Queue (AwaitingModeration): wholesale replacement, duplicates dropped.
+        let updated = retag(
+            cmd(1, post.id),
+            vec![Tag::from("fox"), Tag::from("solo"), Tag::from("fox")],
+            &fx.users,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.tags, vec![Tag::from("fox"), Tag::from("solo")]);
+
+        // Feed (Accepted): still editable.
+        approve(cmd(1, post.id), &fx.users, &fx.posts)
+            .await
+            .unwrap();
+        let updated = retag(
+            cmd(1, post.id),
+            vec![Tag::from("dragon")],
+            &fx.users,
+            &fx.posts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.tags, vec![Tag::from("dragon")]);
+    }
+
+    #[tokio::test]
+    async fn retag_refuses_empty_tags_deleted_posts_and_plain_users() {
+        use domain::elements::tag::Tag;
+        let fx = Fixture::new().await;
+        let post = fx.awaiting_post(1).await;
+
+        let err = retag(
+            cmd(2, post.id),
+            vec![Tag::from("wolf")],
+            &fx.users,
+            &fx.posts,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::NotAuthorized(_)));
+
+        let err = retag(cmd(1, post.id), vec![], &fx.users, &fx.posts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HandlerError::InvalidState(_)));
+
+        delete(cmd(1, post.id), &fx.users, &fx.posts).await.unwrap();
+        let err = retag(
+            cmd(1, post.id),
+            vec![Tag::from("wolf")],
+            &fx.users,
+            &fx.posts,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::InvalidState(_)));
     }
 
     #[tokio::test]
