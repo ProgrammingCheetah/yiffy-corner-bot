@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.6
+// @version      2.7
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -578,7 +578,7 @@
       ['click', 'select post'],
       ['ctrl+s', 'submit selected']
     ];
-    if (SITE === 'x') rows.push(['l', 'like'], [';', 'repost']);
+    if (SITE === 'x') rows.push(['h', 'like'], ['l', 'repost']);
     // The rest drive the panel, which e621 doesn't have.
     if (SITE !== 'e6') {
       rows.push(
@@ -693,10 +693,10 @@
         } else if (e.key === 'k') {
           swallow(e);
           movePost(-1);
-        } else if (SITE === 'x' && e.key === 'l') {
+        } else if (SITE === 'x' && e.key === 'h') {
           swallow(e);
           xAction('like');
-        } else if (SITE === 'x' && e.key === ';') {
+        } else if (SITE === 'x' && e.key === 'l') {
           swallow(e);
           xAction('repost');
         }
