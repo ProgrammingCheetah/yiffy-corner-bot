@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.0
+// @version      2.1
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -508,6 +508,49 @@
       'ctrl+s submits the highlighted post (j/k to pick) with these tags';
   }
 
+  // Low-opacity cheat-sheet pinned to the left edge; solid on hover.
+  function buildCheatSheet() {
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const L = esc(GM_getValue('ycb_leader', '\\'));
+    const rows = [
+      ['j / k', 'next / prev post'],
+      ['click', 'select post'],
+      ['ctrl+s', 'submit selected']
+    ];
+    // The rest drive the panel, which e621 doesn't have.
+    if (SITE !== 'e6') {
+      rows.push(
+        ['ctrl+a / ctrl+x', 'characters + / −'],
+        [`${L}gm ${L}gf ${L}gi ${L}gu`, 'genders'],
+        [`${L}pg ${L}ps ${L}pl`, 'pairings'],
+        [`${L}r`, 'irl'],
+        [`${L}et`, 'extra tags']
+      );
+    }
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+      position: 'fixed',
+      left: '0',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      zIndex: 99997,
+      background: '#1b1e23',
+      color: '#fff',
+      borderRadius: '0 12px 12px 0',
+      padding: '10px 12px',
+      font: '11px ui-monospace, monospace',
+      lineHeight: '1.7',
+      opacity: '0.35',
+      transition: 'opacity .15s'
+    });
+    box.addEventListener('mouseenter', () => (box.style.opacity = '1'));
+    box.addEventListener('mouseleave', () => (box.style.opacity = '0.35'));
+    box.innerHTML = rows
+      .map(([keys, what]) => `<div><b style="color:#8fb8e8">${keys}</b> <span style="opacity:.75">${what}</span></div>`)
+      .join('');
+    return box;
+  }
+
   let seq = null; // null = idle; '' = leader pressed, collecting keys
   let seqTimer = null;
 
@@ -569,6 +612,17 @@
           swallow(e);
           movePost(-1);
         }
+      },
+      true
+    );
+    // Mouse picks a post too: center + highlight it so j/k continue from
+    // there. Capture phase, no preventDefault — the click still lands.
+    document.addEventListener(
+      'click',
+      (e) => {
+        if (!POST_SELECTOR || !(e.target instanceof Element)) return;
+        const post = e.target.closest(POST_SELECTOR);
+        if (post && post !== currentPost) highlightPost(post);
       },
       true
     );
@@ -824,6 +878,7 @@
     if (SITE && SITE !== 'e6') document.body.appendChild(buildPanel());
     else if (SITE === 'e6') document.body.appendChild(buildStatsSection(true));
     installKeys();
+    document.body.appendChild(buildCheatSheet());
     scan();
     // Feeds render as you scroll: rescan on DOM churn, debounced.
     let pending = null;
