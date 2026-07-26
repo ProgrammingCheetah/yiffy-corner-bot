@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.1
+// @version      2.2
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -399,11 +399,15 @@
     if (currentPost) {
       currentPost.style.outline = '';
       currentPost.style.outlineOffset = '';
+      currentPost.querySelector('video')?.pause();
     }
     currentPost = el;
     el.style.outline = '2px solid #5288c1';
     el.style.outlineOffset = '2px';
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Feeds gate autoplay on their own scroll heuristics, which programmatic
+    // scrolling doesn't trip — start the selected post's video ourselves.
+    el.querySelector('video')?.play().catch(() => {});
   }
 
   function movePost(dir) {
@@ -560,13 +564,29 @@
   }
 
   function installKeys() {
-    // Capture phase: beat the feeds' own single-key bindings (X uses j/k
-    // too) and the panel's keydown-swallowing.
+    // Window capture: fires before ANY document/element listener no matter
+    // when the site registered it, so the feeds' own single-key bindings
+    // (X uses j/k too) never see the keys we handle. Swallowing the
+    // keydown alone isn't enough — X reacts to the keyup/keypress tail as
+    // well, so those get muted for handled keys too.
+    const swallowUp = new Set();
     const swallow = (e) => {
       e.preventDefault();
       e.stopImmediatePropagation();
+      swallowUp.add(e.key);
     };
-    document.addEventListener(
+    for (const type of ['keyup', 'keypress']) {
+      window.addEventListener(
+        type,
+        (e) => {
+          if (!swallowUp.has(e.key)) return;
+          if (type === 'keyup') swallowUp.delete(e.key);
+          e.stopImmediatePropagation();
+        },
+        true
+      );
+    }
+    window.addEventListener(
       'keydown',
       (e) => {
         const typing =
@@ -617,7 +637,7 @@
     );
     // Mouse picks a post too: center + highlight it so j/k continue from
     // there. Capture phase, no preventDefault — the click still lands.
-    document.addEventListener(
+    window.addEventListener(
       'click',
       (e) => {
         if (!POST_SELECTOR || !(e.target instanceof Element)) return;
