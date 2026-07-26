@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.2
+// @version      2.3
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -10,7 +10,7 @@
 // @match        https://twitter.com/*
 // @match        https://x.com/*
 // @match        https://bsky.app/*
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -564,11 +564,14 @@
   }
 
   function installKeys() {
-    // Window capture: fires before ANY document/element listener no matter
-    // when the site registered it, so the feeds' own single-key bindings
-    // (X uses j/k too) never see the keys we handle. Swallowing the
-    // keydown alone isn't enough — X reacts to the keyup/keypress tail as
-    // well, so those get muted for handled keys too.
+    // Window capture, registered at document-start — X binds at window
+    // capture too, and same-node/same-phase listeners fire in registration
+    // order, so being first is the only thing stopImmediatePropagation
+    // respects. Running before the page's own scripts guarantees it; the
+    // feeds' single-key bindings (X uses j/k too) then never see the keys
+    // we handle. Swallowing the keydown alone isn't enough — X reacts to
+    // the keyup/keypress tail as well, so those get muted for handled
+    // keys too.
     const swallowUp = new Set();
     const swallow = (e) => {
       e.preventDefault();
@@ -897,7 +900,6 @@
     // where the form would have appeared. Stats still deserve a home there.
     if (SITE && SITE !== 'e6') document.body.appendChild(buildPanel());
     else if (SITE === 'e6') document.body.appendChild(buildStatsSection(true));
-    installKeys();
     document.body.appendChild(buildCheatSheet());
     scan();
     // Feeds render as you scroll: rescan on DOM churn, debounced.
@@ -920,6 +922,9 @@
       }
     }, 400);
   }
+  // Keys go in NOW (document-start, before the page's scripts run — see
+  // installKeys); everything that needs a DOM waits for the body.
+  installKeys();
   if (document.body) mount();
   else window.addEventListener('DOMContentLoaded', mount);
 })();
