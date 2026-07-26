@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      1.9
+// @version      1.10
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel for form-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -208,36 +208,18 @@
   }
 
   function buildPanel() {
-    const wrap = document.createElement('div');
-    Object.assign(wrap.style, {
+    panelBody = document.createElement('div');
+    Object.assign(panelBody.style, {
       position: 'fixed',
       top: '50%',
       right: '0',
       transform: 'translateY(-50%)',
       zIndex: 99998,
-      display: 'flex',
-      alignItems: 'center',
-      font: '13px system-ui, sans-serif'
-    });
-
-    const tab = document.createElement('button');
-    tab.textContent = '🏷️';
-    tab.title = 'Yiffy Corner: persistent tags';
-    Object.assign(tab.style, {
-      border: 'none',
-      cursor: 'pointer',
-      padding: '10px 8px',
-      borderRadius: '10px 0 0 10px',
+      font: '13px system-ui, sans-serif',
       background: '#1b1e23',
       color: '#fff',
-      fontSize: '15px',
-      boxShadow: '0 4px 14px rgba(0,0,0,.4)'
-    });
-
-    panelBody = document.createElement('div');
-    Object.assign(panelBody.style, {
-      background: '#1b1e23',
-      color: '#fff',
+      border: '1px solid transparent',
+      borderRight: 'none',
       borderRadius: '14px 0 0 14px',
       padding: '14px 16px',
       width: '250px',
@@ -253,14 +235,16 @@
         <input type="checkbox" data-p="enable">🐾 Persistent tags
       </label>
       <div style="opacity:.6;font-size:12px" data-p="hint"></div>
-      ${fieldsHtml()}`;
+      <div data-p="fields" style="display:flex;flex-direction:column;gap:10px">${fieldsHtml()}</div>`;
 
     const enable = panelBody.querySelector('[data-p="enable"]');
     const hint = panelBody.querySelector('[data-p="hint"]');
+    const fields = panelBody.querySelector('[data-p="fields"]');
     const syncEnabled = () => {
       const on = GM_getValue('ycb_panel_on', false);
       enable.checked = on;
-      tab.style.background = on ? '#5288c1' : '#1b1e23';
+      panelBody.style.borderColor = on ? '#5288c1' : 'transparent';
+      fields.style.opacity = on ? '1' : '0.55';
       hint.textContent = on
         ? 'ON — 🐾 submits with these tags, no form.'
         : 'OFF — 🐾 opens the usual form.';
@@ -280,21 +264,13 @@
     // Same shortcut-swallowing the form needs: feeds bind single keys.
     panelBody.addEventListener('keydown', (e) => e.stopPropagation());
 
-    panelBody.style.display = GM_getValue('ycb_panel_min', true) ? 'none' : 'flex';
-    tab.addEventListener('click', () => {
-      const min = panelBody.style.display !== 'none';
-      panelBody.style.display = min ? 'none' : 'flex';
-      GM_setValue('ycb_panel_min', min);
-    });
-
-    wrap.appendChild(tab);
-    wrap.appendChild(panelBody);
-    return wrap;
+    return panelBody;
   }
 
   // e621 has authoritative tags server-side; everything else gets the form —
   // unless the persistent panel is on, which submits its tags form-free.
-  async function submitUrl(url, e621) {
+  // `forceForm` (the 📝 buttons) always opens the form, toggle be damned.
+  async function submitUrl(url, e621, forceForm = false) {
     const base = GM_getValue('ycb_base', DEFAULT_BASE);
     const token = GM_getValue('ycb_token', '');
     if (!token) {
@@ -303,7 +279,7 @@
     }
     let tags = [];
     if (!e621) {
-      if (panelBody && GM_getValue('ycb_panel_on', false)) {
+      if (!forceForm && panelBody && GM_getValue('ycb_panel_on', false)) {
         const read = readTags(panelBody);
         if (read.error) {
           flash(`persistent tags: ${read.error} — opening the form`);
@@ -335,10 +311,12 @@
     });
   }
 
-  function pawButton(getUrl, e621, styles) {
+  function pawButton(getUrl, e621, styles, forceForm = false) {
     const b = document.createElement('button');
-    b.textContent = '🐾';
-    b.title = 'Submit to Yiffy Corner';
+    b.textContent = forceForm ? '📝' : '🐾';
+    b.title = forceForm
+      ? 'Submit to Yiffy Corner via the form (ignores persistent tags)'
+      : 'Submit to Yiffy Corner';
     b.dataset.ycbBtn = '1';
     Object.assign(b.style, {
       border: 'none',
@@ -356,7 +334,7 @@
       e.preventDefault();
       e.stopPropagation();
       const url = getUrl();
-      if (url) submitUrl(url, e621);
+      if (url) submitUrl(url, e621, forceForm);
     });
     return b;
   }
@@ -380,15 +358,18 @@
         if (art.querySelector('button[data-ycb-btn]')) continue;
         const group = art.querySelector('[role="group"]');
         if (!group) continue;
-        const btn = pawButton(() => {
-          const here = btn.closest('article');
+        const tweetUrl = (from) => {
+          const here = from.closest('article');
           const a = here?.querySelector('a[href*="/status/"] time')?.closest('a');
           const href =
             a?.getAttribute('href') ??
             (/\/status\/\d+/.test(location.pathname) ? location.pathname : null);
           return href ? clean(href) : null;
-        }, false, { marginLeft: '4px' });
+        };
+        const btn = pawButton(() => tweetUrl(btn), false, { marginLeft: '4px' });
+        const formBtn = pawButton(() => tweetUrl(formBtn), false, { marginLeft: '2px' }, true);
         group.appendChild(btn);
+        group.appendChild(formBtn);
       }
     } else if (SITE === 'bsky') {
       for (const item of document.querySelectorAll(
@@ -405,17 +386,17 @@
           wrap.style.flexDirection = 'row';
           wrap.style.alignItems = 'center';
         }
-        const btn = pawButton(() => {
-          const here = btn.closest('[data-testid^="feedItem-by-"], [data-testid^="postThreadItem-by-"]');
+        const postUrl = (from) => {
+          const here = from.closest('[data-testid^="feedItem-by-"], [data-testid^="postThreadItem-by-"]');
           const link =
             here?.querySelector('a[href*="/post/"]')?.getAttribute('href') ??
             (/^\/profile\/[^/]+\/post\//.test(location.pathname) ? location.pathname : null);
           return link ? clean(link) : null;
-        }, false, {
-          display: 'inline-flex',
-          alignItems: 'center',
-          marginLeft: '10px'
-        });
+        };
+        const inline = { display: 'inline-flex', alignItems: 'center', marginLeft: '10px' };
+        const btn = pawButton(() => postUrl(btn), false, inline);
+        const formBtn = pawButton(() => postUrl(formBtn), false, { ...inline, marginLeft: '4px' }, true);
+        like.insertAdjacentElement('afterend', formBtn);
         like.insertAdjacentElement('afterend', btn);
       }
     } else if (SITE === 'e6') {
@@ -444,16 +425,16 @@
         if (!a) continue;
         const href = a.getAttribute('href');
         fig.style.position = 'relative';
-        fig.appendChild(
-          pawButton(() => clean(href), false, {
-            position: 'absolute',
-            top: '4px',
-            right: '4px',
-            zIndex: 10,
-            background: 'rgba(0,0,0,.55)',
-            borderRadius: '999px'
-          })
-        );
+        const corner = {
+          position: 'absolute',
+          top: '4px',
+          right: '4px',
+          zIndex: 10,
+          background: 'rgba(0,0,0,.55)',
+          borderRadius: '999px'
+        };
+        fig.appendChild(pawButton(() => clean(href), false, corner));
+        fig.appendChild(pawButton(() => clean(href), false, { ...corner, top: '34px' }, true));
       }
     }
   }
@@ -465,30 +446,36 @@
     { re: /^https:\/\/(www\.)?furaffinity\.net\/view\/\d+/, e621: false }
   ];
 
-  const floating = pawButton(
-    () => clean(location.origin + location.pathname),
-    false,
-    {
-      position: 'fixed',
-      bottom: '18px',
-      right: '18px',
-      zIndex: 99999,
-      padding: '10px 16px',
-      borderRadius: '999px',
-      background: '#5288c1',
-      color: '#fff',
-      fontSize: '14px',
-      fontWeight: '600',
-      boxShadow: '0 4px 14px rgba(0,0,0,.4)',
-      display: 'none'
-    }
-  );
+  const floatingStyle = {
+    position: 'fixed',
+    bottom: '18px',
+    right: '18px',
+    zIndex: 99999,
+    padding: '10px 16px',
+    borderRadius: '999px',
+    background: '#5288c1',
+    color: '#fff',
+    fontSize: '14px',
+    fontWeight: '600',
+    boxShadow: '0 4px 14px rgba(0,0,0,.4)',
+    display: 'none'
+  };
+  const floating = pawButton(() => clean(location.origin + location.pathname), false, floatingStyle);
   floating.textContent = '🐾 Submit';
   floating.onclick = (e) => {
     e.preventDefault();
     const page = DETAIL.find((d) => d.re.test(location.href));
     if (page) submitUrl(clean(location.origin + location.pathname), page.e621);
   };
+  // The 📝 twin: always the form, even with persistent tags on. Only shows
+  // on non-e621 detail pages (e621 never has a form to force).
+  const floatingForm = pawButton(
+    () => clean(location.origin + location.pathname),
+    false,
+    { ...floatingStyle, right: '150px', background: '#3b4a5c' },
+    true
+  );
+  floatingForm.textContent = '📝 Form';
 
   function flash(text) {
     const toast = document.createElement('div');
@@ -512,6 +499,7 @@
 
   function mount() {
     document.body.appendChild(floating);
+    document.body.appendChild(floatingForm);
     // e621 tags are authoritative server-side — the panel only makes sense
     // where the form would have appeared.
     if (SITE && SITE !== 'e6') document.body.appendChild(buildPanel());
@@ -525,12 +513,14 @@
         scan();
       }, 300);
     }).observe(document.body, { childList: true, subtree: true });
-    // SPA navigation: keep the floating fallback in sync with the URL.
+    // SPA navigation: keep the floating fallbacks in sync with the URL.
     let lastHref = '';
     setInterval(() => {
       if (location.href !== lastHref) {
         lastHref = location.href;
-        floating.style.display = DETAIL.some((d) => d.re.test(location.href)) ? 'block' : 'none';
+        const page = DETAIL.find((d) => d.re.test(location.href));
+        floating.style.display = page ? 'block' : 'none';
+        floatingForm.style.display = page && !page.e621 ? 'block' : 'none';
       }
     }, 400);
   }
