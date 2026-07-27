@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.8
+// @version      2.9
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -411,18 +411,36 @@
   let currentPost = null;
 
   function highlightPost(el) {
-    if (currentPost) {
-      currentPost.style.outline = '';
-      currentPost.style.outlineOffset = '';
-      currentPost.querySelector('video')?.pause();
-    }
+    const prev = currentPost;
     currentPost = el;
+    if (prev) {
+      prev.style.outline = '';
+      prev.style.outlineOffset = '';
+      prev.querySelector('video')?.pause();
+    }
     el.style.outline = '2px solid #5288c1';
     el.style.outlineOffset = '2px';
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    // Feeds gate autoplay on their own scroll heuristics, which programmatic
-    // scrolling doesn't trip — start the selected post's video ourselves.
-    el.querySelector('video')?.play().catch(() => {});
+    autoplay(el);
+  }
+
+  // Feeds gate autoplay on their own scroll heuristics, which programmatic
+  // scrolling doesn't trip — start the selected post's video ourselves.
+  // Playing once isn't enough on X: its player still thinks the post is
+  // inactive while the smooth scroll settles and pauses the video right
+  // back. Re-play on pause for a short window instead of playing once.
+  function autoplay(el) {
+    const video = el.querySelector('video');
+    if (!video) return;
+    let tries = 5;
+    const replay = () => {
+      if (--tries > 0 && el === currentPost) video.play().catch(() => {});
+      else stop();
+    };
+    const stop = () => video.removeEventListener('pause', replay);
+    video.addEventListener('pause', replay);
+    setTimeout(stop, 2000);
+    video.play().catch(() => {});
   }
 
   function movePost(dir) {
