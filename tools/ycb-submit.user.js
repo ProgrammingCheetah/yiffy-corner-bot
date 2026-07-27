@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yiffy Corner — submit to the bot
 // @namespace    https://got-paws.net
-// @version      2.7
+// @version      2.8
 // @description  Per-post 🐾 submit buttons for the Yiffy Corner curation feed: inline on Twitter/X and BlueSky (feeds included), overlays on e621/FA galleries. Persistent-tags panel and vim-style keyboard shortcuts for form-free, mouse-free submitting.
 // @match        https://e621.net/*
 // @match        https://e926.net/*
@@ -92,6 +92,16 @@
       <input type="text" spellcheck="false" style="background:#2a2e35;color:#fff;border:1px solid #444;border-radius:8px;padding:7px 10px;font:inherit">
     </label>`;
 
+  // Pairings only make sense with more than one character: solo greys
+  // them out, and readTags drops them regardless.
+  function syncPairings(root) {
+    const solo = root.querySelector('select').value === 'solo';
+    for (const input of root.querySelectorAll('input[name="pairing"]')) {
+      input.disabled = solo;
+      input.closest('label').style.opacity = solo ? '.4' : '';
+    }
+  }
+
   // Read the fields under `root` into a tag list, or an error message.
   function readTags(root) {
     const picked = (name) =>
@@ -106,8 +116,9 @@
       .querySelector('input[type="text"]')
       .value.split(/\s+/)
       .filter(Boolean);
+    const pairings = count === 'solo' ? [] : picked('pairing');
     return {
-      tags: [...genders, count, ...picked('pairing'), rating.toLowerCase(), ...picked('irl'), ...extra]
+      tags: [...genders, count, ...pairings, rating.toLowerCase(), ...picked('irl'), ...extra]
     };
   }
 
@@ -147,6 +158,8 @@
         </div>`;
       overlay.appendChild(form);
       document.body.appendChild(overlay);
+      syncPairings(form);
+      form.querySelector('select').addEventListener('change', () => syncPairings(form));
 
       // Keep keystrokes in the form: feed sites bind single-key shortcuts
       // (X likes on "l") on the document.
@@ -259,9 +272,11 @@
     });
     syncEnabled();
     restorePanelState();
+    syncPairings(panelBody);
     annotateShortcuts(panelBody);
     panelBody.addEventListener('change', (e) => {
       if (e.target !== enable) savePanelState();
+      if (e.target.matches('select')) syncPairings(panelBody);
     });
     panelBody.addEventListener('input', (e) => {
       if (e.target.matches('input[type="text"]')) savePanelState();
@@ -475,6 +490,10 @@
   function togglePanelField(name, value) {
     if (!panelBody) return; // e621: server-side tags, no panel
     const input = panelBody.querySelector(`input[name="${name}"][value="${value}"]`);
+    if (input.disabled) {
+      flash('pairings need more than solo');
+      return;
+    }
     input.checked = !input.checked;
     input.dispatchEvent(new Event('change', { bubbles: true }));
     flash(`${value}: ${input.checked ? 'on' : 'off'}`);
@@ -517,6 +536,67 @@
         clearInterval(timer);
       }
     }, 50);
+  }
+
+  // <leader>t starts a template capture: keystrokes pass a panel STATE —
+  // any order, duplicates collapse — and Enter applies it (Escape
+  // cancels). It OVERRIDES the panel, it doesn't submit: any field no
+  // key implies is cleared (no g → male/male detoggles; that says
+  // nothing about straight). The keys:
+  //   digits    cardinality, right-most wins: 1 solo, 2 duo, 3+ multiple
+  //             (none → solo)
+  //   m f i u   genders, direct
+  //   g         gay: +male, and male/male at cardinality ≥ 2
+  //   s         straight: +female solo; +male+female and male/female at ≥ 2
+  //   n w q     rating NSFW / SFW / Questionable (none → rating unpicked)
+  //   r         irl
+  // With no g/s at cardinality ≥ 2 the pairing is inferred from the
+  // genders passed: only m → male/male, only f → female/female, both →
+  // male/female (\tm2n is gay: two characters, all male).
+  const TEMPLATE_LETTERS = new Set(['g', 's', 'm', 'f', 'i', 'u', 'n', 'w', 'q', 'r']);
+
+  function applyTemplate({ letters, count }) {
+    if (!panelBody) return; // e621: server-side tags, no panel
+    const cardinality = count ?? 1;
+    const countValue = cardinality <= 1 ? 'solo' : cardinality === 2 ? 'duo' : 'multiple';
+    const genders = new Set();
+    if (letters.has('m')) genders.add('male');
+    if (letters.has('f')) genders.add('female');
+    if (letters.has('i')) genders.add('intersex');
+    if (letters.has('u')) genders.add('unknown');
+    if (letters.has('g')) genders.add('male');
+    if (letters.has('s')) {
+      genders.add('female');
+      if (cardinality >= 2) genders.add('male');
+    }
+    const pairings = new Set();
+    if (cardinality >= 2) {
+      if (letters.has('g')) pairings.add('male/male');
+      if (letters.has('s')) pairings.add('male/female');
+      if (!pairings.size) {
+        if (genders.has('male') && genders.has('female')) pairings.add('male/female');
+        else if (genders.has('male')) pairings.add('male/male');
+        else if (genders.has('female')) pairings.add('female/female');
+      }
+    }
+    const rating =
+      letters.has('n') ? 'NSFW' : letters.has('w') ? 'SFW' : letters.has('q') ? 'Questionable' : null;
+    for (const input of panelBody.querySelectorAll('input[name="gender"]'))
+      input.checked = genders.has(input.value);
+    for (const input of panelBody.querySelectorAll('input[name="pairing"]'))
+      input.checked = pairings.has(input.value);
+    panelBody.querySelector('select').value = countValue;
+    for (const input of panelBody.querySelectorAll('input[name="rating"]'))
+      input.checked = input.value === rating;
+    panelBody.querySelector('input[name="irl"]').checked = letters.has('r');
+    syncPairings(panelBody);
+    savePanelState();
+    const unknown = [...letters].filter((l) => !TEMPLATE_LETTERS.has(l));
+    flash(
+      `template: ${[...genders].join('+') || 'NO GENDER'} ${countValue}` +
+        `${pairings.size ? ` ${[...pairings].join(' ')}` : ''} ${rating ?? 'NO RATING'}` +
+        `${letters.has('r') ? ' irl' : ''}${unknown.length ? ` (ignored: ${unknown.join(' ')})` : ''}`
+    );
   }
 
   // Ratings are radios: the shortcut selects, it doesn't toggle.
@@ -587,7 +667,8 @@
         [`${L}pg ${L}ps ${L}pl`, 'pairings'],
         [`${L}n ${L}s ${L}q`, 'rating'],
         [`${L}r`, 'irl'],
-        [`${L}et`, 'extra tags']
+        [`${L}et`, 'extra tags'],
+        [`${L}t…⏎`, 'template: m/f/i/u genders · g gay · s straight · 1/2/3 count · n/w/q rating · r irl']
       );
     }
     const box = document.createElement('div');
@@ -616,6 +697,7 @@
 
   let seq = null; // null = idle; '' = leader pressed, collecting keys
   let seqTimer = null;
+  let capture = null; // {letters, count} while a <leader>t template capture is open
 
   function endSeq() {
     seq = null;
@@ -670,10 +752,36 @@
           return;
         }
         if (typing || e.altKey || e.metaKey) return;
+        // Template capture: no timeout, no screen — keys pile into the
+        // state until Enter applies it or Escape drops it. Letters are a
+        // set; digits overwrite each other (right-most wins).
+        if (capture) {
+          if (e.key === 'Enter') {
+            swallow(e);
+            applyTemplate(capture);
+            capture = null;
+          } else if (e.key === 'Escape') {
+            swallow(e);
+            capture = null;
+            flash('template: cancelled');
+          } else if (/^[0-9]$/.test(e.key)) {
+            swallow(e);
+            capture.count = Number(e.key);
+          } else if (e.key.length === 1) {
+            swallow(e);
+            capture.letters.add(e.key.toLowerCase());
+          }
+          return;
+        }
         if (seq !== null) {
           if (e.key.length !== 1) return; // bare modifier mid-sequence
           swallow(e);
           seq += e.key;
+          if (seq === 't') {
+            endSeq();
+            capture = { letters: new Set(), count: null };
+            return;
+          }
           const hit = SEQUENCES[seq];
           if (hit) {
             endSeq();
